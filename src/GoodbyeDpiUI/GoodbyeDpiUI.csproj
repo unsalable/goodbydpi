@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>GoodbyeDpiUI</RootNamespace>
+    <AssemblyName>GoodbyeDPI-UI</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <UseWPF>true</UseWPF>
+    <!-- Tepsi simgesi icin. WindowsDesktop runtime'in parcasi, ek indirme yok. -->
+    <UseWindowsForms>true</UseWindowsForms>
+
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+
+    <Version>1.0.0</Version>
+    <Product>GoodbyeDPI UI</Product>
+    <Company>GoodbyeDPI UI</Company>
+    <Description>GoodbyeDPI icin sade ve hafif masaustu arayuzu</Description>
+
+    <!-- Hafiflik: workstation GC + tek is parcacikli, arka planda bos duran uygulama icin ideal -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredCompilationQuickJitForLoops>true</TieredCompilationQuickJitForLoops>
+    <!--
+      InvariantGlobalization kullanilamaz: WPF veri baglama kultur bilgisi istiyor
+      ve ICU olmadan "Cannot find non-neutral culture related to 'en-us'" ile cokuyor.
+    -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <DebugType>embedded</DebugType>
+
+    <!-- WFAC010: WinForms cozumleyicisi manifestteki dpiAware'dan sikayet ediyor;
+         WPF icin manifest dogru yer, uyariyi susturuyoruz. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <!-- ==================================================== dagitim ayarlari -->
+  <!--
+    Hedef: arkadaslara tek bir .exe vermek ve karsi tarafta .NET kurulu
+    olmasini gerektirmemek.
+  -->
+  <PropertyGroup>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+
+    <!--
+      WPF'in yerel kutuphaneleri (PresentationNative, wpfgfx) varsayilan olarak
+      pakete girmez, exe'nin yanina ayri dosyalar olarak dusuyordu. Bu ayar
+      onlari da pakete alip ilk calistirmada gecici klasore cikariyor - boylece
+      gercekten tek dosya kaliyor.
+    -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+    <!-- Kendi kendine yeten paket buyuk; sikistirma ~150 MB'i ~60 MB'a indiriyor. -->
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!--
+      Trimming BILEREK kapali. WPF, XAML'i calisma zamaninda yansima ile cozdugu
+      icin trimming desteklenmiyor; acildiginda uygulama ilk pencerede
+      "Cannot locate resource" benzeri hatalarla cokuyor.
+    -->
+    <PublishTrimmed>false</PublishTrimmed>
+
+    <!--
+      ReadyToRun acilisi hizlandirir ama kendi kendine yeten pakete ~40 MB ekler.
+      Paylasim kolayligi one cikti diye kapali; acilis hizi one cikarsa acilabilir.
+    -->
+    <PublishReadyToRun>false</PublishReadyToRun>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      UseWindowsForms, System.Windows.Forms'u ortuk using olarak ekliyor ve
+      Application / MessageBox gibi tipleri WPF karsiliklariyla cakistiriyor.
+      Ortuk using'i kaldiriyoruz; WinForms'a ihtiyac duyan tek dosya (TrayService)
+      kendi "Forms" takma adini kullaniyor.
+    -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      goodbyedpi.exe + WinDivert: ciktinin yanina birebir kopyalanir.
+
+      ExcludeFromSingleFile ZORUNLU. Bunlar yonetilen derleme degil; goodbyedpi.exe
+      ayri bir surec olarak calistiriliyor ve WinDivert64.sys'i cekirdek surucu
+      olarak diskten yukluyor. Pakete gomulseler dosya yolu diye bir seyleri
+      kalmaz ve calistirilamazlar. Bu yuzden exe'nin yaninda Runtime klasoru
+      olarak durmalari gerekiyor.
+    -->
+    <None Include="Runtime\**\*"
+          CopyToOutputDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+</Project>

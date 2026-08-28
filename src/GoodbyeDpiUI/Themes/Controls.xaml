@@ -1,0 +1,456 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <sys:Double x:Key="PowerSize">168</sys:Double>
+
+    <!-- ==================================================== baslik cubugu dugmeleri -->
+
+    <Style x:Key="TitleBarButton" TargetType="Button">
+        <Setter Property="Width" Value="34" />
+        <Setter Property="Height" Value="28" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Kapat dugmesi ayni sablonu kullanir ama uzerine gelince kirmiziya doner. -->
+    <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource TitleBarButton}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="Transparent" CornerRadius="7">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerBrush}" />
+                            <Setter Property="Foreground" Value="White" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================================================== guc dugmesi -->
+    <!--
+        Kompozisyon (disdan ice): nabiz halkasi > donen yay > govde > glif.
+        Durum animasyonlari DataTrigger ile VM'in State ozelligine bagli.
+        Nabiz ve donme yalnizca ilgili durumda calisir; kapali durumda
+        hicbir storyboard donmez, yani bosta CPU kullanimi sifira iner.
+    -->
+    <Style x:Key="PowerButton" TargetType="Button">
+        <Setter Property="Width" Value="{StaticResource PowerSize}" />
+        <Setter Property="Height" Value="{StaticResource PowerSize}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5" Background="Transparent">
+                        <Grid.RenderTransform>
+                            <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1" />
+                        </Grid.RenderTransform>
+
+                        <!-- Nabiz halkasi: baglandiginda disari dogru genisleyip soner. -->
+                        <Ellipse x:Name="Pulse"
+                                 Margin="4"
+                                 Opacity="0"
+                                 Fill="{DynamicResource SuccessBrush}"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <ScaleTransform x:Name="PulseScale" ScaleX="1" ScaleY="1" />
+                            </Ellipse.RenderTransform>
+                        </Ellipse>
+
+                        <!-- Sabit ray -->
+                        <Ellipse x:Name="Track"
+                                 Margin="6"
+                                 Stroke="{DynamicResource TrackBrush}"
+                                 StrokeThickness="4" />
+
+                        <!-- Baglaniyor durumundaki donen yay -->
+                        <Path x:Name="Arc"
+                              Opacity="0"
+                              Stroke="{DynamicResource AccentBrush}"
+                              StrokeThickness="4"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Data="M 84,6 A 78,78 0 0 1 162,84"
+                              RenderTransformOrigin="0.5,0.5">
+                            <Path.RenderTransform>
+                                <RotateTransform x:Name="ArcRotate" Angle="0" />
+                            </Path.RenderTransform>
+                        </Path>
+
+                        <!-- Govde -->
+                        <Ellipse x:Name="Core"
+                                 Margin="20"
+                                 Fill="{DynamicResource SurfaceAltBrush}" />
+
+                        <!-- Guc glifi -->
+                        <Path x:Name="Glyph"
+                              Stroke="{DynamicResource TextMutedBrush}"
+                              StrokeThickness="5"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Data="M 67.15,73.86 A 22,22 0 1 0 100.85,73.86 M 84,58 L 84,84" />
+                    </Grid>
+
+                    <ControlTemplate.Triggers>
+
+                        <!-- ================================================ etkilesim -->
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                         To="1.045" Duration="0:0:0.18">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut" />
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                         To="1.045" Duration="0:0:0.18">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut" />
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.22" />
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.22" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                         To="0.96" Duration="0:0:0.09" />
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                         To="0.96" Duration="0:0:0.09" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.16" />
+                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.16" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+
+                        <!-- ============================================= BAGLANIYOR -->
+                        <DataTrigger Binding="{Binding IsConnecting}" Value="True">
+                            <Setter TargetName="Arc" Property="Opacity" Value="1" />
+                            <Setter TargetName="Glyph" Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                        </DataTrigger>
+
+                        <!-- ============================================== BAGLANDI -->
+                        <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                            <Setter TargetName="Core" Property="Fill" Value="{DynamicResource AccentGradient}" />
+                            <Setter TargetName="Glyph" Property="Stroke" Value="White" />
+                            <Setter TargetName="Track" Property="Stroke" Value="{DynamicResource SuccessBrush}" />
+                        </DataTrigger>
+
+                        <!-- ================================================== HATA -->
+                        <DataTrigger Binding="{Binding IsFailed}" Value="True">
+                            <Setter TargetName="Track" Property="Stroke" Value="{DynamicResource DangerBrush}" />
+                            <Setter TargetName="Glyph" Property="Stroke" Value="{DynamicResource DangerBrush}" />
+                        </DataTrigger>
+
+                        <!--
+                            Surekli donen storyboard'lar yalnizca pencere gorunurken calisir.
+                            AreAnimationsEnabled tepsiye kucululdugunde false olur ve
+                            animasyon saatleri tamamen durur - bosta CPU kullanimi sifir.
+                        -->
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsConnecting}" Value="True" />
+                                <Condition Binding="{Binding AreAnimationsEnabled}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <MultiDataTrigger.EnterActions>
+                                <BeginStoryboard x:Name="SpinStory">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ArcRotate"
+                                                         Storyboard.TargetProperty="Angle"
+                                                         From="0" To="360" Duration="0:0:1.1"
+                                                         RepeatBehavior="Forever" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiDataTrigger.EnterActions>
+                            <MultiDataTrigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="SpinStory" />
+                            </MultiDataTrigger.ExitActions>
+                        </MultiDataTrigger>
+
+                        <MultiDataTrigger>
+                            <MultiDataTrigger.Conditions>
+                                <Condition Binding="{Binding IsConnected}" Value="True" />
+                                <Condition Binding="{Binding AreAnimationsEnabled}" Value="True" />
+                            </MultiDataTrigger.Conditions>
+                            <MultiDataTrigger.EnterActions>
+                                <BeginStoryboard x:Name="PulseStory">
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <!-- Efekt yerine duz elips olcekliyoruz: GPU'da neredeyse bedava. -->
+                                        <DoubleAnimation Storyboard.TargetName="PulseScale" Storyboard.TargetProperty="ScaleX"
+                                                         From="0.92" To="1.16" Duration="0:0:2.2" />
+                                        <DoubleAnimation Storyboard.TargetName="PulseScale" Storyboard.TargetProperty="ScaleY"
+                                                         From="0.92" To="1.16" Duration="0:0:2.2" />
+                                        <DoubleAnimation Storyboard.TargetName="Pulse" Storyboard.TargetProperty="Opacity"
+                                                         From="0.28" To="0" Duration="0:0:2.2" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiDataTrigger.EnterActions>
+                            <MultiDataTrigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="PulseStory" />
+                            </MultiDataTrigger.ExitActions>
+                        </MultiDataTrigger>
+
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ================================================================= anahtar -->
+
+    <Style x:Key="Switch" TargetType="ToggleButton">
+        <Setter Property="Width" Value="44" />
+        <Setter Property="Height" Value="26" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Grid>
+                        <Border x:Name="Track" CornerRadius="13" Background="{DynamicResource TrackBrush}" />
+                        <Ellipse x:Name="Thumb"
+                                 Width="20" Height="20"
+                                 Fill="White"
+                                 HorizontalAlignment="Left"
+                                 Margin="3,0,0,0"
+                                 RenderTransformOrigin="0.5,0.5">
+                            <Ellipse.RenderTransform>
+                                <TranslateTransform x:Name="ThumbShift" X="0" />
+                            </Ellipse.RenderTransform>
+                            <Ellipse.Effect>
+                                <DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.28" Color="#000000" />
+                            </Ellipse.Effect>
+                        </Ellipse>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background" Value="{DynamicResource AccentBrush}" />
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
+                                                         To="18" Duration="0:0:0.2">
+                                            <DoubleAnimation.EasingFunction>
+                                                <BackEase EasingMode="EaseOut" Amplitude="0.35" />
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
+                                                         To="0" Duration="0:0:0.2">
+                                            <DoubleAnimation.EasingFunction>
+                                                <CubicEase EasingMode="EaseOut" />
+                                            </DoubleAnimation.EasingFunction>
+                                        </DoubleAnimation>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ==================================================== secim hapi (pill) -->
+    <!-- Yontem ve DNS secimi icin ComboBox yerine yatay hap listesi: daha az XAML, daha net. -->
+
+    <Style x:Key="PillList" TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent" />
+        <!--
+            Foreground'u ACIKCA vermek sart. WPF'in yerlesik ListBox temasi
+            Foreground'u SystemColors.ControlTextBrushKey'den (siyah) aliyor ve bu,
+            pencereden gelen mirasi eziyor. Belirtilmedigi surece koyu temada
+            haplarin yazisi siyah zemine siyah dusup gorunmez oluyordu.
+        -->
+        <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled" />
+        <Setter Property="ItemsPanel">
+            <Setter.Value>
+                <ItemsPanelTemplate>
+                    <WrapPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+            </Setter.Value>
+        </Setter>
+        <Setter Property="ItemContainerStyle">
+            <Setter.Value>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Margin" Value="0,0,6,6" />
+                    <Setter Property="Cursor" Value="Hand" />
+                    <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ListBoxItem">
+                                <Border x:Name="Bd"
+                                        CornerRadius="9"
+                                        Padding="11,6"
+                                        Background="{DynamicResource SurfaceAltBrush}"
+                                        BorderThickness="1"
+                                        BorderBrush="Transparent">
+                                    <ContentPresenter />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}" />
+                                        <Setter Property="TextElement.Foreground" Value="White" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================================= birincil eylem dugmesi -->
+    <!-- Tepsi panelindeki Baglan / Baglantiyi Kes dugmesi. -->
+
+    <Style x:Key="PrimaryButton" TargetType="Button">
+        <Setter Property="Height" Value="40" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd"
+                            CornerRadius="11"
+                            Background="{DynamicResource AccentGradient}"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform x:Name="Sc" ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- Bagliyken eylem "kes" oldugu icin notr yuzeye doner. -->
+                        <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                        </DataTrigger>
+
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX"
+                                                         To="1.02" Duration="0:0:0.15" />
+                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY"
+                                                         To="1.06" Duration="0:0:0.15" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX"
+                                                         To="1" Duration="0:0:0.18" />
+                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY"
+                                                         To="1" Duration="0:0:0.18" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Opacity" Value="0.82" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ================================================== metin dugmesi -->
+    <!-- Tag="danger" verilirse uzerine gelince kirmiziya doner. -->
+
+    <Style x:Key="GhostButton" TargetType="Button">
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="8" Padding="9,5" Background="Transparent">
+                        <ContentPresenter />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                                <Condition Property="Tag" Value="danger" />
+                            </MultiTrigger.Conditions>
+                            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

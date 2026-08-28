@@ -1,0 +1,35 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:po="http://schemas.microsoft.com/winfx/2006/xaml/presentation/options">
+
+    <!--
+        Acik tema paleti. ThemeService bu sozlugu App.Resources icinde
+        digeriyle takas eder; tum XAML {DynamicResource ...} kullandigi icin
+        degisiklik aninda her yere yansir.
+
+        Fircalar bilerek donduruluyor (po:Freeze): WPF zaten sozluge konan her
+        Freezable'i muhurluyor, acikca dondurmek cizimi de hizlandiriyor.
+        Tema gecisinin yumusakligi renk animasyonundan degil, MainWindow'un
+        eski goruntuyu ustte tutup soldurmasindan geliyor.
+
+        Iki dosyadaki anahtarlar birebir ayni kalmali.
+    -->
+
+    <SolidColorBrush x:Key="BgBrush"            Color="#FFFFFFFF" po:Freeze="True" />
+    <SolidColorBrush x:Key="SurfaceBrush"       Color="#FFF6F7F9" po:Freeze="True" />
+    <SolidColorBrush x:Key="SurfaceAltBrush"    Color="#FFEEF0F4" po:Freeze="True" />
+    <SolidColorBrush x:Key="StrokeBrush"        Color="#FFE4E7EC" po:Freeze="True" />
+    <SolidColorBrush x:Key="TextBrush"          Color="#FF0F172A" po:Freeze="True" />
+    <SolidColorBrush x:Key="TextMutedBrush"     Color="#FF64748B" po:Freeze="True" />
+    <SolidColorBrush x:Key="AccentBrush"        Color="#FF6366F1" po:Freeze="True" />
+    <SolidColorBrush x:Key="AccentAltBrush"     Color="#FF8B5CF6" po:Freeze="True" />
+    <SolidColorBrush x:Key="SuccessBrush"       Color="#FF10B981" po:Freeze="True" />
+    <SolidColorBrush x:Key="DangerBrush"        Color="#FFEF4444" po:Freeze="True" />
+    <SolidColorBrush x:Key="TrackBrush"         Color="#FFE9EBF0" po:Freeze="True" />
+
+    <LinearGradientBrush x:Key="AccentGradient" StartPoint="0,0" EndPoint="1,1" po:Freeze="True">
+        <GradientStop Color="#FF6366F1" Offset="0" />
+        <GradientStop Color="#FF8B5CF6" Offset="1" />
+    </LinearGradientBrush>
+
+</ResourceDictionary>
