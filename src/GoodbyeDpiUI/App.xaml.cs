@@ -119,7 +119,18 @@ public partial class App : Application
     {
         try
         {
-            if (StartupService.IsEnabled() == shouldBeEnabled) return;
+            var enabled = StartupService.IsEnabled();
+
+            // Gorev acik olmali ama farkli bir exe'yi (orn. eski dist kopyasi ya da
+            // guncelleme oncesi konum) gosteriyorsa yeniden olusturup guncel yola
+            // dogrult. Boylece kurulum/tasima sonrasi acilista dogru surum baslar.
+            if (shouldBeEnabled && enabled && StartupService.PointsToDifferentExe())
+            {
+                StartupService.Disable(out _);
+                enabled = false;
+            }
+
+            if (enabled == shouldBeEnabled) return;
 
             var ok = shouldBeEnabled
                 ? StartupService.Enable(out var error)

@@ -3,6 +3,7 @@ using System.IO;
 using System.Security;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace GoodbyeDpiUI.Services;
 
@@ -24,6 +25,43 @@ public static class StartupService
     {
         var (exit, _) = RunSchtasks($"/Query /TN \"{TaskName}\"");
         return exit == 0;
+    }
+
+    /// <summary>
+    /// Kayitli gorev, su an calisan exe'den FARKLI bir dosyayi mi baslatiyor?
+    /// (Kurulum/tasima sonrasi eski konumu gosteriyor olabilir.) Gorev yoksa ya da
+    /// yol okunamazsa false doner - bu durumda yeniden dogrultmaya gerek yoktur.
+    /// </summary>
+    public static bool PointsToDifferentExe()
+    {
+        var current = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(current)) return false;
+
+        var registered = GetRegisteredExePath();
+        if (string.IsNullOrEmpty(registered)) return false;
+
+        try
+        {
+            return !string.Equals(
+                Path.GetFullPath(registered),
+                Path.GetFullPath(current),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false; // yol cozulemedi: dokunma
+        }
+    }
+
+    /// <summary>Gorev XML'indeki &lt;Command&gt; yolunu okur; bulunamazsa null.</summary>
+    private static string? GetRegisteredExePath()
+    {
+        var (exit, output) = RunSchtasks($"/Query /TN \"{TaskName}\" /XML");
+        if (exit != 0) return null;
+
+        var m = Regex.Match(output, "<Command>(.*?)</Command>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return m.Success ? m.Groups[1].Value.Trim() : null;
     }
 
     /// <summary>
