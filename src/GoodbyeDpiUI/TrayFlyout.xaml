@@ -63,7 +63,7 @@
             </Grid>
 
             <TextBlock Text="{Binding ProfileSummary}"
-                       FontSize="11" Margin="18,1,0,0"
+                       FontSize="11" Margin="18,1,0,0" TextWrapping="Wrap"
                        Foreground="{DynamicResource TextMutedBrush}" />
 
             <!-- ============================================ ana eylem -->

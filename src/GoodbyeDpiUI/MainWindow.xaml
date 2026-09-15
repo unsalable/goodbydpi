@@ -241,6 +241,16 @@
                                               IsChecked="{Binding IsNativeEngine, Mode=TwoWay}" />
                             </Grid>
 
+                            <!-- ============================ Internet saglayicisi -->
+                            <!-- Secilen ISS'in onerdigi yontem, GoodbyeDPI yontemi ve DNS birlikte uygulanir. -->
+                            <TextBlock Text="İNTERNET SAĞLAYICI" Style="{StaticResource SectionLabel}" />
+                            <ListBox Style="{StaticResource PillList}"
+                                     ItemsSource="{Binding Isps}"
+                                     SelectedItem="{Binding SelectedIsp, Mode=TwoWay}"
+                                     DisplayMemberPath="Name" />
+                            <TextBlock Text="{Binding SelectedIsp.Description}"
+                                       Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+
                             <!-- ============================ Yontem: kendi motoru -->
                             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="YÖNTEM" Style="{StaticResource SectionLabel}" />
@@ -263,10 +273,10 @@
                                         <Grid>
                                             <TextBlock Text="SAHTE PAKET" Style="{StaticResource GroupLabel}"
                                                        VerticalAlignment="Center" />
-                                            <Button Content="Varsayılana dön"
+                                            <Button Content="Önerilene dön"
                                                     Style="{StaticResource GhostButton}"
                                                     HorizontalAlignment="Right" Margin="0,-6,-9,-6"
-                                                    ToolTip="Özel ayarları önerilen değerlere döndür"
+                                                    ToolTip="Özel ayarları seçili sağlayıcının önerdiği yöntemin değerlerine döndür"
                                                     Command="{Binding ResetCustomNativeCommand}" />
                                         </Grid>
 
@@ -347,6 +357,64 @@
                                                           IsChecked="{Binding NativeWrongSeq, Mode=TwoWay}" />
                                         </Grid>
 
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="MD5 imzası (md5sig)" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Sunucu MD5 seçenekli paketi atar, DPI işler"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeMd5Sig, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Boş sahte içerik" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Site isteği yerine 4 sıfır bayt gönderilir"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeZeroFake, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Sahte isteği de böl" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Sahte istek 2. bayttan iki parça halinde gider"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeSplitFake, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Tekrar sayısı" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Her sahte paket bu kadar kez gönderilir"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Style="{StaticResource InputBox}"
+                                                     Width="64" TextAlignment="Center" VerticalAlignment="Center"
+                                                     ToolTip="1-10 (Enter ile uygula)"
+                                                     Text="{Binding NativeFakeRepeats, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                        </Grid>
+
                                         <TextBlock Text="Koruma seçilmedi: sahte paket güvenlik için düşük TTL ile gönderilecek."
                                                    Style="{StaticResource OptionHint}" Margin="0,10,0,0"
                                                    Foreground="{DynamicResource DangerBrush}"
@@ -410,6 +478,22 @@
                                                           IsChecked="{Binding NativeReverseSplit, Mode=TwoWay}" />
                                         </Grid>
 
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeSplitTls}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Örtüşme (seqovl, bayt)" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Parçaya sahte bayt eklenir; ters sırada 1 önerilir, 0 = kapalı"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Style="{StaticResource InputBox}"
+                                                     Width="64" TextAlignment="Center" VerticalAlignment="Center"
+                                                     ToolTip="0-1000 (Enter ile uygula)"
+                                                     Text="{Binding NativeSeqOverlap, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                        </Grid>
+
                                         <!-- ====== diger -->
                                         <Border Style="{StaticResource GroupDivider}" />
                                         <TextBlock Text="DİĞER" Style="{StaticResource GroupLabel}" />
@@ -438,7 +522,21 @@
                                                           IsChecked="{Binding NativeFragmentHttp, Mode=TwoWay}" />
                                         </Grid>
 
-                                        <TextBlock Text="Sahte paket ve bölme kapalı: motor yalnızca DNS ve QUIC ayarlarını uygular."
+                                        <Grid Style="{StaticResource OptionRow}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Discord ses ve aramalar (UDP)" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Ses bağlantısından önce sahte UDP paketleri gider"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeVoiceFake, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <TextBlock Text="Sahte paket ve bölme kapalı: motor yalnızca DNS, QUIC ve Discord ses ayarlarını uygular."
                                                    Style="{StaticResource OptionHint}" Margin="0,12,0,0"
                                                    Foreground="{DynamicResource DangerBrush}"
                                                    Visibility="{Binding ShowNoTechniqueHint, Converter={StaticResource BoolToVis}}" />

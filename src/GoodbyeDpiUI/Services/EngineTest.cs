@@ -12,10 +12,15 @@ namespace GoodbyeDpiUI.Services;
 /// <summary>
 /// Motorlarin canli dogrulamasi (yonetici gerektirir). Kullanim:
 ///
-///   --enginetest [default|checksum|split|custom|gdpi|off]
-///                [--set anahtar=deger]... [--dns yandex|cloudflare|off]
-///                [--method default|ttl3|nottl|mode9] [--out dosya] [--curl] [--chrome]
+///   --enginetest [yontem kimligi (default|disorder|ttl4|md5sig|...)|gdpi|off]
+///                [--isp turktelekom|superonline|...] [--set anahtar=deger]...
+///                [--dns yandex|cloudflare|off] [--method default|ttl3|nottl|mode9]
+///                [--out dosya] [--curl] [--chrome [--chromerepeat n]] [--voice]
 ///                [--hold saniye --ready dosya --stopfile dosya]
+///
+/// --isp: yontem verilmemisse saglayicinin onerdigi yontem ve DNS kullanilir.
+/// --voice: STUN (Google) yaniti + Discord IP Discovery bicimli paketin motorca
+/// yakalanip sahte UDP uretildigi sayaclardan dogrulanir.
 ///
 /// --hold: motor baglandiktan sonra "ready" dosyasini yazar ve "stopfile" olusana
 /// kadar (en fazla verilen sure) motoru acik tutar. Boylece yonetici olmayan bir
@@ -33,6 +38,7 @@ internal static class EngineTest
         "https://discord.com/api/v9/gateway",
         "https://gateway.discord.gg/",
         "https://cdn.discordapp.com/",
+        "https://media.discordapp.net/",
         "https://www.roblox.com/",
         "https://apis.roblox.com/",
     ];
@@ -44,8 +50,11 @@ internal static class EngineTest
     public static int Run(string[] args)
     {
         var log = new StringBuilder();
-        var mode = ArgAfter(args, "--enginetest") is { } m && !m.StartsWith("--") ? m.ToLowerInvariant() : "default";
-        var dns = ArgAfter(args, "--dns")?.ToLowerInvariant() switch
+        // --isp verilirse yontem belirtilmedikce saglayicinin onerisi, DNS de onun DNS'i kullanilir.
+        var isp = IspProfile.FromId(ArgAfter(args, "--isp"));
+        var explicitMode = ArgAfter(args, "--enginetest") is { } m && !m.StartsWith("--") ? m.ToLowerInvariant() : null;
+        var mode = explicitMode ?? isp.Recommended.Id;
+        var dns = (ArgAfter(args, "--dns")?.ToLowerInvariant() ?? isp.DnsId) switch
         {
             "off" => DnsProfile.Off,
             "cloudflare" => DnsProfile.Cloudflare,
@@ -55,6 +64,8 @@ internal static class EngineTest
         var outPath = ArgAfter(args, "--out") ?? Path.Combine(Path.GetTempPath(), "goodbyedpi-enginetest.txt");
         var useCurl = args.Contains("--curl", StringComparer.OrdinalIgnoreCase);
         var useChrome = args.Contains("--chrome", StringComparer.OrdinalIgnoreCase);
+        var useVoice = args.Contains("--voice", StringComparer.OrdinalIgnoreCase);
+        var chromeRepeat = int.TryParse(ArgAfter(args, "--chromerepeat"), out var cr) ? Math.Clamp(cr, 1, 20) : 1;
 
         IDpiBackend? backend = null;
         var pass = false;
@@ -64,7 +75,7 @@ internal static class EngineTest
             var cfg = NativeProfile.FromId(mode).Build();
             cfg = ApplyOverrides(cfg, args, log);
 
-            log.AppendLine($"Mod: {mode}   DNS: {dns.Name}");
+            log.AppendLine($"Mod: {mode}   Saglayici: {isp.Name}   DNS: {dns.Name}");
             if (mode is not ("off" or "gdpi"))
             {
                 log.AppendLine("Ayar: " + JsonSerializer.Serialize(cfg));
@@ -125,13 +136,23 @@ internal static class EngineTest
             var chromeOk = true;
             if (useChrome)
             {
+                // Chromium uzanti sirasini her baglantida karistirir; ML-KEM'li buyuk
+                // ClientHello'da SNI bazen ikinci pakete duser. Tekrar bu durumu da yakalar.
                 log.AppendLine();
-                var n = ChromeUrls.Count(u => TryChrome(u, log));
-                chromeOk = n == ChromeUrls.Length;
-                log.AppendLine($"=> Chrome: {n}/{ChromeUrls.Length}");
+                var urls = Enumerable.Repeat(ChromeUrls, chromeRepeat).SelectMany(u => u).ToArray();
+                var n = urls.Count(u => TryChrome(u, log));
+                chromeOk = n == urls.Length;
+                log.AppendLine($"=> Chrome: {n}/{urls.Length}");
             }
 
-            pass = controlOk && blockedOk == BlockedUrls.Length && curlOk && chromeOk;
+            var voiceOk = true;
+            if (useVoice)
+            {
+                log.AppendLine();
+                voiceOk = TryVoice(backend as NativeDpiService, log);
+            }
+
+            pass = controlOk && blockedOk == BlockedUrls.Length && curlOk && chromeOk && voiceOk;
         }
         catch (Exception ex)
         {
@@ -218,6 +239,77 @@ internal static class EngineTest
             log.AppendLine($"[HATA] .NET  {url}  {inner} ({sw.ElapsedMilliseconds} ms)");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Ses yolunun canli sinamasi:
+    ///  1. Google STUN sunucusuna Binding istegi atilir ve yanit beklenir; motor STUN'dan once
+    ///     sahte UDP gonderirken gercek istegi bozmamali.
+    ///  2. Discord IP Discovery bicimindeki paket TEST-NET-2 (198.51.100.0/24, yonlendirilmeyen
+    ///     belge adresi) hedefine gonderilir; motorun paketi yakalayip sahte UDP urettigi
+    ///     sayaclardan dogrulanir. Gercek bir sunucuya hic trafik gitmez.
+    /// </summary>
+    private static bool TryVoice(NativeDpiService? engine, StringBuilder log)
+    {
+        var before = (engine?.Stats?.StunMessages ?? 0, engine?.Stats?.VoiceDiscoveries ?? 0, engine?.Stats?.VoiceFakesSent ?? 0);
+        var ok = true;
+
+        try
+        {
+            using var udp = new System.Net.Sockets.UdpClient(System.Net.Sockets.AddressFamily.InterNetwork);
+            udp.Client.ReceiveTimeout = 4000;
+
+            var stunHost = Dns.GetHostAddresses("stun.l.google.com")
+                .First(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
+
+            var request = new byte[20];
+            request[1] = 0x01;                                       // Binding Request
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(request.AsSpan(4), 0x2112A442);
+            Random.Shared.NextBytes(request.AsSpan(8, 12));           // islem kimligi
+
+            var sw = Stopwatch.StartNew();
+            udp.Send(request, request.Length, new IPEndPoint(stunHost, 19302));
+            var remote = new IPEndPoint(IPAddress.Any, 0);
+            var response = udp.Receive(ref remote);
+            var matches = response.Length >= 20 && response.AsSpan(8, 12).SequenceEqual(request.AsSpan(8, 12));
+            log.AppendLine($"[{(matches ? "OK" : "HATA")}]{(matches ? "  " : "")} STUN {stunHost}:19302 yanit {response.Length} bayt ({sw.ElapsedMilliseconds} ms)");
+            ok &= matches;
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine($"[HATA] STUN: {ex.Message}");
+            ok = false;
+        }
+
+        try
+        {
+            using var udp = new System.Net.Sockets.UdpClient(System.Net.Sockets.AddressFamily.InterNetwork);
+            var discovery = new byte[74];
+            discovery[1] = 0x01;
+            discovery[3] = 70;
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(discovery.AsSpan(4), 0x00C0FFEE);
+            udp.Send(discovery, discovery.Length, new IPEndPoint(IPAddress.Parse("198.51.100.7"), 50004));
+            Thread.Sleep(300);
+            log.AppendLine("Discord IP Discovery bicimli paket 198.51.100.7:50004 hedefine gonderildi");
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine($"[HATA] IP Discovery gonderilemedi: {ex.Message}");
+            ok = false;
+        }
+
+        if (engine?.Stats is { } stats)
+        {
+            var stun = stats.StunMessages - before.Item1;
+            var disc = stats.VoiceDiscoveries - before.Item2;
+            var fakes = stats.VoiceFakesSent - before.Item3;
+            var engineOk = stun >= 1 && disc >= 1 && fakes >= 2;
+            log.AppendLine($"[{(engineOk ? "OK" : "HATA")}]{(engineOk ? "  " : "")} motor: STUN {stun}, IP Discovery {disc}, sahte UDP {fakes}");
+            ok &= engineOk;
+        }
+
+        log.AppendLine($"=> Ses: {(ok ? "OK" : "HATA")}");
+        return ok;
     }
 
     private static bool TryCurl(string url, StringBuilder log)

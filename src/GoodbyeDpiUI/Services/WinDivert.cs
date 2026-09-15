@@ -78,6 +78,11 @@ internal static class WinDivert
     public static extern bool WinDivertHelperCompileFilter(
         string filter, short layer, nint obj, uint objLen, out nint errorStr, out uint errorPos);
 
+    /// <summary>Filtreyi surucuye gitmeden, verilen paket uzerinde kullanici modunda degerlendirir.</summary>
+    [DllImport("WinDivert.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool WinDivertHelperEvalFilter(string filter, byte[] packet, uint packetLen, ref WinDivertAddress addr);
+
     /// <summary>Filtre metni gecerli mi? Degilse hata aciklamasi doner.</summary>
     public static string? ValidateFilter(string filter)
     {
@@ -118,5 +123,9 @@ internal struct WinDivertAddress
         set => Flags = value ? Flags | (1u << OutboundBit) : Flags & ~(1u << OutboundBit);
     }
 
-    public readonly bool IsIPv6 => (Flags & (1u << IPv6Bit)) != 0;
+    public bool IsIPv6
+    {
+        readonly get => (Flags & (1u << IPv6Bit)) != 0;
+        set => Flags = value ? Flags | (1u << IPv6Bit) : Flags & ~(1u << IPv6Bit);
+    }
 }

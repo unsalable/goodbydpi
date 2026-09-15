@@ -31,12 +31,18 @@ internal static class SelfTest
         Section("Motor: TLS (Varsayilan)", () => { EngineTlsDefault(v6: false); EngineTlsDefault(v6: true); });
         Section("Motor: otomatik TTL", EngineAutoTtl);
         Section("Motor: profiller", EngineProfiles);
+        Section("Motor: sira ortusmesi (seqovl)", EngineSeqOverlap);
+        Section("Motor: sahte paket cesitleri", EngineFakeVariants);
+        Section("Motor: cok paketli ClientHello (ML-KEM)", () => { EngineContinuation(v6: false); EngineContinuation(v6: true); });
+        Section("Motor: Discord ses / STUN", () => { EngineVoice(v6: false); EngineVoice(v6: true); });
         Section("Motor: HTTP", EngineHttp);
         Section("Motor: QUIC", EngineQuic);
         Section("Motor: DNS yonlendirme", () => { EngineDns(v6: false); EngineDns(v6: true); });
         Section("WinDivert: filtre + saglama", WinDivertNative);
+        Section("WinDivert: filtre paket eslesmesi", WinDivertFilterMatches);
         Section("DNS profilleri", () => { DnsArguments(); DnsValidation(); });
         Section("Native profiller", NativeProfiles);
+        Section("Internet saglayici profilleri", IspProfiles);
         Section("Surum", VersionParsing);
 
         Log.Insert(0, _failed == 0
@@ -298,8 +304,277 @@ internal static class SelfTest
 
         // Hicbir teknik yok: filtre hicbir sey yakalamaz.
         var none = new PacketProcessor(
-            new NativeDpiConfig { FakePacket = false, SplitTls = false, BlockQuic = false, FragmentHttp = false }, DnsProfile.Off);
+            new NativeDpiConfig { FakePacket = false, SplitTls = false, BlockQuic = false, FragmentHttp = false, VoiceFake = false },
+            DnsProfile.Off);
         Check("Teknik yok: filtre 'false'", none.BuildFilter() == "false");
+    }
+
+    private static void EngineSeqOverlap()
+    {
+        var output = new List<OutPacket>();
+        var hello = FakePackets.BuildClientHello(BlockedHost, 700);
+
+        // Ters sira (Turk Telekom onerisi): zapret2 multidisorder pos=2 seqovl=1.
+        var proc = new PacketProcessor(NativeProfile.Disorder.Build(), DnsProfile.Off);
+        var p = BuildTcp(false, 50100, 443, 900_000, 5, 0x18, 128, hello);
+        Check("Ters sira: Replace", proc.Process(p, p.Length, true, output, 0) == PacketVerdict.Replace);
+        Check("Ters sira: sahte paket yok", output.All(o => !Contains(o.Data, FakePackets.FakeHost)));
+        Check("Ters sira: 2 parca", output.Count == 2, $"{output.Count}");
+        if (output.Count != 2) return;
+
+        var first = IpPacket.Parse(output[0].Data, output[0].Length);
+        var second = IpPacket.Parse(output[1].Data, output[1].Length);
+        Check("Ters sira: ilk giden SEQ+1 (1 bayt ortusme)", first.TcpSeq == 900_001, $"{first.TcpSeq}");
+        Check("Ters sira: ilk giden = sahte bayt + 3. bayttan sonrasi",
+            output[0].Data[first.PayloadOffset] == 0 && first.PayloadLength == hello.Length - 1 &&
+            output[0].Data.AsSpan(first.PayloadOffset + 1).SequenceEqual(hello.AsSpan(2)));
+        Check("Ters sira: son giden ilk 2 bayt", second.TcpSeq == 900_000 && second.PayloadLength == 2);
+        Check("Ters sira: paketler orijinalden buyuk degil", output.All(o => o.Length <= p.Length));
+        Check("Ters sira: sunucu orijinal istegi alir", ReceiverView(output, 900_000).AsSpan().SequenceEqual(hello));
+
+        var dpiView = FirstWinsView(output, 900_000);
+        Check("Ters sira: ilk gelen veriyi tutan DPI ClientHello goremez", !TlsParser.IsClientHello(dpiView, 0, dpiView.Length),
+            BitConverter.ToString(dpiView, 0, Math.Min(6, dpiView.Length)));
+
+        // Duz bolme + ortusme: ilk parcanin SEQ'i geri cekilir, sunucu pencere disini atar.
+        var fwd = new PacketProcessor(
+            new NativeDpiConfig { FakePacket = false, SplitSni = false, ReverseSplit = false, SeqOverlap = 3 }, DnsProfile.Off);
+        var p2 = BuildTcp(false, 50101, 443, 800_000, 5, 0x18, 128, hello);
+        fwd.Process(p2, p2.Length, true, output, 0);
+        var f0 = IpPacket.Parse(output[0].Data, output[0].Length);
+        Check("Duz ortusme: ilk parca SEQ-3, 3 sahte + 2 gercek bayt",
+            f0.TcpSeq == 799_997 && f0.PayloadLength == 5 && output[0].Data[f0.PayloadOffset + 3] == hello[0],
+            $"{f0.TcpSeq}/{f0.PayloadLength}");
+        Check("Duz ortusme: sunucu orijinali alir", ReceiverView(output, 800_000).AsSpan().SequenceEqual(hello));
+
+        // Ortusme ilk bolme konumundan kucuk degilse iptal (sunucu sahte baytlari ezemezdi).
+        var cancel = new PacketProcessor(new NativeDpiConfig { FakePacket = false, SplitSni = false, SeqOverlap = 2 }, DnsProfile.Off);
+        var p3 = BuildTcp(false, 50102, 443, 700_000, 5, 0x18, 128, hello);
+        cancel.Process(p3, p3.Length, true, output, 0);
+        Check("Ortusme >= bolme konumu: iptal edilir",
+            IpPacket.Parse(output[0].Data, output[0].Length).TcpSeq == 700_002 && Reassemble(output, 700_000).AsSpan().SequenceEqual(hello));
+
+        // SNI bolmesiyle birlikte (3 parca): ortusme ikinci parcada, sunucu yine orijinali alir.
+        var multi = new PacketProcessor(new NativeDpiConfig { FakePacket = false, SeqOverlap = 1 }, DnsProfile.Off);
+        var p4 = BuildTcp(true, 50103, 443, 600_000, 5, 0x18, 128, hello);
+        multi.Process(p4, p4.Length, true, output, 0);
+        Check("SNI + ortusme: 3 parca", output.Count == 3, $"{output.Count}");
+        Check("SNI + ortusme: sunucu orijinali alir", ReceiverView(output, 600_000).AsSpan().SequenceEqual(hello));
+        Check("SNI + ortusme: hicbir parcada tam SNI yok", output.All(o => !Contains(o.Data, BlockedHost)));
+    }
+
+    private static void EngineFakeVariants()
+    {
+        var output = new List<OutPacket>();
+        var hello = FakePackets.BuildClientHello(BlockedHost, 700);
+
+        // MD5 imzasi (Superonline): 20 baytlik TCP secenegi, TTL degismez, orijinal arkadan.
+        var md5 = new PacketProcessor(NativeProfile.Md5Sig.Build(), DnsProfile.Off);
+        var p1 = BuildTcp(false, 50110, 443, 10_000, 20_000, 0x18, 128, hello);
+        md5.Process(p1, p1.Length, true, output, 0);
+        Check("MD5: sahte + degismemis orijinal", output.Count == 2 && output[1].Data == p1 && !output[1].Recalc, $"{output.Count}");
+        if (output.Count == 2)
+        {
+            var m = IpPacket.Parse(output[0].Data, output[0].Length);
+            Check("MD5: TCP basligi 40 bayt", m.Valid && m.L4HeaderLength == 40, $"{m.L4HeaderLength}");
+            Check("MD5: secenek NOP NOP 19 18", output[0].Data.AsSpan(m.L4Offset + 20, 4).SequenceEqual(new byte[] { 1, 1, 19, 18 }));
+            Check("MD5: icerik sahte ClientHello", output[0].Data.AsSpan(m.PayloadOffset).SequenceEqual(FakePackets.TlsClientHello));
+            Check("MD5: IP uzunlugu", IpLengthMatches(output[0].Data, output[0].Length, v6: false));
+            Check("MD5: TTL ve SEQ degismez", m.Ttl == 128 && m.TcpSeq == 10_000 && !output[0].CorruptTcpChecksum);
+        }
+
+        var md5v6 = BuildTcp(true, 50111, 443, 10_000, 20_000, 0x18, 128, hello);
+        new PacketProcessor(NativeProfile.Md5Ttl3.Build(), DnsProfile.Off).Process(md5v6, md5v6.Length, true, output, 0);
+        var m6 = IpPacket.Parse(output[0].Data, output[0].Length);
+        Check("MD5 + TTL 3 (v6): tek sahte, hop limit 3, secenekli",
+            output.Count == 2 && m6.Ttl == 3 && m6.L4HeaderLength == 40 && IpLengthMatches(output[0].Data, output[0].Length, v6: true));
+
+        // Bos sahte (TT Mobil): 4 sifir bayt, TTL 5.
+        var zero = new PacketProcessor(NativeProfile.ZeroFake.Build(), DnsProfile.Off);
+        var p2 = BuildTcp(false, 50112, 443, 30_000, 1, 0x18, 128, hello);
+        zero.Process(p2, p2.Length, true, output, 0);
+        var z = IpPacket.Parse(output[0].Data, output[0].Length);
+        Check("Bos sahte: 4 sifir bayt, TTL 5",
+            output.Count == 2 && z.PayloadLength == 4 && output[0].Data.AsSpan(z.PayloadOffset).IndexOfAnyExcept((byte)0) < 0 && z.Ttl == 5);
+
+        var httpReq = Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost: " + BlockedHost + "\r\n\r\n");
+        var ph = BuildTcp(false, 50113, 80, 1, 1, 0x18, 128, httpReq);
+        zero.Process(ph, ph.Length, true, output, 0);
+        Check("Bos sahte: HTTP'de de sifir bayt",
+            !Contains(output[0].Data, "Host:") && IpPacket.Parse(output[0].Data, output[0].Length).PayloadLength == 4);
+
+        // Bolunmus sahte (Vodafone): sahte istek 2 parca TTL 5, gercek istek degismez.
+        var sf = new PacketProcessor(NativeProfile.SplitFakeTtl5.Build(), DnsProfile.Off);
+        var p3 = BuildTcp(false, 50114, 443, 40_000, 1, 0x18, 128, hello);
+        sf.Process(p3, p3.Length, true, output, 0);
+        Check("Bolunmus sahte: 2 sahte + orijinal", output.Count == 3 && output[2].Data == p3, $"{output.Count}");
+        if (output.Count == 3)
+        {
+            var a = IpPacket.Parse(output[0].Data, output[0].Length);
+            var b = IpPacket.Parse(output[1].Data, output[1].Length);
+            Check("Bolunmus sahte: SEQ ve boylar",
+                a.TcpSeq == 40_000 && a.PayloadLength == 2 && b.TcpSeq == 40_002 && b.PayloadLength == FakePackets.TlsClientHello.Length - 2);
+            Check("Bolunmus sahte: TTL 5", a.Ttl == 5 && b.Ttl == 5);
+            Check("Bolunmus sahte: birlesince sahte ClientHello",
+                Reassemble(output.Take(2).ToList(), 40_000).AsSpan().SequenceEqual(FakePackets.TlsClientHello));
+        }
+
+        // Tekrar sayisi.
+        var rep = new PacketProcessor(new NativeDpiConfig { AutoTtl = false, SplitTls = false, FakeRepeats = 3 }, DnsProfile.Off);
+        var p4 = BuildTcp(false, 50115, 443, 1, 1, 0x18, 128, hello);
+        rep.Process(p4, p4.Length, true, output, 0);
+        Check("Tekrar 3: 3 sahte + orijinal",
+            output.Count == 4 && output.Take(3).All(o => Contains(o.Data, FakePackets.FakeHost)), $"{output.Count}");
+
+        var repClamp = new PacketProcessor(new NativeDpiConfig { AutoTtl = false, SplitTls = false, FakeRepeats = 99 }, DnsProfile.Off);
+        repClamp.Process(p4, p4.Length, true, output, 0);
+        Check("Tekrar 99 -> 10'a sinirlanir", output.Count == 11, $"{output.Count}");
+
+        // Sahte TTL 4 (Turk Telekom alternatifi).
+        var t4 = new PacketProcessor(NativeProfile.FakeTtl4.Build(), DnsProfile.Off);
+        var p5 = BuildTcp(false, 50116, 443, 1, 1, 0x18, 128, hello);
+        t4.Process(p5, p5.Length, true, output, 0);
+        Check("Sahte TTL 4: TTL 4 sahte + degismemis orijinal",
+            output.Count == 2 && IpPacket.Parse(output[0].Data, output[0].Length).Ttl == 4 && output[1].Data == p5);
+    }
+
+    private static void EngineContinuation(bool v6)
+    {
+        var tag = v6 ? "v6" : "v4";
+        var output = new List<OutPacket>();
+
+        // Chromium ML-KEM istegi gibi ~1.8 KB; SNI uzantisi sonda -> ikinci TCP paketinde.
+        var hello = FakePackets.BuildClientHello(BlockedHost, 1800, sniLast: true);
+        const int mss = 1440;
+        var sniAt = hello.AsSpan().IndexOf(Encoding.ASCII.GetBytes(BlockedHost));
+        Check($"{tag} test verisi: SNI ikinci pakette", sniAt > mss, $"{sniAt}");
+
+        var proc = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+        var s1 = BuildTcp(v6, 50200, 443, 400_000, 7, 0x10, 128, hello[..mss]);
+        var s2 = BuildTcp(v6, 50200, 443, 400_000 + mss, 7, 0x18, 128, hello[mss..]);
+
+        Check($"{tag} ilk paket: Replace", proc.Process(s1, s1.Length, true, output, 0) == PacketVerdict.Replace);
+        var sent = new List<OutPacket>(output);
+        Check($"{tag} ilk paket: sahte paket gitti", sent.Any(o => Contains(o.Data, FakePackets.FakeHost)));
+
+        Check($"{tag} devam paketi: Replace", proc.Process(s2, s2.Length, true, output, 5) == PacketVerdict.Replace);
+        Check($"{tag} devam paketi: 2 parca", output.Count == 2, $"{output.Count}");
+        Check($"{tag} devam parcalari orijinalden buyuk degil", output.All(o => o.Length <= s2.Length));
+        sent.AddRange(output);
+
+        var real = sent.Where(o => !Contains(o.Data, FakePackets.FakeHost)).ToList();
+        Check($"{tag} hicbir pakette tam SNI yok", real.All(o => !Contains(o.Data, BlockedHost)));
+        Check($"{tag} sunucu orijinal istegi alir", ReceiverView(real, 400_000).AsSpan().SequenceEqual(hello));
+        Check($"{tag} sayaclar", proc.Stats is { HelloContinuations: 1, ContinuationSplits: 1, HellosWithoutSni: 1 }, proc.Stats.ToString());
+
+        // Ayni devam paketi ikinci kez (yeniden gonderim) -> dokunulmaz.
+        Check($"{tag} tekrar gelen devam paketi Pass", proc.Process(s2, s2.Length, true, output, 10) == PacketVerdict.Pass);
+
+        // SEQ uymayan veri -> dokunulmaz.
+        var p2 = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+        p2.Process(s1, s1.Length, true, output, 0);
+        var wrong = BuildTcp(v6, 50200, 443, 400_000 + mss + 100, 7, 0x18, 128, hello[mss..]);
+        Check($"{tag} SEQ uymayan devam Pass", p2.Process(wrong, wrong.Length, true, output, 5) == PacketVerdict.Pass);
+
+        // Suresi dolmus kayit -> dokunulmaz.
+        var p3 = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+        p3.Process(s1, s1.Length, true, output, 0);
+        Check($"{tag} eski kayit Pass", p3.Process(s2, s2.Length, true, output, 60_000) == PacketVerdict.Pass);
+
+        // SNI ilk pakette tamamen gorunuyorsa devam beklenmez.
+        var early = FakePackets.BuildClientHello(BlockedHost, 1800);
+        var p4 = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+        var e1 = BuildTcp(v6, 50201, 443, 1, 7, 0x10, 128, early[..mss]);
+        var e2 = BuildTcp(v6, 50201, 443, 1 + mss, 7, 0x18, 128, early[mss..]);
+        p4.Process(e1, e1.Length, true, output, 0);
+        Check($"{tag} SNI ilk pakette: devam Pass", p4.Process(e2, e2.Length, true, output, 5) == PacketVerdict.Pass);
+
+        // Uc pakete yayilan istek: ad son pakette bolunur.
+        var big = FakePackets.BuildClientHello(BlockedHost, 3000, sniLast: true);
+        var p5 = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+        var b1 = BuildTcp(v6, 50202, 443, 5_000, 7, 0x10, 128, big[..1200]);
+        var b2 = BuildTcp(v6, 50202, 443, 6_200, 7, 0x10, 128, big[1200..2400]);
+        var b3 = BuildTcp(v6, 50202, 443, 7_400, 7, 0x18, 128, big[2400..]);
+        p5.Process(b1, b1.Length, true, output, 0);
+        var bigSent = output.Where(o => !Contains(o.Data, FakePackets.FakeHost)).ToList();
+        Check($"{tag} 3 paket: orta paket Pass", p5.Process(b2, b2.Length, true, output, 1) == PacketVerdict.Pass);
+        bigSent.Add(new OutPacket(b2, b2.Length, false, false));
+        Check($"{tag} 3 paket: son paket bolunur",
+            p5.Process(b3, b3.Length, true, output, 2) == PacketVerdict.Replace && output.Count == 2, $"{output.Count}");
+        bigSent.AddRange(output);
+        Check($"{tag} 3 paket: sunucu orijinali alir", ReceiverView(bigSent, 5_000).AsSpan().SequenceEqual(big));
+        Check($"{tag} 3 paket: tam SNI yok", bigSent.All(o => !Contains(o.Data, BlockedHost)));
+
+        // Ters sira (SNI bolmesi kapali): devam paketi hic izlenmez.
+        var dis = new PacketProcessor(NativeProfile.Disorder.Build(), DnsProfile.Off);
+        dis.Process(s1, s1.Length, true, output, 0);
+        Check($"{tag} Ters sira: devam Pass", dis.Process(s2, s2.Length, true, output, 5) == PacketVerdict.Pass);
+    }
+
+    private static void EngineVoice(bool v6)
+    {
+        var tag = v6 ? "v6" : "v4";
+        var output = new List<OutPacket>();
+        var proc = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Yandex);
+
+        var disc = BuildUdp(v6, 50300, 50004, DiscordDiscovery(0x0000BEEF));
+        var original = (byte[])disc.Clone();
+        Check($"{tag} IP Discovery: Replace", proc.Process(disc, disc.Length, true, output, 0) == PacketVerdict.Replace);
+        Check($"{tag} IP Discovery: 6 sahte + gercek", output.Count == 7, $"{output.Count}");
+        if (output.Count == 7)
+        {
+            var fakes = output.Take(6).Select(o => (o, ip: IpPacket.Parse(o.Data, o.Length))).ToList();
+            Check($"{tag} sahte UDP: 64 sifir bayt",
+                fakes.All(f => f.ip.Valid && f.ip.PayloadLength == 64 && f.o.Data.AsSpan(f.ip.PayloadOffset).IndexOfAnyExcept((byte)0) < 0));
+            Check($"{tag} sahte UDP: ayni portlar", fakes.All(f => f.ip.SrcPort == 50300 && f.ip.DstPort == 50004));
+            Check($"{tag} sahte UDP: UDP uzunlugu 72",
+                fakes.All(f => BinaryPrimitives.ReadUInt16BigEndian(f.o.Data.AsSpan(f.ip.L4Offset + 4)) == 72));
+            Check($"{tag} sahte UDP: IP uzunlugu", fakes.All(f => IpLengthMatches(f.o.Data, f.o.Length, v6)));
+            Check($"{tag} sahte UDP: TTL degismez", fakes.All(f => f.ip.Ttl == 64));
+            Check($"{tag} gercek paket en son ve degismeden",
+                output[6].Data == disc && !output[6].Recalc && disc.AsSpan().SequenceEqual(original));
+        }
+
+        var stun = BuildUdp(v6, 50301, 19302, StunBindingRequest());
+        Check($"{tag} STUN: Replace (6 sahte + gercek)",
+            proc.Process(stun, stun.Length, true, output, 0) == PacketVerdict.Replace && output.Count == 7);
+
+        var stun2 = BuildUdp(v6, 50302, 3478, StunBindingRequest(attributeBytes: 8));
+        Check($"{tag} STUN (ozellikli): Replace", proc.Process(stun2, stun2.Length, true, output, 0) == PacketVerdict.Replace);
+
+        var badLen = StunBindingRequest();
+        badLen[3] = 4; // uzunluk alani paketle tutarsiz
+        var bl = BuildUdp(v6, 50303, 3478, badLen);
+        Check($"{tag} tutarsiz STUN Pass", proc.Process(bl, bl.Length, true, output, 0) == PacketVerdict.Pass);
+
+        var rtp = new byte[74];
+        rtp[0] = 0x80;
+        rtp[1] = 0x78;
+        var rp = BuildUdp(v6, 50300, 50004, rtp);
+        Check($"{tag} ses verisi (RTP) Pass", proc.Process(rp, rp.Length, true, output, 0) == PacketVerdict.Pass);
+
+        var filled = DiscordDiscovery(1);
+        filled[20] = 0x31; // adres alani dolu -> istek degil
+        var fp = BuildUdp(v6, 50300, 50004, filled);
+        Check($"{tag} adres alani dolu 74 bayt Pass", proc.Process(fp, fp.Length, true, output, 0) == PacketVerdict.Pass);
+
+        Check($"{tag} gelen STUN Pass", proc.Process(stun, stun.Length, outbound: false, output, 0) == PacketVerdict.Pass);
+
+        var off = new PacketProcessor(new NativeDpiConfig { VoiceFake = false }, DnsProfile.Off);
+        Check($"{tag} ses kapali: Pass", off.Process(disc, disc.Length, true, output, 0) == PacketVerdict.Pass);
+
+        var two = new PacketProcessor(new NativeDpiConfig { VoiceFakeRepeats = 2 }, DnsProfile.Off);
+        two.Process(disc, disc.Length, true, output, 0);
+        Check($"{tag} tekrar 2: 2 sahte + gercek", output.Count == 3, $"{output.Count}");
+
+        // DNS yonlendirmesi ses destegiyle bozulmaz.
+        var query = new byte[29];
+        query[2] = 0x01;
+        var q = BuildUdp(v6, 53010, 53, query, dstLast: 1);
+        Check($"{tag} DNS sorgusu hala yonlendirilir",
+            proc.Process(q, q.Length, true, output, 0) == PacketVerdict.Replace && IpPacket.Parse(q, q.Length).DstPort == 1253);
+
+        Check($"{tag} sayaclar", proc.Stats is { VoiceDiscoveries: 1, StunMessages: 2, VoiceFakesSent: 18 }, proc.Stats.ToString());
     }
 
     private static void EngineHttp()
@@ -417,7 +692,8 @@ internal static class SelfTest
         [
             ("TTL sabit", new NativeDpiConfig { AutoTtl = false }),
             ("HTTP+QUIC kapali", new NativeDpiConfig { FragmentHttp = false, BlockQuic = false }),
-            ("Hepsi kapali", new NativeDpiConfig { FakePacket = false, SplitTls = false, BlockQuic = false, FragmentHttp = false }),
+            ("Hepsi kapali", new NativeDpiConfig { FakePacket = false, SplitTls = false, BlockQuic = false, FragmentHttp = false, VoiceFake = false }),
+            ("Hepsi acik", new NativeDpiConfig { FakeWrongChecksum = true, FakeWrongSeq = true, FakeMd5Sig = true, SplitFake = true, SeqOverlap = 1 }),
         ]);
 
         foreach (var (name, cfg) in configs)
@@ -443,10 +719,120 @@ internal static class SelfTest
             {
                 var addr = new WinDivertAddress { Outbound = true };
                 NativeDpiService.PrepareForSend(o, ref addr);
-                var valid = TcpChecksumValid(o.Data, o.Length);
+                var valid = L4ChecksumValid(o.Data, o.Length);
                 Check($"{tag} paket {i}: saglama {(o.CorruptTcpChecksum ? "bozuk" : "gecerli")}",
                     valid != o.CorruptTcpChecksum);
             }
+
+            // MD5 secenekli sahte, bolunmus sahte, ortusmeli parcalar ve sahte UDP de gecerli saglamayla gitmeli.
+            var mixed = new PacketProcessor(
+                new NativeDpiConfig { AutoTtl = false, FakeMd5Sig = true, SplitFake = true, SeqOverlap = 1 }, DnsProfile.Off);
+            var hp = BuildTcp(v6, 50041, 443, 5000, 6000, 0x18, 128, FakePackets.BuildClientHello(BlockedHost, 500));
+            mixed.Process(hp, hp.Length, true, output, 0);
+            var mixedOk = output.Count > 0 && output.All(o =>
+            {
+                var addr = new WinDivertAddress { Outbound = true };
+                NativeDpiService.PrepareForSend(o, ref addr);
+                return !o.Recalc || L4ChecksumValid(o.Data, o.Length);
+            });
+            Check($"{tag} MD5 / bolunmus sahte / ortusme saglamalari gecerli", mixedOk, $"{output.Count} paket");
+
+            var voice = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Off);
+            var disc = BuildUdp(v6, 50042, 50004, DiscordDiscovery(0x11223344));
+            voice.Process(disc, disc.Length, true, output, 0);
+            var udpOk = output.Count == 7 && output.Take(6).All(o =>
+            {
+                var addr = new WinDivertAddress { Outbound = true };
+                NativeDpiService.PrepareForSend(o, ref addr);
+                return L4ChecksumValid(o.Data, o.Length);
+            });
+            Check($"{tag} sahte UDP saglamalari gecerli", udpOk, $"{output.Count} paket");
+        }
+    }
+
+    /// <summary>
+    /// Filtre metni gercek paketlerle eslesiyor mu? WinDivertHelperEvalFilter surucuye gitmeden
+    /// kullanici modunda degerlendirir: yakalanmasi gerekenler yakalanmali, toplu veri akisi,
+    /// ses verisi ve yerel ag trafigi yakalanmamali.
+    /// </summary>
+    private static void WinDivertFilterMatches()
+    {
+        var error = GoodbyeDpiService.ValidateRuntime(out var dir);
+        if (error is not null || dir is null)
+        {
+            Check("Runtime klasoru", false, error);
+            return;
+        }
+
+        WinDivert.EnsureLoaded(dir);
+
+        static bool Eval(string filter, byte[] packet, bool outbound, bool v6)
+        {
+            var addr = new WinDivertAddress { Outbound = outbound, IsIPv6 = v6 };
+            return WinDivert.WinDivertHelperEvalFilter(filter, packet, (uint)packet.Length, ref addr);
+        }
+
+        foreach (var v6 in new[] { false, true })
+        {
+            var tag = v6 ? "v6" : "v4";
+            var def = new PacketProcessor(NativeProfile.Default.Build(), DnsProfile.Yandex).BuildFilter();
+
+            var hello = BuildTcp(v6, 50500, 443, 1, 1, 0x18, 128, FakePackets.BuildClientHello(BlockedHost, 1400, sniLast: true));
+            Check($"{tag} ClientHello yakalanir", Eval(def, hello, true, v6));
+
+            byte[] lan = v6 ? [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x50] : [192, 168, 0, 50];
+            var lanHello = BuildTcp(v6, 50501, 443, 1, 1, 0x18, 128, FakePackets.BuildClientHello(BlockedHost, 600), dstOverride: lan);
+            Check($"{tag} yerel aga ClientHello yakalanmaz", !Eval(def, lanHello, true, v6));
+
+            var cont = BuildTcp(v6, 50500, 443, 1461, 1, 0x18, 128, Enumerable.Repeat((byte)0x7A, 340).ToArray());
+            Check($"{tag} kucuk devam paketi yakalanir", Eval(def, cont, true, v6));
+
+            var bulk = BuildTcp(v6, 50502, 443, 9, 1, 0x10, 128, Enumerable.Repeat((byte)0x7A, 1440).ToArray());
+            Check($"{tag} MSS boyutlu yukleme yakalanmaz", !Eval(def, bulk, true, v6));
+
+            var ack = BuildTcp(v6, 50502, 443, 9, 1, 0x10, 128, []);
+            Check($"{tag} bos ACK yakalanmaz", !Eval(def, ack, true, v6));
+
+            var download = BuildTcp(v6, 443, 50502, 9, 1, 0x18, 128, Enumerable.Repeat((byte)0x7A, 500).ToArray(), swapAddr: true);
+            Check($"{tag} gelen veri yakalanmaz", !Eval(def, download, false, v6));
+
+            var synAck = BuildTcp(v6, 443, 50503, 1, 2, 0x12, 52, [], swapAddr: true);
+            Check($"{tag} SYN-ACK yakalanir", Eval(def, synAck, false, v6));
+
+            var http = BuildTcp(v6, 50504, 80, 1, 1, 0x18, 128, Encoding.ASCII.GetBytes("GET / HTTP/1.1\r\nHost: x\r\n\r\n"));
+            Check($"{tag} HTTP istegi yakalanir", Eval(def, http, true, v6));
+
+            var disc = BuildUdp(v6, 50505, 50004, DiscordDiscovery(0xCAFE0001));
+            Check($"{tag} Discord IP Discovery yakalanir", Eval(def, disc, true, v6));
+
+            var stun = BuildUdp(v6, 50506, 19302, StunBindingRequest());
+            Check($"{tag} STUN yakalanir", Eval(def, stun, true, v6));
+
+            var rtp = new byte[74];
+            rtp[0] = 0x80;
+            rtp[1] = 0x78;
+            Check($"{tag} ses verisi (RTP) yakalanmaz", !Eval(def, BuildUdp(v6, 50505, 50004, rtp), true, v6));
+
+            var game = BuildUdp(v6, 50507, 49152, Enumerable.Repeat((byte)0x33, 120).ToArray());
+            Check($"{tag} oyun UDP trafigi yakalanmaz", !Eval(def, game, true, v6));
+
+            var quic = new byte[1250];
+            quic[0] = 0xC3;
+            BinaryPrimitives.WriteUInt32BigEndian(quic.AsSpan(1), 1);
+            Check($"{tag} QUIC Initial yakalanir", Eval(def, BuildUdp(v6, 50508, 443, quic), true, v6));
+
+            var query = new byte[29];
+            query[2] = 0x01;
+            Check($"{tag} DNS sorgusu yakalanir", Eval(def, BuildUdp(v6, 53001, 53, query, dstLast: 1), true, v6));
+
+            // Turk Telekom (Ters sira): SNI bolmesi yok, devam paketlerini yakalamaya gerek yok.
+            var tt = new PacketProcessor(IspProfile.TurkTelekom.Recommended.Build(), DnsProfile.Yandex).BuildFilter();
+            Check($"{tag} Ters sira: ClientHello yakalanir", Eval(tt, hello, true, v6));
+            Check($"{tag} Ters sira: devam paketi yakalanmaz", !Eval(tt, cont, true, v6));
+            Check($"{tag} Ters sira: Discord ses yakalanir", Eval(tt, disc, true, v6));
+
+            var off = new PacketProcessor(new NativeDpiConfig { VoiceFake = false }, DnsProfile.Off).BuildFilter();
+            Check($"{tag} ses kapali: Discord ses yakalanmaz", !Eval(off, disc, true, v6));
         }
     }
 
@@ -503,6 +889,58 @@ internal static class SelfTest
         var legacyJson = """{"engine":0,"nativeProfile":"custom","nativeCustom":{"fakePacket":true,"ttl":3,"splitPosition":0}}""";
         var legacy = System.Text.Json.JsonSerializer.Deserialize(legacyJson, AppSettingsJsonContext.Default.AppSettings);
         Check("Eski ayar: autoTtl varsayilan acik", legacy?.NativeCustom is { AutoTtl: true, SplitSni: true, Ttl: 3, SplitPosition: 0 });
+        Check("Eski ayar: yeni alanlar varsayilan",
+            legacy?.NativeCustom is { VoiceFake: true, VoiceFakeRepeats: 6, SeqOverlap: 0, FakeRepeats: 1, FakeMd5Sig: false, FakePayload: FakePayloadKind.Tls },
+            System.Text.Json.JsonSerializer.Serialize(legacy?.NativeCustom));
+        Check("Eski ayar: saglayici Genel", legacy?.Isp == IspProfile.GeneralId, legacy?.Isp);
+
+        var ids = NativeProfile.All.Select(p => p.Id).ToList();
+        Check("Yontem kimlikleri benzersiz", ids.Distinct(StringComparer.OrdinalIgnoreCase).Count() == ids.Count);
+        Check("Her yontem kimliginden geri bulunur", NativeProfile.All.All(p => ReferenceEquals(NativeProfile.FromId(p.Id), p)));
+
+        Check("Ters sira: sahtesiz, pos 2, ters, seqovl 1",
+            NativeProfile.Disorder.Build() is { FakePacket: false, SplitTls: true, SplitPosition: 2, SplitSni: false, ReverseSplit: true, SeqOverlap: 1 });
+        Check("Sahte TTL 4: sabit TTL, bolme yok",
+            NativeProfile.FakeTtl4.Build() is { FakePacket: true, FakeTtl: true, AutoTtl: false, Ttl: 4, SplitTls: false });
+        Check("MD5: TTL'siz, md5sig", NativeProfile.Md5Sig.Build() is { FakeTtl: false, FakeMd5Sig: true, SplitTls: false });
+        Check("Bos sahte: sifir bayt, TTL 5", NativeProfile.ZeroFake.Build() is { FakePayload: FakePayloadKind.Zeros, AutoTtl: false, Ttl: 5 });
+        Check("Butun hazir yontemlerde Discord ses acik", NativeProfile.All.All(p => p.Build().VoiceFake));
+    }
+
+    private static void IspProfiles()
+    {
+        Check("Ilk saglayici Genel", IspProfile.All[0].Id == IspProfile.GeneralId);
+        Check("Bilinmeyen saglayici -> Genel", IspProfile.FromId("yok") == IspProfile.General);
+
+        var ispIds = IspProfile.All.Select(i => i.Id).ToList();
+        Check("Saglayici kimlikleri benzersiz", ispIds.Distinct(StringComparer.OrdinalIgnoreCase).Count() == ispIds.Count);
+
+        foreach (var isp in IspProfile.All)
+        {
+            Check($"{isp.Name}: en az bir yontem, Ozel yok",
+                isp.Methods.Count > 0 && isp.Methods.All(m => m.Id != NativeProfile.CustomId));
+            Check($"{isp.Name}: yontemler katalogda ve tekrarsiz",
+                isp.Methods.All(m => NativeProfile.All.Contains(m)) && isp.Methods.Distinct().Count() == isp.Methods.Count);
+            Check($"{isp.Name}: GoodbyeDPI yontemi gecerli", DpiMethod.FromId(isp.GoodbyeMethodId).Id == isp.GoodbyeMethodId);
+            Check($"{isp.Name}: DNS gecerli",
+                isp.DnsId is null ? isp.Id == IspProfile.GeneralId : DnsProfile.BuiltIn.Any(d => d.Id == isp.DnsId));
+        }
+
+        Check("Genel: onceki varsayilan yontem korunur", IspProfile.General.Recommended == NativeProfile.Default);
+        Check("Turk Telekom: onerilen Ters sira", IspProfile.TurkTelekom.Recommended == NativeProfile.Disorder);
+        Check("Turk Telekom: TTL 4 / 3 alternatifleri",
+            IspProfile.TurkTelekom.Methods.Contains(NativeProfile.FakeTtl4) && IspProfile.TurkTelekom.Methods.Contains(NativeProfile.FakeTtl3));
+        Check("Turk Telekom: DNS Yandex", IspProfile.TurkTelekom.DnsId == DnsProfile.Yandex.Id);
+        Check("Superonline: MD5 alternatifi", IspProfile.Superonline.Methods.Contains(NativeProfile.Md5Sig));
+        Check("Vodafone: bolunmus sahte", IspProfile.Vodafone.Recommended == NativeProfile.SplitFakeTtl5);
+        Check("TT Mobil: bos sahte", IspProfile.TelekomMobil.Recommended == NativeProfile.ZeroFake);
+
+        var json = """{"isp":"turktelekom","nativeProfile":"disorder","dns":"yandex"}""";
+        var loaded = System.Text.Json.JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings);
+        Check("Ayar: saglayici okunur", loaded is not null && IspProfile.FromId(loaded.Isp) == IspProfile.TurkTelekom);
+
+        var written = System.Text.Json.JsonSerializer.Serialize(new AppSettings { Isp = "superonline" }, AppSettingsJsonContext.Default.AppSettings);
+        Check("Ayar: saglayici yazilir", written.Contains("\"isp\": \"superonline\""), written);
     }
 
     private static void VersionParsing()
@@ -547,11 +985,85 @@ internal static class SelfTest
         return result.ToArray();
     }
 
-    /// <summary>TCP saglamasini WinDivert'ten bagimsiz olarak dogrular (v4/v6).</summary>
-    private static bool TcpChecksumValid(byte[] p, int len)
+    /// <summary>
+    /// Linux sunucu gibi davranan alici: sira disi parcalari bekletir, siradaki veri gelince
+    /// ekler; zaten alinmis konumlara dusen baytlari (ortusme) atar. Teslim edilen akisi dondurur.
+    /// </summary>
+    private static byte[] ReceiverView(IReadOnlyList<OutPacket> sent, uint isn)
+    {
+        var stream = new List<byte>();
+        var queue = new List<(long Start, byte[] Bytes)>();
+
+        foreach (var o in sent)
+        {
+            var ip = IpPacket.Parse(o.Data, o.Length);
+            long start = unchecked((int)(ip.TcpSeq - isn));
+            queue.Add((start, o.Data.AsSpan(ip.PayloadOffset, ip.PayloadLength).ToArray()));
+
+            for (var progress = true; progress;)
+            {
+                progress = false;
+                for (var i = 0; i < queue.Count; i++)
+                {
+                    var (s, bytes) = queue[i];
+                    if (s + bytes.Length <= stream.Count) { queue.RemoveAt(i--); continue; }
+                    if (s > stream.Count) continue;
+
+                    stream.AddRange(bytes.Skip((int)(stream.Count - s)));
+                    queue.RemoveAt(i);
+                    progress = true;
+                    break;
+                }
+            }
+        }
+
+        return stream.ToArray();
+    }
+
+    /// <summary>Her konum icin ILK gonderilen bayti tutan (yeniden birlestiren) bir DPI'in gordugu akis.</summary>
+    private static byte[] FirstWinsView(IReadOnlyList<OutPacket> sent, uint isn)
+    {
+        var map = new Dictionary<long, byte>();
+        foreach (var o in sent)
+        {
+            var ip = IpPacket.Parse(o.Data, o.Length);
+            long start = unchecked((int)(ip.TcpSeq - isn));
+            for (var k = 0; k < ip.PayloadLength; k++)
+                map.TryAdd(start + k, o.Data[ip.PayloadOffset + k]);
+        }
+
+        var result = new List<byte>();
+        for (long i = 0; map.TryGetValue(i, out var b); i++) result.Add(b);
+        return result.ToArray();
+    }
+
+    /// <summary>Discord ses IP Discovery istegi (74 bayt).</summary>
+    private static byte[] DiscordDiscovery(uint ssrc)
+    {
+        var d = new byte[74];
+        BinaryPrimitives.WriteUInt16BigEndian(d, 0x0001);
+        BinaryPrimitives.WriteUInt16BigEndian(d.AsSpan(2), 70);
+        BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(4), ssrc);
+        return d;
+    }
+
+    /// <summary>STUN Binding istegi (RFC 5389), istege bagli bos ozellik alaniyla.</summary>
+    private static byte[] StunBindingRequest(int attributeBytes = 0)
+    {
+        var d = new byte[20 + attributeBytes];
+        BinaryPrimitives.WriteUInt16BigEndian(d, 0x0001);
+        BinaryPrimitives.WriteUInt16BigEndian(d.AsSpan(2), (ushort)attributeBytes);
+        BinaryPrimitives.WriteUInt32BigEndian(d.AsSpan(4), 0x2112A442);
+        for (var i = 8; i < 20; i++) d[i] = (byte)(i * 11);
+        return d;
+    }
+
+    /// <summary>TCP/UDP saglamasini WinDivert'ten bagimsiz olarak dogrular (v4/v6).</summary>
+    private static bool L4ChecksumValid(byte[] p, int len)
     {
         var v6 = p[0] >> 4 == 6;
         var l4 = v6 ? 40 : (p[0] & 0x0F) * 4;
+        var protocol = v6 ? p[6] : p[9];
         var tcpLen = len - l4;
 
         ulong sum = 0;
@@ -565,12 +1077,12 @@ internal static class SelfTest
         {
             AddBytes(p.AsSpan(8, 32));
             sum += (uint)tcpLen;
-            sum += 6;
+            sum += protocol;
         }
         else
         {
             AddBytes(p.AsSpan(12, 8));
-            sum += 6;
+            sum += protocol;
             sum += (uint)tcpLen;
         }
 
@@ -580,14 +1092,14 @@ internal static class SelfTest
     }
 
     private static byte[] BuildTcp(bool v6, ushort srcPort, ushort dstPort, uint seq, uint ack, byte flags, byte ttl,
-        byte[] payload, bool swapAddr = false)
+        byte[] payload, bool swapAddr = false, byte[]? dstOverride = null)
     {
         var ipHeader = v6 ? 40 : 20;
         const int tcpHeader = 20;
         var total = ipHeader + tcpHeader + payload.Length;
         var p = new byte[total];
 
-        WriteIpHeader(p, v6, protocol: 6, ttl, total, swapAddr, dstLast: 0, srcOverride: null, dstOverride: null);
+        WriteIpHeader(p, v6, protocol: 6, ttl, total, swapAddr, dstLast: 0, srcOverride: null, dstOverride: dstOverride);
 
         var l4 = ipHeader;
         BinaryPrimitives.WriteUInt16BigEndian(p.AsSpan(l4), srcPort);

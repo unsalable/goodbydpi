@@ -29,10 +29,11 @@ internal readonly record struct OutPacket(byte[] Data, int Length, bool Recalc, 
 ///
 /// GoodbyeDPI "-5 --set-ttl 5" davranisinin karsiligi:
 ///  1. ClientHello / HTTP isteginden once engelsiz siteye (www.w3.org) ait sahte
-///     istek gonderilir (dusuk TTL ve/veya bozuk saglama / gecmis SEQ ile).
+///     istek gonderilir (dusuk TTL ve/veya bozuk saglama / gecmis SEQ / MD5 ile).
 ///  2. Gercek istek 2. bayttan (ve istege bagli SNI adinin ortasindan) TCP
-///     parcalarina bolunur, parcalar ters sirada gonderilir.
+///     parcalarina bolunur, parcalar ters sirada (istege bagli ortusmeyle) gonderilir.
 ///  3. QUIC baslangic paketleri dusurulur, DNS sorgulari secilen sunucuya yonlendirilir.
+///  4. Discord ses (IP Discovery) ve STUN paketlerinden once sahte UDP paketleri gider.
 /// </summary>
 internal sealed class PacketProcessor
 {
@@ -48,6 +49,22 @@ internal sealed class PacketProcessor
     private const int TableLimit = 4096;
     private const long EntryLifetimeMs = 120_000;
 
+    /// <summary>
+    /// Buyuk ClientHello'nun devam paketi olabilecek en buyuk TCP payload'u. Toplu yukleme
+    /// (MSS boyutunda ~1440-1460 baytlik) paketleri bunun ustunde kalir ve hic yakalanmaz.
+    /// </summary>
+    internal const int MaxContinuationPayload = 1200;
+
+    private const int PendingLimit = 256;
+    private const long PendingLifetimeMs = 3_000;
+    private const int MaxTlsRecord = 16_384 + 5;
+
+    /// <summary>TCP MD5 imzasi secenegi: NOP, NOP, tur 19, uzunluk 18, 16 bayt ozet.</summary>
+    internal const int Md5OptionLength = 20;
+
+    private const uint DiscordDiscoveryHead = 0x00010046; // tur 1 (istek), uzunluk 70
+    private const uint StunMagicCookie = 0x2112A442;
+
     private readonly NativeDpiConfig _cfg;
     private readonly DnsProfile _dns;
     private readonly byte[]? _resolverV4;
@@ -58,11 +75,15 @@ internal sealed class PacketProcessor
 
     private readonly Dictionary<FlowKey, TtlRecord> _ttl = new();
     private readonly Dictionary<DnsKey, DnsMapping> _dnsMap = new();
+    private readonly Dictionary<FlowKey, PendingHello> _pending = new();
     private readonly List<int> _points = new(4);
 
     public PacketProcessor(NativeDpiConfig cfg, DnsProfile dns)
     {
         _cfg = cfg.Clone();
+        _cfg.FakeRepeats = Math.Clamp(_cfg.FakeRepeats, 1, 10);
+        _cfg.VoiceFakeRepeats = Math.Clamp(_cfg.VoiceFakeRepeats, 1, 20);
+        _cfg.SeqOverlap = Math.Clamp(_cfg.SeqOverlap, 0, 1000);
         _dns = dns;
 
         if (dns.IsActive)
@@ -74,6 +95,9 @@ internal sealed class PacketProcessor
 
     /// <summary>Sahte paketler TTL ile mi korunuyor (otomatik TTL icin SYN-ACK izlemek gerekir mi)?</summary>
     private bool UsesTtlFake => _cfg.FakePacket && (_cfg.FakeTtl || !_cfg.HasFakeProtection);
+
+    /// <summary>Buyuk ClientHello'nun ikinci paketi de SNI ortasindan bolunecek mi?</summary>
+    private bool TracksContinuation => _cfg.SplitTls && _cfg.SplitSni;
 
     // ================================================================ filtre
 
@@ -95,36 +119,56 @@ internal sealed class PacketProcessor
 
     /// <summary>
     /// Yalnizca gereken paketleri yakalayan WinDivert filtresi. Surekli veri akisi
-    /// (indirme/yukleme) hic kullanici moduna cikmaz: sadece ClientHello, HTTP istek
-    /// basi, SYN-ACK, QUIC baslangici ve DNS paketleri yakalanir.
+    /// (indirme / MSS boyutunda yukleme) hic kullanici moduna cikmaz: yalnizca ClientHello,
+    /// kucuk TLS devam paketleri, HTTP istek basi, SYN-ACK, QUIC baslangici, Discord ses /
+    /// STUN el sikismasi ve DNS paketleri yakalanir.
     /// </summary>
     public string BuildFilter()
     {
-        var clauses = new List<string>();
+        // Yerel aga gitmeyen cikis paketleri: tek bir NoLocal kosulu altinda toplanir
+        // (WinDivert filtre boyutu sinirli; her yakalama icin tekrarlamayalim).
+        var remote = new List<string>();
 
         if (_cfg.FakePacket || _cfg.SplitTls)
         {
-            clauses.Add(
-                "(outbound and tcp and tcp.DstPort == 443 and tcp.PayloadLength > 5 and " +
-                "tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03 and tcp.Payload[5] == 0x01 and " + NoLocal + ")");
+            remote.Add(
+                "(tcp and tcp.DstPort == 443 and tcp.PayloadLength > 5 and " +
+                "tcp.Payload[0] == 0x16 and tcp.Payload[1] == 0x03 and tcp.Payload[5] == 0x01)");
+        }
+
+        if (TracksContinuation)
+        {
+            remote.Add(
+                "(tcp and tcp.DstPort == 443 and tcp.PayloadLength > 0 and " +
+                $"tcp.PayloadLength <= {MaxContinuationPayload})");
         }
 
         if (_cfg.FragmentHttp && (_cfg.FakePacket || _cfg.SplitTls))
         {
-            clauses.Add(
-                "(outbound and tcp and tcp.DstPort == 80 and tcp.PayloadLength > 4 and (" +
+            remote.Add(
+                "(tcp and tcp.DstPort == 80 and tcp.PayloadLength > 4 and (" +
                 "tcp.Payload32[0] == 0x47455420 or tcp.Payload32[0] == 0x504F5354 or " +  // "GET " "POST"
                 "tcp.Payload32[0] == 0x48454144 or tcp.Payload32[0] == 0x50555420 or " +  // "HEAD" "PUT "
                 "tcp.Payload32[0] == 0x4F505449 or tcp.Payload32[0] == 0x44454C45 or " +  // "OPTI" "DELE"
-                "tcp.Payload32[0] == 0x50415443 or tcp.Payload32[0] == 0x434F4E4E) and " + // "PATC" "CONN"
-                NoLocal + ")");
+                "tcp.Payload32[0] == 0x50415443 or tcp.Payload32[0] == 0x434F4E4E))");    // "PATC" "CONN"
         }
+
+        if (_cfg.BlockQuic)
+            remote.Add("(udp and udp.DstPort == 443 and udp.PayloadLength >= 1200 and udp.Payload[0] >= 0xC0)");
+
+        if (_cfg.VoiceFake)
+        {
+            // Payload32[i] = i. 32 bitlik kelime (bayt ofseti 4*i).
+            remote.Add("(udp and udp.PayloadLength == 74 and udp.Payload32[0] == 0x00010046 and udp.Payload32[2] == 0)");
+            remote.Add("(udp and udp.PayloadLength >= 20 and udp.Payload32[1] == 0x2112A442 and udp.Payload[0] < 0x40)");
+        }
+
+        var clauses = new List<string>();
+        if (remote.Count > 0)
+            clauses.Add("(outbound and " + NoLocal + " and (" + string.Join(" or ", remote) + "))");
 
         if (UsesTtlFake && _cfg.AutoTtl)
             clauses.Add("(inbound and tcp and tcp.Syn and tcp.Ack and (tcp.SrcPort == 443 or tcp.SrcPort == 80))");
-
-        if (_cfg.BlockQuic)
-            clauses.Add("(outbound and udp and udp.DstPort == 443 and udp.PayloadLength >= 1200 and udp.Payload[0] >= 0xC0)");
 
         if (_resolverV4 is not null)
         {
@@ -168,8 +212,16 @@ internal sealed class PacketProcessor
                 return PacketVerdict.Pass;
             }
 
-            if (ip.DstPort == 443 && TlsParser.IsClientHello(packet, ip.PayloadOffset, ip.PayloadLength))
-                return HandleRequest(packet, len, ip, isTls: true, output, nowMs);
+            if (ip.DstPort == 443)
+            {
+                if (TlsParser.IsClientHello(packet, ip.PayloadOffset, ip.PayloadLength))
+                    return HandleRequest(packet, len, ip, isTls: true, output, nowMs);
+
+                if (ip.PayloadLength > 0 && _pending.Count > 0)
+                    return HandleContinuation(packet, ip, output, nowMs);
+
+                return PacketVerdict.Pass;
+            }
 
             if (ip.DstPort == 80 && _cfg.FragmentHttp && LooksLikeHttp(packet, ip))
                 return HandleRequest(packet, len, ip, isTls: false, output, nowMs);
@@ -192,6 +244,21 @@ internal sealed class PacketProcessor
                     Stats.DnsRedirected++;
                     output.Add(new OutPacket(packet, len, Recalc: true, CorruptTcpChecksum: false));
                     return PacketVerdict.Replace;
+                }
+
+                if (_cfg.VoiceFake && ip.DstPort != 53)
+                {
+                    if (IsDiscordDiscovery(packet, ip))
+                    {
+                        Stats.VoiceDiscoveries++;
+                        return HandleVoice(packet, len, ip, output);
+                    }
+
+                    if (IsStunMessage(packet, ip))
+                    {
+                        Stats.StunMessages++;
+                        return HandleVoice(packet, len, ip, output);
+                    }
                 }
             }
             else if (RewriteDnsIn(packet, ip))
@@ -219,15 +286,17 @@ internal sealed class PacketProcessor
         {
             Stats.HttpRequests++;
         }
+
         // 1) Sahte istek(ler): gercekten ONCE gider, DPI'i yanlis siteye kilitler.
         if (_cfg.FakePacket)
-            AddFakes(p, ip, isTls ? FakePackets.TlsClientHello : FakePackets.HttpRequest, output, nowMs);
+            AddFakes(p, ip, FakePayloadFor(isTls), output, nowMs);
+
+        Stats.FakesSent += output.Count;
 
         // 2) Gercek istek: bolme noktalarina gore TCP parcalarina ayrilir.
-        var fakes = output.Count;
-        Stats.FakesSent += fakes;
-
         CollectSplitPoints(p, ip, isTls);
+        if (isTls) TrackContinuation(p, ip, nowMs);
+
         if (_points.Count > 0)
         {
             AddSegments(p, ip, output);
@@ -240,6 +309,12 @@ internal sealed class PacketProcessor
         output.Add(new OutPacket(p, len, Recalc: false, CorruptTcpChecksum: false));
         return PacketVerdict.Replace;
     }
+
+    private byte[] FakePayloadFor(bool isTls) => _cfg.FakePayload switch
+    {
+        FakePayloadKind.Zeros => FakePackets.Zeros,
+        _ => isTls ? FakePackets.TlsClientHello : FakePackets.HttpRequest,
+    };
 
     private static bool LooksLikeHttp(byte[] p, in IpPacket ip)
     {
@@ -258,33 +333,78 @@ internal sealed class PacketProcessor
         {
             var ttl = ResolveFakeTtl(ip, nowMs);
             if (ttl > 0)
-                output.Add(BuildFake(p, ip, fakePayload, ttl, wrongSeq: false, corruptChecksum: false));
+                AddFake(p, ip, fakePayload, ttl, wrongSeq: false, corruptChecksum: false, _cfg.FakeMd5Sig, output);
         }
 
-        if (_cfg.FakeWrongChecksum || _cfg.FakeWrongSeq)
-            output.Add(BuildFake(p, ip, fakePayload, ttl: 0, _cfg.FakeWrongSeq, _cfg.FakeWrongChecksum));
+        // TTL'siz koruma (yanlis saglama / SEQ / yalniz MD5): TTL degismeden ayri bir sahte.
+        if (_cfg.FakeWrongChecksum || _cfg.FakeWrongSeq || (_cfg.FakeMd5Sig && !_cfg.FakeTtl))
+            AddFake(p, ip, fakePayload, ttl: 0, _cfg.FakeWrongSeq, _cfg.FakeWrongChecksum, _cfg.FakeMd5Sig, output);
     }
 
-    /// <summary>Orijinal IP+TCP basliklarini koruyup payload'u sahte istekle degistirir.</summary>
-    internal static OutPacket BuildFake(byte[] p, in IpPacket ip, byte[] fakePayload, int ttl, bool wrongSeq, bool corruptChecksum)
+    /// <summary>Tek bir sahte istegi (istenirse iki parcaya bolunmus ve tekrarli) ekler.</summary>
+    private void AddFake(byte[] p, in IpPacket ip, byte[] payload, int ttl, bool wrongSeq, bool corruptChecksum,
+        bool md5sig, List<OutPacket> output)
     {
-        var headerLen = ip.PayloadOffset;
+        OutPacket first, second = default;
+        var split = _cfg.SplitFake && payload.Length > 2;
+
+        if (split)
+        {
+            first = BuildFake(p, ip, payload.AsSpan(0, 2), 0, ttl, wrongSeq, corruptChecksum, md5sig);
+            second = BuildFake(p, ip, payload.AsSpan(2), 2, ttl, wrongSeq, corruptChecksum, md5sig);
+        }
+        else
+        {
+            first = BuildFake(p, ip, payload, 0, ttl, wrongSeq, corruptChecksum, md5sig);
+        }
+
+        // Ayni tampon tekrar gonderilebilir: saglama her gonderimde yeniden hesaplanip bozulur.
+        for (var i = 0; i < _cfg.FakeRepeats; i++)
+        {
+            output.Add(first);
+            if (split) output.Add(second);
+        }
+    }
+
+    /// <summary>
+    /// Orijinal IP+TCP basliklarini koruyup payload'u sahte icerikle degistirir.
+    /// <paramref name="seqOffset"/> sahte icerigin istek icindeki konumudur (bolunmus sahte icin).
+    /// </summary>
+    internal static OutPacket BuildFake(byte[] p, in IpPacket ip, ReadOnlySpan<byte> fakePayload, int seqOffset,
+        int ttl, bool wrongSeq, bool corruptChecksum, bool md5sig)
+    {
+        var baseHeader = ip.PayloadOffset;
+        var optLen = md5sig && ip.L4HeaderLength + Md5OptionLength <= 60 ? Md5OptionLength : 0;
+        var headerLen = baseHeader + optLen;
         var total = headerLen + fakePayload.Length;
         var buf = new byte[total];
 
-        Array.Copy(p, buf, headerLen);
-        Array.Copy(fakePayload, 0, buf, headerLen, fakePayload.Length);
+        Array.Copy(p, buf, baseHeader);
+        if (optLen > 0)
+        {
+            // NOP, NOP, MD5 imzasi (tur 19, uzunluk 18) + anlamsiz 16 baytlik ozet.
+            buf[baseHeader] = 0x01;
+            buf[baseHeader + 1] = 0x01;
+            buf[baseHeader + 2] = 19;
+            buf[baseHeader + 3] = 18;
+            for (var i = 0; i < 16; i++) buf[baseHeader + 4 + i] = (byte)(0x5B ^ (i * 37));
+            ip.SetTcpHeaderLength(buf, ip.L4HeaderLength + optLen);
+        }
+
+        fakePayload.CopyTo(buf.AsSpan(headerLen));
         ip.SetTotalLength(buf, total);
 
         if (ttl > 0) ip.SetTtl(buf, ttl);
 
+        var seq = unchecked(ip.TcpSeq + (uint)seqOffset);
         if (wrongSeq)
         {
             // GoodbyeDPI ile ayni kayma: sunucu pencere disi sayip atar, DPI yine isler.
-            ip.SetTcpSeq(buf, unchecked(ip.TcpSeq - 10000));
+            seq = unchecked(seq - 10000);
             ip.SetTcpAck(buf, unchecked(ip.TcpAck - 66000));
         }
 
+        ip.SetTcpSeq(buf, seq);
         return new OutPacket(buf, total, Recalc: true, CorruptTcpChecksum: corruptChecksum);
     }
 
@@ -358,11 +478,27 @@ internal sealed class PacketProcessor
         var count = _points.Count + 1;
         var segments = new OutPacket[count];
 
+        // Sira ortusmesi (zapret seqovl): duz bolmede ilk parcaya, ters sirada ikinci
+        // parcaya (sondan bir onceki gonderilen). Ters sirada ilk bolme konumundan kucuk
+        // olmali; yoksa sunucu ilk parcayi alinca sahte baytlari ezemez ve iptal edilir.
+        var overlap = _cfg.SeqOverlap;
+        var overlapIndex = -1;
+        if (overlap > 0)
+        {
+            if (!_cfg.ReverseSplit) overlapIndex = 0;
+            else if (count >= 2 && overlap < _points[0]) overlapIndex = 1;
+        }
+
         var start = 0;
         for (var i = 0; i < count; i++)
         {
             var end = i < _points.Count ? _points[i] : ip.PayloadLength;
-            var seg = BuildSegment(p, ip, start, end - start);
+            var length = end - start;
+
+            // Paket orijinalinden buyumesin (MTU asimi olmasin).
+            var ovl = i == overlapIndex && length + overlap <= ip.PayloadLength ? overlap : 0;
+
+            var seg = BuildSegment(p, ip, start, length, ovl);
             segments[i] = new OutPacket(seg, seg.Length, Recalc: true, CorruptTcpChecksum: false);
             start = end;
         }
@@ -374,18 +510,103 @@ internal sealed class PacketProcessor
     /// <summary>
     /// Orijinal paketin baslik(lar)ini koruyarak payload'un [payloadStart, +count)
     /// dilimini iceren yeni bir IP+TCP paketi olusturur. SEQ, dilim ofseti kadar artar.
+    /// <paramref name="overlap"/> &gt; 0 ise dilimin basina o kadar sifir bayt eklenir ve
+    /// SEQ ayni miktarda geri cekilir (sira ortusmesi).
     /// </summary>
-    internal static byte[] BuildSegment(byte[] src, in IpPacket ip, int payloadStart, int count)
+    internal static byte[] BuildSegment(byte[] src, in IpPacket ip, int payloadStart, int count, int overlap = 0)
     {
         var headerLen = ip.PayloadOffset;
-        var seg = new byte[headerLen + count];
+        var seg = new byte[headerLen + overlap + count];
 
         Array.Copy(src, 0, seg, 0, headerLen);
-        Array.Copy(src, ip.PayloadOffset + payloadStart, seg, headerLen, count);
+        Array.Copy(src, ip.PayloadOffset + payloadStart, seg, headerLen + overlap, count);
 
         ip.SetTotalLength(seg, seg.Length);
-        ip.SetTcpSeq(seg, unchecked(ip.TcpSeq + (uint)payloadStart));
+        ip.SetTcpSeq(seg, unchecked(ip.TcpSeq + (uint)payloadStart - (uint)overlap));
         return seg;
+    }
+
+    // ------------------------------------------- cok paketli ClientHello (ML-KEM)
+
+    /// <summary>
+    /// ClientHello kaydi bu pakete sigmiyorsa (Chromium'un ~1.8 KB'lik ML-KEM istegi)
+    /// devam paketini beklemek uzere akisi kaydeder. Paket bekletilmez: ilk parca hemen
+    /// gider, devam paketi geldiginde SNI oradaysa o da ortasindan bolunur.
+    /// </summary>
+    private void TrackContinuation(byte[] p, in IpPacket ip, long nowMs)
+    {
+        if (!TracksContinuation) return;
+
+        var key = FlowKey.Outbound(ip);
+        var n = ip.PayloadLength;
+        var recordEnd = 5 + BinaryPrimitives.ReadUInt16BigEndian(p.AsSpan(ip.PayloadOffset + 3));
+
+        // Ad bu pakette tamamen gorunuyorsa devam paketinde bolunecek bir sey yok.
+        var nameVisible = TlsParser.TryFindSni(p, ip.PayloadOffset, n, out var nameOffset, out var nameLength) &&
+                          nameOffset + nameLength < n;
+
+        if (recordEnd <= n || recordEnd > MaxTlsRecord || nameVisible)
+        {
+            _pending.Remove(key);
+            return;
+        }
+
+        if (_pending.Count >= PendingLimit) Prune(_pending, nowMs, h => h.Tick, PendingLifetimeMs, PendingLimit);
+
+        var data = new byte[recordEnd];
+        Array.Copy(p, ip.PayloadOffset, data, 0, n);
+        _pending[key] = new PendingHello(unchecked(ip.TcpSeq + (uint)n), data, n, nowMs);
+    }
+
+    private PacketVerdict HandleContinuation(byte[] p, in IpPacket ip, List<OutPacket> output, long nowMs)
+    {
+        var key = FlowKey.Outbound(ip);
+        if (!_pending.TryGetValue(key, out var hello)) return PacketVerdict.Pass;
+
+        if (ip.TcpSeq != hello.NextSeq || nowMs - hello.Tick > PendingLifetimeMs)
+        {
+            // Siradaki paket degil (yeniden gonderim / baska veri) ya da cok eski: birak.
+            _pending.Remove(key);
+            return PacketVerdict.Pass;
+        }
+
+        Stats.HelloContinuations++;
+
+        var n = ip.PayloadLength;
+        var headLen = hello.Length;
+        var take = Math.Min(n, hello.Data.Length - headLen);
+        Array.Copy(p, ip.PayloadOffset, hello.Data, headLen, take);
+        hello.Length += take;
+        hello.NextSeq = unchecked(hello.NextSeq + (uint)n);
+
+        if (hello.Length >= hello.Data.Length) _pending.Remove(key);
+
+        if (!TlsParser.TryFindSni(hello.Data, 0, hello.Length, out var nameOffset, out var nameLength) || nameLength < 2)
+            return PacketVerdict.Pass;
+
+        // Ad bu pakette baslamiyorsa ve ortasi da burada degilse (onceki pakette bolundu) dokunma.
+        var cut = nameOffset + nameLength / 2 - headLen;
+        if (cut <= 0 || cut >= n) return PacketVerdict.Pass;
+
+        Stats.ContinuationSplits++;
+
+        var a = BuildSegment(p, ip, 0, cut);
+        var b = BuildSegment(p, ip, cut, n - cut);
+        var first = new OutPacket(a, a.Length, Recalc: true, CorruptTcpChecksum: false);
+        var second = new OutPacket(b, b.Length, Recalc: true, CorruptTcpChecksum: false);
+
+        if (_cfg.ReverseSplit)
+        {
+            output.Add(second);
+            output.Add(first);
+        }
+        else
+        {
+            output.Add(first);
+            output.Add(second);
+        }
+
+        return PacketVerdict.Replace;
     }
 
     // ------------------------------------------------------------ QUIC
@@ -396,6 +617,61 @@ internal sealed class PacketProcessor
         if (ip.PayloadLength < 1200) return false;
         var off = ip.PayloadOffset;
         return (p[off] & 0xC0) == 0xC0 && BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(off + 1)) != 0;
+    }
+
+    // ------------------------------------------------- Discord ses / STUN
+
+    /// <summary>
+    /// Discord ses sunucusuna giden IP Discovery istegi: 74 bayt, tur 0x0001, uzunluk 70,
+    /// SSRC ve ardindan sifirlarla dolu adres alani.
+    /// https://discord.com/developers/docs/topics/voice-connections#ip-discovery
+    /// </summary>
+    internal static bool IsDiscordDiscovery(byte[] p, in IpPacket ip)
+    {
+        if (ip.PayloadLength != 74) return false;
+        var off = ip.PayloadOffset;
+        return BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(off)) == DiscordDiscoveryHead &&
+               p.AsSpan(off + 8, 64).IndexOfAnyExcept((byte)0) < 0;
+    }
+
+    /// <summary>STUN mesaji (RFC 5389): ilk iki bit 0, sihirli cerez 0x2112A442, uzunluk tutarli.</summary>
+    internal static bool IsStunMessage(byte[] p, in IpPacket ip)
+    {
+        if (ip.PayloadLength < 20) return false;
+        var off = ip.PayloadOffset;
+        if (p[off] >= 0x40 || BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(off + 4)) != StunMagicCookie) return false;
+
+        var messageLength = BinaryPrimitives.ReadUInt16BigEndian(p.AsSpan(off + 2));
+        return messageLength % 4 == 0 && messageLength + 20 == ip.PayloadLength;
+    }
+
+    /// <summary>
+    /// Ses el sikismasindan once sahte UDP paketleri gonderir (zapret "--dpi-desync=fake
+    /// --dpi-desync-repeats=6"). DPI akisin ilk paketini taniyamaz ve incelemeyi birakir;
+    /// sunucu ise gecersiz icerigi yok sayar. Gercek paket en son, degismeden gider.
+    /// </summary>
+    private PacketVerdict HandleVoice(byte[] p, int len, in IpPacket ip, List<OutPacket> output)
+    {
+        var fake = BuildUdpFake(p, ip, FakePackets.UdpZeros);
+        for (var i = 0; i < _cfg.VoiceFakeRepeats; i++) output.Add(fake);
+
+        Stats.VoiceFakesSent += _cfg.VoiceFakeRepeats;
+        output.Add(new OutPacket(p, len, Recalc: false, CorruptTcpChecksum: false));
+        return PacketVerdict.Replace;
+    }
+
+    internal static OutPacket BuildUdpFake(byte[] p, in IpPacket ip, ReadOnlySpan<byte> payload)
+    {
+        var headerLen = ip.PayloadOffset;
+        var total = headerLen + payload.Length;
+        var buf = new byte[total];
+
+        Array.Copy(p, buf, headerLen);
+        payload.CopyTo(buf.AsSpan(headerLen));
+        ip.SetTotalLength(buf, total);
+        ip.SetUdpLength(buf, total - ip.L4Offset);
+
+        return new OutPacket(buf, total, Recalc: true, CorruptTcpChecksum: false);
     }
 
     // ------------------------------------------------------ DNS yonlendirme
@@ -448,16 +724,17 @@ internal sealed class PacketProcessor
 
     // ------------------------------------------------------------ yardimci
 
-    private static void Prune<TKey, TValue>(Dictionary<TKey, TValue> table, long nowMs, Func<TValue, long> tick)
+    private static void Prune<TKey, TValue>(Dictionary<TKey, TValue> table, long nowMs, Func<TValue, long> tick,
+        long lifetimeMs = EntryLifetimeMs, int limit = TableLimit)
         where TKey : notnull
     {
         foreach (var (key, value) in table)
         {
-            if (nowMs - tick(value) > EntryLifetimeMs) table.Remove(key);
+            if (nowMs - tick(value) > lifetimeMs) table.Remove(key);
         }
 
         // Hepsi tazeyse (asiri yuk) tabloyu sifirla; bellek sinirsiz buyumesin.
-        if (table.Count >= TableLimit) table.Clear();
+        if (table.Count >= limit) table.Clear();
     }
 
     private static bool TryParse(string? text, AddressFamily family, out byte[] bytes)
@@ -474,15 +751,22 @@ internal sealed class PacketProcessor
     {
         public long ClientHellos;
         public long HellosWithoutSni;
+        public long HelloContinuations;
+        public long ContinuationSplits;
         public long HttpRequests;
         public long FakesSent;
         public long QuicDropped;
+        public long VoiceDiscoveries;
+        public long StunMessages;
+        public long VoiceFakesSent;
         public long DnsRedirected;
         public long DnsAnswered;
 
         public override string ToString() =>
-            $"ClientHello {ClientHellos} (SNI'siz {HellosWithoutSni}), HTTP {HttpRequests}, sahte {FakesSent}, " +
-            $"QUIC dusen {QuicDropped}, DNS yonlenen {DnsRedirected} / donen {DnsAnswered}";
+            $"ClientHello {ClientHellos} (SNI'siz {HellosWithoutSni}, devam {HelloContinuations}, devamda bolme {ContinuationSplits}), " +
+            $"HTTP {HttpRequests}, sahte {FakesSent}, QUIC dusen {QuicDropped}, " +
+            $"Discord ses {VoiceDiscoveries} / STUN {StunMessages} (sahte UDP {VoiceFakesSent}), " +
+            $"DNS yonlenen {DnsRedirected} / donen {DnsAnswered}";
     }
 
     private readonly record struct FlowKey(ulong AddrHi, ulong AddrLo, ushort RemotePort, ushort LocalPort)
@@ -505,4 +789,13 @@ internal sealed class PacketProcessor
     private readonly record struct DnsKey(bool V6, ushort ClientPort, ushort TxId);
 
     private readonly record struct DnsMapping(byte[] OrigAddr, ushort OrigPort, long Tick);
+
+    /// <summary>Devam paketi beklenen ClientHello: ilk paketlerin verisi ve beklenen SEQ.</summary>
+    private sealed class PendingHello(uint nextSeq, byte[] data, int length, long tick)
+    {
+        public uint NextSeq = nextSeq;
+        public readonly byte[] Data = data;
+        public int Length = length;
+        public readonly long Tick = tick;
+    }
 }

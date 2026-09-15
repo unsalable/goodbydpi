@@ -163,6 +163,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged(nameof(ShowNativeSettings));
             OnPropertyChanged(nameof(ShowCustomNative));
             OnPropertyChanged(nameof(ProfileSummary));
+            RefreshConnectedDetail();
             RestartIfRunning();
         }
     }
@@ -178,8 +179,41 @@ public sealed class MainViewModel : ObservableObject
     // ------------------------------------------------------------ yontem / profil
 
     public IReadOnlyList<DpiMethod> Methods => DpiMethod.All;
-    public IReadOnlyList<NativeProfile> NativeProfiles => NativeProfile.All;
     public IReadOnlyList<DnsProfile> DnsProfiles => _dnsProfiles;
+    public IReadOnlyList<IspProfile> Isps => IspProfile.All;
+
+    /// <summary>Secili saglayicinin onerilen yontemleri (ilki onerilen) + "Ozel".</summary>
+    public IReadOnlyList<NativeProfile> NativeProfiles => [.. SelectedIsp.Methods, NativeProfile.Custom];
+
+    public IspProfile SelectedIsp
+    {
+        get => IspProfile.FromId(_settings.Current.Isp);
+        set
+        {
+            if (value is null || value.Id == SelectedIsp.Id) return;
+
+            // Saglayici secilince onun onerdigi yontem, GoodbyeDPI yontemi ve DNS birlikte
+            // uygulanir; kullanici sonra istedigini degistirebilir. Kendi girdigi ozel DNS'e
+            // dokunulmaz. Tek seferde kaydedip bir kez yeniden baslatiyoruz.
+            _settings.Current.Isp = value.Id;
+            _settings.Current.NativeProfile = value.Recommended.Id;
+            _settings.Current.Method = value.GoodbyeMethodId;
+            if (value.DnsId is not null && _settings.Current.Dns != DnsProfile.CustomId)
+                _settings.Current.Dns = value.DnsId;
+            _settings.Save();
+
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(NativeProfiles));
+            OnPropertyChanged(nameof(SelectedNativeProfile));
+            OnPropertyChanged(nameof(ShowCustomNative));
+            OnPropertyChanged(nameof(SelectedMethod));
+            OnPropertyChanged(nameof(SelectedDns));
+            OnPropertyChanged(nameof(ShowCustomDns));
+            OnPropertyChanged(nameof(ProfileSummary));
+            RefreshConnectedDetail();
+            RestartIfRunning();
+        }
+    }
 
     public DpiMethod SelectedMethod
     {
@@ -198,7 +232,14 @@ public sealed class MainViewModel : ObservableObject
 
     public NativeProfile SelectedNativeProfile
     {
-        get => NativeProfile.FromId(_settings.Current.NativeProfile);
+        get
+        {
+            // Listede olmayan kayitli kimlik (elle duzenlenmis dosya / kaldirilmis yontem):
+            // saglayicinin onerisine dus ki secili hap ile motorun kullandigi ayni olsun.
+            var id = _settings.Current.NativeProfile;
+            return NativeProfiles.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase))
+                   ?? SelectedIsp.Recommended;
+        }
         set
         {
             if (value is null || value.Id == _settings.Current.NativeProfile) return;
@@ -400,6 +441,56 @@ public sealed class MainViewModel : ObservableObject
         set => SetNative(() => Cfg.FragmentHttp = value, Cfg.FragmentHttp != value);
     }
 
+    public bool NativeMd5Sig
+    {
+        get => Cfg.FakeMd5Sig;
+        set => SetNative(() => Cfg.FakeMd5Sig = value, Cfg.FakeMd5Sig != value);
+    }
+
+    public bool NativeZeroFake
+    {
+        get => Cfg.FakePayload == FakePayloadKind.Zeros;
+        set
+        {
+            var kind = value ? FakePayloadKind.Zeros : FakePayloadKind.Tls;
+            SetNative(() => Cfg.FakePayload = kind, Cfg.FakePayload != kind);
+        }
+    }
+
+    public bool NativeSplitFake
+    {
+        get => Cfg.SplitFake;
+        set => SetNative(() => Cfg.SplitFake = value, Cfg.SplitFake != value);
+    }
+
+    public int NativeFakeRepeats
+    {
+        get => Cfg.FakeRepeats;
+        set
+        {
+            var clamped = Math.Clamp(value, 1, 10);
+            SetNative(() => Cfg.FakeRepeats = clamped, Cfg.FakeRepeats != clamped);
+            if (clamped != value) OnPropertyChanged();
+        }
+    }
+
+    public int NativeSeqOverlap
+    {
+        get => Cfg.SeqOverlap;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, 1000);
+            SetNative(() => Cfg.SeqOverlap = clamped, Cfg.SeqOverlap != clamped);
+            if (clamped != value) OnPropertyChanged();
+        }
+    }
+
+    public bool NativeVoiceFake
+    {
+        get => Cfg.VoiceFake;
+        set => SetNative(() => Cfg.VoiceFake = value, Cfg.VoiceFake != value);
+    }
+
     // Bagimli satirlar: ust ayar kapaliyken alt ayarlar soluk ve pasif gorunur.
 
     /// <summary>TTL satirlari yalnizca sahte paket + dusuk TTL acikken anlamli.</summary>
@@ -424,6 +515,8 @@ public sealed class MainViewModel : ObservableObject
         nameof(NativeWrongChecksum), nameof(NativeWrongSeq), nameof(NativeSplitTls),
         nameof(NativeSplitPosition), nameof(NativeSplitSni), nameof(NativeReverseSplit),
         nameof(NativeBlockQuic), nameof(NativeFragmentHttp),
+        nameof(NativeMd5Sig), nameof(NativeZeroFake), nameof(NativeSplitFake), nameof(NativeFakeRepeats),
+        nameof(NativeSeqOverlap), nameof(NativeVoiceFake),
         nameof(IsNativeTtlEditable), nameof(NativeTtlHint),
         nameof(ShowFakeProtectionHint), nameof(ShowNoTechniqueHint),
     ];
@@ -443,10 +536,10 @@ public sealed class MainViewModel : ObservableObject
         foreach (var name in NativeOptionProperties) OnPropertyChanged(name);
     }
 
-    /// <summary>Ozel profili onerilen (Varsayilan) ayarlara dondurur.</summary>
+    /// <summary>Ozel profili secili saglayicinin onerdigi yontemin ayarlarina dondurur.</summary>
     private void ResetCustomNative()
     {
-        _settings.Current.NativeCustom = new NativeDpiConfig();
+        _settings.Current.NativeCustom = SelectedIsp.Recommended.Build();
         _settings.Save();
         RaiseNativeOptions();
         if (SelectedNativeProfile.Id == NativeProfile.CustomId) RestartIfRunning();
@@ -467,14 +560,15 @@ public sealed class MainViewModel : ObservableObject
 
     public string VersionText => $"GoodbyeDPI UI {UpdateService.CurrentVersion.ToString(3)}";
 
-    /// <summary>Alt satirda gosterilen ozet: "Motor · Yontem · DNS".</summary>
+    /// <summary>Alt satirda gosterilen ozet: "Motor · Saglayici · Yontem · DNS".</summary>
     public string ProfileSummary
     {
         get
         {
             var engine = IsNativeEngine ? "Kendi motoru" : "GoodbyeDPI";
             var method = IsNativeEngine ? SelectedNativeProfile.Name : SelectedMethod.Name;
-            return $"{engine} · {method} · DNS: {SelectedDns.Name}";
+            var isp = SelectedIsp.Id == IspProfile.GeneralId ? "" : SelectedIsp.Name + " · ";
+            return $"{engine} · {isp}{method} · DNS: {SelectedDns.Name}";
         }
     }
 

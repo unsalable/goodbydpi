@@ -17,13 +17,19 @@ internal readonly struct IpPacket
     public int Protocol { get; private init; }
 
     private byte[] Buffer { get; init; }
-    private int L4Offset { get; init; }        // TCP/UDP basliginin baslangici
+
+    /// <summary>TCP/UDP basliginin paket icindeki baslangici.</summary>
+    public int L4Offset { get; private init; }
+
     private int SrcAddrOffset { get; init; }
     private int DstAddrOffset { get; init; }
     private int AddrLen { get; init; }          // 4 (v4) veya 16 (v6)
 
     public int PayloadOffset { get; private init; }
     public int PayloadLength { get; private init; }
+
+    /// <summary>TCP/UDP basligi (secenekler dahil) uzunlugu.</summary>
+    public int L4HeaderLength => PayloadOffset - L4Offset;
 
     public ushort SrcPort { get; private init; }
     public ushort DstPort { get; private init; }
@@ -196,6 +202,20 @@ internal readonly struct IpPacket
             BinaryPrimitives.WriteUInt16BigEndian(buf.AsSpan(4), (ushort)(totalLen - 40));
         else
             BinaryPrimitives.WriteUInt16BigEndian(buf.AsSpan(2), (ushort)totalLen);
+    }
+
+    /// <summary>UDP uzunluk alanini (baslik + payload) yazar.</summary>
+    public readonly void SetUdpLength(byte[] buf, int udpLen)
+    {
+        if (Protocol != ProtocolUdp) return;
+        BinaryPrimitives.WriteUInt16BigEndian(buf.AsSpan(L4Offset + 4), (ushort)udpLen);
+    }
+
+    /// <summary>TCP veri ofsetini (baslik uzunlugu, bayt) yazar; bayrak bitleri korunur.</summary>
+    public readonly void SetTcpHeaderLength(byte[] buf, int headerLen)
+    {
+        if (Protocol != ProtocolTcp) return;
+        buf[L4Offset + 12] = (byte)((headerLen / 4) << 4 | (buf[L4Offset + 12] & 0x0F));
     }
 
     public readonly void SetSrcAddr(byte[] buf, byte[] addr) => Array.Copy(addr, 0, buf, SrcAddrOffset, AddrLen);

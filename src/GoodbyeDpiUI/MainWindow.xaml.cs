@@ -71,6 +71,14 @@ public partial class MainWindow : Window
 
             if (Vm is { } vm)
             {
+                // Saglayici secimi yontem listesini, onerilen yontemi ve DNS'i birlikte degistirmeli.
+                vm.SelectedIsp = Models.IspProfile.TurkTelekom;
+                await Step("2b-turktelekom", 900);
+                log.AppendLine($"saglayici: {vm.SelectedIsp.Name}, yontem: {vm.SelectedNativeProfile.Name}, " +
+                               $"GoodbyeDPI: {vm.SelectedMethod.Name}, DNS: {vm.SelectedDns.Name}, " +
+                               $"liste: {string.Join(" | ", vm.NativeProfiles.Select(p => p.Name))}");
+                log.AppendLine($"ozet: {vm.ProfileSummary}");
+
                 vm.SelectedNativeProfile = Models.NativeProfile.Custom;
                 await Step("3-ozel", 900);
 
@@ -88,8 +96,12 @@ public partial class MainWindow : Window
                 BodyScroll.ScrollToEnd();
                 await Step("4-ozel-alt", 500);
 
-                vm.SelectedNativeProfile = Models.NativeProfile.Default;
+                vm.SelectedNativeProfile = vm.SelectedIsp.Recommended;
                 await Step("5-varsayilana-donus", 900);
+
+                vm.SelectedIsp = Models.IspProfile.General;
+                await Step("5b-genel", 700);
+                log.AppendLine($"genele donus: yontem {vm.SelectedNativeProfile.Name}, DNS {vm.SelectedDns.Name}");
             }
 
             SettingsToggle.IsChecked = false;

@@ -31,11 +31,28 @@ internal static class FakePackets
     public static readonly byte[] TlsClientHello = BuildClientHello(FakeHost, 517);
 
     /// <summary>
+    /// "Bos" sahte TCP icerigi (zapret2 blob=0x00000000): DPI akisin ilk verisini taniyamaz,
+    /// bilinmeyen protokol sayip gerisini incelemeyi birakir.
+    /// </summary>
+    public static readonly byte[] Zeros = new byte[4];
+
+    /// <summary>
+    /// Discord ses / STUN paketlerinden once giden sahte UDP icerigi (zapret varsayilani: 64 sifir).
+    /// Sunucuya ulassa bile gecersiz oldugu icin yok sayilir.
+    /// </summary>
+    public static readonly byte[] UdpZeros = new byte[64];
+
+    /// <summary>
     /// Tarayici ClientHello'suna benzeyen, DPI ayristiricilarinin sorunsuz okuyacagi
     /// iyi bicimli bir TLS 1.2/1.3 ClientHello kurar. Rastgele alanlar sabittir
     /// (deterministik); DPI icin anlamli olan yalnizca yapi ve SNI.
     /// </summary>
-    internal static byte[] BuildClientHello(string host, int targetRecordLength)
+    /// <param name="sniLast">
+    /// SNI uzantisini dolgudan sonra, en sona koy. Chromium uzanti sirasini rastgele
+    /// karistirdigi icin buyuk (ML-KEM) ClientHello'larda ad ikinci TCP paketine
+    /// dusebiliyor; testler bu durumu boyle uretir.
+    /// </param>
+    internal static byte[] BuildClientHello(string host, int targetRecordLength, bool sniLast = false)
     {
         var hostBytes = Encoding.ASCII.GetBytes(host);
 
@@ -47,7 +64,7 @@ internal static class FakePackets
         sni.Add(0x00);                           // host_name
         U16(sni, hostBytes.Length);
         sni.AddRange(hostBytes);
-        Extension(ext, 0x0000, sni);
+        if (!sniLast) Extension(ext, 0x0000, sni);
 
         Extension(ext, 0x0017, []);              // extended_master_secret
         Extension(ext, 0xFF01, [0x00]);          // renegotiation_info
@@ -93,9 +110,12 @@ internal static class FakePackets
 
         // padding uzantisi (RFC 7685) ile kaydi hedef uzunluga tamamla.
         const int fixedOverhead = 5 + 4 + 2 + 4; // kayit + handshake basligi + ext uzunlugu + padding basligi
-        var padLen = targetRecordLength - fixedOverhead - body.Count - ext.Count;
+        var sniExtLen = sniLast ? 4 + sni.Count : 0;
+        var padLen = targetRecordLength - fixedOverhead - body.Count - ext.Count - sniExtLen;
         if (padLen >= 0)
             Extension(ext, 0x0015, new byte[padLen]);
+
+        if (sniLast) Extension(ext, 0x0000, sni);
 
         U16(body, ext.Count);
         body.AddRange(ext);

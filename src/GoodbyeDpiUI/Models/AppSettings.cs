@@ -12,6 +12,10 @@ public sealed class AppSettings
     [JsonPropertyName("engine")]
     public EngineKind Engine { get; set; } = EngineKind.Native;
 
+    /// <summary>Secili internet saglayicisi (IspProfile.Id); yontem listesini ve onerileri belirler.</summary>
+    [JsonPropertyName("isp")]
+    public string Isp { get; set; } = IspProfile.GeneralId;
+
     /// <summary>Hazir goodbyedpi altyapisi icin secili yontem.</summary>
     [JsonPropertyName("method")]
     public string Method { get; set; } = DpiMethod.Default.Id;
