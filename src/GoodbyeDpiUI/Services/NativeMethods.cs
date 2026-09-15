@@ -88,6 +88,20 @@ internal static class NativeMethods
         SetWindowPos(hwnd, HwndTopmost, x, y, 0, 0, SwpNoSize | SwpNoActivate);
     }
 
+    /// <summary>Pencerenin bulundugu monitorun calisma alani (cihaz pikseli). Bulunamazsa null.</summary>
+    public static System.Windows.Rect? GetWorkAreaPixels(Window window)
+    {
+        var hwnd = GetHandle(window);
+        if (hwnd == 0) return null;
+
+        var monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == 0 || !GetMonitorInfo(monitor, ref info)) return null;
+
+        var w = info.WorkArea;
+        return new System.Windows.Rect(w.Left, w.Top, w.Right - w.Left, w.Bottom - w.Top);
+    }
+
     private static nint GetHandle(Window window) =>
         new WindowInteropHelper(window).Handle;
 
@@ -129,6 +143,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     private static extern nint MonitorFromPoint(Point point, int flags);
+
+    [DllImport("user32.dll")]
+    private static extern nint MonitorFromWindow(nint hwnd, int flags);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     [return: MarshalAs(UnmanagedType.Bool)]

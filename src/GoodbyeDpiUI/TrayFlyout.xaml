@@ -57,7 +57,7 @@
                 <Button HorizontalAlignment="Right"
                         Style="{StaticResource TitleBarButton}"
                         Click="Open_Click"
-                        ToolTip="Pencereyi ac">
+                        ToolTip="Pencereyi aç">
                     <TextBlock Text="&#xE8A7;" FontFamily="{StaticResource IconFont}" FontSize="12" />
                 </Button>
             </Grid>
@@ -77,10 +77,10 @@
                                VerticalAlignment="Center">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
-                                <Setter Property="Text" Value="Baglan" />
+                                <Setter Property="Text" Value="Bağlan" />
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                                        <Setter Property="Text" Value="Baglantiyi Kes" />
+                                        <Setter Property="Text" Value="Bağlantıyı Kes" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsConnecting}" Value="True">
                                         <Setter Property="Text" Value="Durdur" />
@@ -95,7 +95,7 @@
             <!-- ============================================== profiller -->
             <!-- Kendi motoru etkinken native profiller, degilse GoodbyeDPI yontemleri. -->
             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
-                <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
+                <TextBlock Text="YÖNTEM" FontSize="10" FontWeight="SemiBold"
                            Foreground="{DynamicResource TextMutedBrush}" Margin="0,16,0,7" />
                 <ListBox Style="{StaticResource PillList}"
                          ItemsSource="{Binding NativeProfiles}"
@@ -103,7 +103,7 @@
                          DisplayMemberPath="Name" />
             </StackPanel>
             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
-                <TextBlock Text="YONTEM (GoodbyeDPI)" FontSize="10" FontWeight="SemiBold"
+                <TextBlock Text="YÖNTEM (GoodbyeDPI)" FontSize="10" FontWeight="SemiBold"
                            Foreground="{DynamicResource TextMutedBrush}" Margin="0,16,0,7" />
                 <ListBox Style="{StaticResource PillList}"
                          ItemsSource="{Binding Methods}"
@@ -125,12 +125,12 @@
                 <Button Style="{StaticResource GhostButton}"
                         HorizontalAlignment="Left"
                         Click="Open_Click"
-                        Content="Pencereyi Goster" />
+                        Content="Pencereyi Göster" />
 
                 <Button Style="{StaticResource GhostButton}"
                         HorizontalAlignment="Right"
                         Click="Exit_Click"
-                        Content="Cikis"
+                        Content="Çıkış"
                         Tag="danger" />
             </Grid>
         </StackPanel>

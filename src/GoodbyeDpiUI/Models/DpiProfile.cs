@@ -14,26 +14,26 @@ public sealed record DpiMethod(string Id, string Name, string Description, strin
 {
     public static readonly DpiMethod Default = new(
         "default",
-        "Varsayilan",
-        "Fake packet + auto-TTL, TTL 5. Repo'nun turkey_dnsredir.cmd karsiligi.",
+        "Varsayılan",
+        "Sahte paket, TTL 5 (-5 --set-ttl 5). GoodbyeDPI-Turkey turkey_dnsredir.cmd karşılığı.",
         "-5 --set-ttl 5");
 
     public static readonly DpiMethod Ttl3 = new(
         "ttl3",
         "Alternatif 1 - TTL 3",
-        "Sadece TTL 3. Superonline alternatif 1/3.",
+        "Sadece TTL 3. Superonline için alternatif.",
         "--set-ttl 3");
 
     public static readonly DpiMethod NoTtl = new(
         "nottl",
         "Alternatif 2 - TTL yok",
-        "Fake packet, TTL ayari yok. Bazi siteler yavas aciliyorsa bunu dene.",
+        "Sahte paket, TTL ayarı yok. Bazı siteler yavaş açılıyorsa bunu dene.",
         "-5");
 
     public static readonly DpiMethod WrongChecksum = new(
         "mode9",
         "Alternatif 3 - Mod 9",
-        "Fake packet + wrong checksum + wrong seq + QUIC engelleme.",
+        "Sahte paket + yanlış sağlama + yanlış SEQ + QUIC engeli.",
         "-9");
 
     public static readonly IReadOnlyList<DpiMethod> All = new[] { Default, Ttl3, NoTtl, WrongChecksum };
@@ -68,7 +68,7 @@ public sealed record DnsProfile(
     public static readonly DnsProfile Cloudflare = new(
         "cloudflare",
         "Cloudflare",
-        "1.1.1.1:53 - hizli, ancak ISS 53. portu kaciriyorsa etkisiz kalabilir.",
+        "1.1.1.1:53 — hızlı, ancak ISS 53. portu yönlendiriyorsa etkisiz kalabilir.",
         "1.1.1.1", 53, "2606:4700:4700::1111", 53);
 
     /// <summary>
@@ -78,13 +78,13 @@ public sealed record DnsProfile(
     public static readonly DnsProfile Yandex = new(
         "yandex",
         "Yandex (1253)",
-        "77.88.8.8:1253 - ISS DNS kacirmasini asar, repo varsayilani.",
+        "77.88.8.8:1253 — standart dışı port, ISS DNS yönlendirmesini aşar.",
         "77.88.8.8", 1253, "2a02:6b8::feed:0ff", 1253);
 
     public static readonly DnsProfile Off = new(
         "off",
-        "Kapali",
-        "DNS'e dokunulmaz, yalnizca DPI atlatma yapilir.",
+        "Kapalı",
+        "DNS'e dokunulmaz, yalnızca DPI atlatma yapılır.",
         null, 0, null, 0);
 
     /// <summary>Yerlesik (kullanicinin duzenlemedigi) profiller.</summary>
@@ -98,11 +98,11 @@ public sealed record DnsProfile(
 
         var summary = v4Addr is not null
             ? $"{v4Addr}:{(v4Port <= 0 ? 53 : v4Port)}"
-            : v6Addr is not null ? $"[{v6Addr}]:{(v6Port <= 0 ? 53 : v6Port)}" : "tanimsiz";
+            : v6Addr is not null ? $"[{v6Addr}]:{(v6Port <= 0 ? 53 : v6Port)}" : "tanımsız";
 
         return new DnsProfile(
             CustomId,
-            "Ozel",
+            "Özel",
             $"Kendi DNS sunucun: {summary}",
             v4Addr,
             v4Port <= 0 ? 53 : v4Port,
@@ -126,14 +126,14 @@ public sealed record DnsProfile(
 
         if (V4Addr is not null &&
             (!IPAddress.TryParse(V4Addr, out var v4) || v4.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork))
-            return "Gecersiz IPv4 adresi.";
+            return "Geçersiz IPv4 adresi.";
 
         if (V6Addr is not null &&
             (!IPAddress.TryParse(V6Addr, out var v6) || v6.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6))
-            return "Gecersiz IPv6 adresi.";
+            return "Geçersiz IPv6 adresi.";
 
         if (V4Port is < 0 or > 65535 || V6Port is < 0 or > 65535)
-            return "Port 0-65535 araliginda olmali.";
+            return "Port 0-65535 aralığında olmalı.";
 
         return null;
     }

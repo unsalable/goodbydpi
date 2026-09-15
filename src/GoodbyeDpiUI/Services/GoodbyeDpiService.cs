@@ -62,7 +62,7 @@ public sealed class GoodbyeDpiService : IDpiBackend
         directory = dir;
 
         if (dir is null)
-            return "goodbyedpi.exe bulunamadi. Runtime klasoru uygulamanin yaninda olmali.";
+            return "goodbyedpi.exe bulunamadı. Runtime klasörü uygulamanın yanında olmalı.";
 
         string[] needed = Environment.Is64BitOperatingSystem
             ? ["goodbyedpi.exe", "WinDivert.dll", "WinDivert64.sys"]
@@ -70,7 +70,7 @@ public sealed class GoodbyeDpiService : IDpiBackend
 
         var missing = needed.Where(f => !File.Exists(Path.Combine(dir, f))).ToArray();
         if (missing.Length > 0)
-            return $"Eksik dosya: {string.Join(", ", missing)}. Antivirus silmis olabilir.";
+            return $"Eksik dosya: {string.Join(", ", missing)}. Antivirüs silmiş olabilir.";
 
         return null;
     }
@@ -91,7 +91,7 @@ public sealed class GoodbyeDpiService : IDpiBackend
         var error = ValidateRuntime(out var dir);
         if (error is not null || dir is null)
         {
-            Fail(error ?? "Runtime klasoru bulunamadi.");
+            Fail(error ?? "Runtime klasörü bulunamadı.");
             return;
         }
 
@@ -125,7 +125,7 @@ public sealed class GoodbyeDpiService : IDpiBackend
 
             if (!proc.Start())
             {
-                Fail("goodbyedpi.exe baslatilamadi.");
+                Fail("goodbyedpi.exe başlatılamadı.");
                 return;
             }
 
@@ -134,7 +134,7 @@ public sealed class GoodbyeDpiService : IDpiBackend
         }
         catch (Exception ex)
         {
-            Fail("Baslatma hatasi: " + ex.Message);
+            Fail("Başlatma hatası: " + ex.Message);
             return;
         }
 
@@ -264,9 +264,9 @@ public sealed class GoodbyeDpiService : IDpiBackend
 
         var hint = exitCode switch
         {
-            0 => "GoodbyeDPI beklenmedik sekilde kapandi.",
-            1 or -1 => "WinDivert surucusu yuklenemedi. Antivirus engelliyor olabilir.",
-            _ => $"GoodbyeDPI, {exitCode} cikis koduyla sonlandi.",
+            0 => "GoodbyeDPI beklenmedik şekilde kapandı.",
+            1 or -1 => "WinDivert sürücüsü yüklenemedi. Antivirüs engelliyor olabilir.",
+            _ => $"GoodbyeDPI, {exitCode} çıkış koduyla sonlandı.",
         };
 
         return string.IsNullOrEmpty(captured) ? hint : hint + "\n" + captured;

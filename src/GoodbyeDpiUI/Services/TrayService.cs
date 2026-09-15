@@ -93,7 +93,7 @@ public sealed class TrayService : IDisposable
         try
         {
             _icon.ShowBalloonTip(2000, "GoodbyeDPI UI",
-                "Uygulama tepside calismaya devam ediyor.", Forms.ToolTipIcon.Info);
+                "Uygulama tepside çalışmaya devam ediyor.", Forms.ToolTipIcon.Info);
         }
         catch
         {

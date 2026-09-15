@@ -24,9 +24,13 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         // Yonetici gerektirmeyen ic dogrulama: paket/TLS/DNS/surum mantigini test edip cikar.
-        if (e.Args.Any(a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase)))
+        var selfTestIndex = Array.FindIndex(e.Args, a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase));
+        if (selfTestIndex >= 0)
         {
-            Environment.Exit(SelfTest.Run());
+            var output = selfTestIndex + 1 < e.Args.Length && !e.Args[selfTestIndex + 1].StartsWith("--")
+                ? e.Args[selfTestIndex + 1]
+                : null;
+            Environment.Exit(SelfTest.Run(output));
             return;
         }
 
@@ -80,13 +84,18 @@ public partial class App : Application
 
         if (!startHidden) window.Show();
 
+#if !UITEST
         // Kullanici ayardan otomatik baslatmayi kapatmis olabilir; kayitli durumla eslesmezse duzelt.
+        // (Dogrulama derlemesi kurulu surumun gorevine dokunmamali.)
         SyncStartupTask(settings.RunAtStartup);
+#endif
 
         if (settings.AutoConnect) _ = _vm.AutoConnectAsync();
 
+#if !UITEST
         // Acilista guncelleme kontrolu (AutoUpdate acikca kapatilmadikca otomatik kurar).
         _ = _vm.CheckForUpdatesAsync();
+#endif
 
 #if UITEST
         // Yalnizca dogrulama derlemesi: tepsi tiklamasini taklit etmek zor oldugu
@@ -99,7 +108,13 @@ public partial class App : Application
 
         // Ayar panelini acik yakalayabilmek icin.
         if (e.Args.Any(a => string.Equals(a, "--settings", StringComparison.OrdinalIgnoreCase)))
-            window.OpenSettingsPanel();
+            window.OpenSettingsOnStart();
+
+        // --layoutshot <onek>: Ozel profile gecis / kaydirma / geri donus olculerini kaydeder.
+        var layoutIndex = Array.FindIndex(e.Args, a =>
+            string.Equals(a, "--layoutshot", StringComparison.OrdinalIgnoreCase));
+        if (layoutIndex >= 0 && layoutIndex + 1 < e.Args.Length)
+            window.RunLayoutShot(e.Args[layoutIndex + 1]);
 
         // --themeshot <onek>: acik + koyu temayi PNG olarak kaydeder.
         var shotIndex = Array.FindIndex(e.Args, a =>

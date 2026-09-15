@@ -28,6 +28,15 @@ internal readonly struct IpPacket
     public ushort SrcPort { get; private init; }
     public ushort DstPort { get; private init; }
     public uint TcpSeq { get; private init; }
+    public uint TcpAck { get; private init; }
+
+    /// <summary>IPv4 TTL / IPv6 Hop Limit.</summary>
+    public int Ttl { get; private init; }
+
+    /// <summary>TCP bayraklari (FIN=0x01, SYN=0x02, RST=0x04, PSH=0x08, ACK=0x10).</summary>
+    public int TcpFlags { get; private init; }
+
+    public bool IsSynAck => Protocol == ProtocolTcp && (TcpFlags & 0x12) == 0x12;
 
     private const int ProtocolTcp = 6;
     private const int ProtocolUdp = 17;
@@ -49,6 +58,9 @@ internal readonly struct IpPacket
     {
         var ihl = (p[0] & 0x0F) * 4;
         if (ihl < 20 || ihl > len) return default;
+
+        // IP parcasi (MF bayragi ya da sifir olmayan ofset): L4 basligi guvenilmez, dokunma.
+        if ((BinaryPrimitives.ReadUInt16BigEndian(p.AsSpan(6)) & 0x3FFF) != 0) return default;
 
         int protocol = p[9];
         return BuildL4(p, len, isV6: false, l4Offset: ihl, protocol: protocol,
@@ -109,6 +121,11 @@ internal readonly struct IpPacket
             TcpSeq = protocol == ProtocolTcp
                 ? BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(l4Offset + 4))
                 : 0,
+            TcpAck = protocol == ProtocolTcp
+                ? BinaryPrimitives.ReadUInt32BigEndian(p.AsSpan(l4Offset + 8))
+                : 0,
+            TcpFlags = protocol == ProtocolTcp ? p[l4Offset + 13] : 0,
+            Ttl = isV6 ? p[7] : p[8],
         };
     }
 
@@ -119,6 +136,24 @@ internal readonly struct IpPacket
         var b = new byte[AddrLen];
         Array.Copy(Buffer, DstAddrOffset, b, 0, AddrLen);
         return b;
+    }
+
+    public readonly byte[] GetSrcAddrBytes()
+    {
+        var b = new byte[AddrLen];
+        Array.Copy(Buffer, SrcAddrOffset, b, 0, AddrLen);
+        return b;
+    }
+
+    /// <summary>Adresin ilk 8 / son 8 baytini (v4'te tamamini) akis anahtari icin okur.</summary>
+    public readonly (ulong Hi, ulong Lo) ReadAddr(bool source)
+    {
+        var off = source ? SrcAddrOffset : DstAddrOffset;
+        if (AddrLen == 4)
+            return (BinaryPrimitives.ReadUInt32BigEndian(Buffer.AsSpan(off)), 0);
+
+        return (BinaryPrimitives.ReadUInt64BigEndian(Buffer.AsSpan(off)),
+                BinaryPrimitives.ReadUInt64BigEndian(Buffer.AsSpan(off + 8)));
     }
 
     // ------------------------------------- yerinde degistirme (hedef tampon parametreyle)
@@ -136,13 +171,22 @@ internal readonly struct IpPacket
         BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(L4Offset + 4), seq);
     }
 
-    /// <summary>TCP saglama toplamini bilerek gecersiz kilar.</summary>
+    public readonly void SetTcpAck(byte[] buf, uint ack)
+    {
+        if (Protocol != ProtocolTcp) return;
+        BinaryPrimitives.WriteUInt32BigEndian(buf.AsSpan(L4Offset + 8), ack);
+    }
+
+    /// <summary>
+    /// TCP saglama toplamini bilerek gecersiz kilar. Once dogru saglama hesaplanmis
+    /// olmali (GoodbyeDPI gibi): boylece sonuc kesinlikle yanlis olur.
+    /// </summary>
     public readonly void CorruptTcpChecksum(byte[] buf)
     {
         if (Protocol != ProtocolTcp) return;
         var span = buf.AsSpan(L4Offset + 16);
         var current = BinaryPrimitives.ReadUInt16BigEndian(span);
-        BinaryPrimitives.WriteUInt16BigEndian(span, (ushort)(current ^ 0xFFFF));
+        BinaryPrimitives.WriteUInt16BigEndian(span, unchecked((ushort)(current - 1)));
     }
 
     /// <summary>IP toplam uzunlugunu (v4) / payload uzunlugunu (v6) yeni boyuta gore yazar.</summary>

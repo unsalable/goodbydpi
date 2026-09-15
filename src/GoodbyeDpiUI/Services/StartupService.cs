@@ -97,7 +97,7 @@ public static class StartupService
 
         if (!IsElevated())
         {
-            error = "yonetici olarak calistirmak gerekiyor.";
+            error = "yönetici olarak çalıştırmak gerekiyor.";
             return false;
         }
 
@@ -118,7 +118,7 @@ public static class StartupService
             // schtasks bazen 0 dondurup gorevi olusturmayabiliyor; dogrulayalim.
             if (!IsEnabled())
             {
-                error = "gorev olusturuldu gorunuyor ama Gorev Zamanlayici'da bulunamadi.";
+                error = "görev oluşturuldu görünüyor ama Görev Zamanlayıcı'da bulunamadı.";
                 return false;
             }
 
@@ -162,7 +162,7 @@ public static class StartupService
         var text = output.Trim();
 
         return string.IsNullOrEmpty(text)
-            ? $"Gorev Zamanlayici {exitCode} kodunu dondurdu."
+            ? $"Görev Zamanlayıcı {exitCode} kodunu döndürdü."
             : $"{text} (kod {exitCode})";
     }
 

@@ -11,7 +11,7 @@ public sealed class MainViewModel : ObservableObject
     private readonly ThemeService _theme;
     private readonly UpdateService _updates;
 
-    private string _statusText = "Kapali";
+    private string _statusText = "Kapalı";
     private string _statusDetail = string.Empty;
     private bool _isBusy;
     private bool _areAnimationsEnabled = true;
@@ -41,6 +41,7 @@ public sealed class MainViewModel : ObservableObject
 
         ToggleConnectionCommand = new RelayCommand(() => _ = ToggleAsync(), () => !IsBusy);
         ApplyUpdateCommand = new RelayCommand(ApplyUpdate, () => _updateReady);
+        ResetCustomNativeCommand = new RelayCommand(ResetCustomNative);
 
         UpdateStatus();
     }
@@ -160,6 +161,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
             OnPropertyChanged(nameof(IsGoodbyeEngine));
             OnPropertyChanged(nameof(ShowNativeSettings));
+            OnPropertyChanged(nameof(ShowCustomNative));
             OnPropertyChanged(nameof(ProfileSummary));
             RestartIfRunning();
         }
@@ -189,6 +191,7 @@ public sealed class MainViewModel : ObservableObject
             _settings.Save();
             OnPropertyChanged();
             OnPropertyChanged(nameof(ProfileSummary));
+            RefreshConnectedDetail();
             RestartIfRunning();
         }
     }
@@ -204,6 +207,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
             OnPropertyChanged(nameof(ShowCustomNative));
             OnPropertyChanged(nameof(ProfileSummary));
+            RefreshConnectedDetail();
             RestartIfRunning();
         }
     }
@@ -223,6 +227,7 @@ public sealed class MainViewModel : ObservableObject
             OnPropertyChanged();
             OnPropertyChanged(nameof(ShowCustomDns));
             OnPropertyChanged(nameof(ProfileSummary));
+            RefreshConnectedDetail();
             RestartIfRunning();
         }
     }
@@ -278,8 +283,8 @@ public sealed class MainViewModel : ObservableObject
 
     private void SetDnsPort(Action<int> apply, string? text)
     {
-        if (!int.TryParse(text, out var port)) { DnsWarning = "Port sayi olmali."; return; }
-        if (port is < 0 or > 65535) { DnsWarning = "Port 0-65535 araliginda olmali."; return; }
+        if (!int.TryParse(text, out var port)) { DnsWarning = "Port bir sayı olmalı."; return; }
+        if (port is < 0 or > 65535) { DnsWarning = "Port 0-65535 aralığında olmalı."; return; }
         apply(port);
         _settings.Save();
         OnCustomDnsChanged();
@@ -313,12 +318,6 @@ public sealed class MainViewModel : ObservableObject
 
     private NativeDpiConfig Cfg => _settings.Current.NativeCustom;
 
-    public int NativeTtl
-    {
-        get => Cfg.Ttl;
-        set => SetNative(() => Cfg.Ttl = Math.Clamp(value, 1, 255), Cfg.Ttl != value);
-    }
-
     public bool NativeFakePacket
     {
         get => Cfg.FakePacket;
@@ -329,6 +328,23 @@ public sealed class MainViewModel : ObservableObject
     {
         get => Cfg.FakeTtl;
         set => SetNative(() => Cfg.FakeTtl = value, Cfg.FakeTtl != value);
+    }
+
+    public bool NativeAutoTtl
+    {
+        get => Cfg.AutoTtl;
+        set => SetNative(() => Cfg.AutoTtl = value, Cfg.AutoTtl != value);
+    }
+
+    public int NativeTtl
+    {
+        get => Cfg.Ttl;
+        set
+        {
+            var clamped = Math.Clamp(value, 1, 255);
+            SetNative(() => Cfg.Ttl = clamped, Cfg.Ttl != clamped);
+            if (clamped != value) OnPropertyChanged(); // kutudaki gecersiz degeri duzelt
+        }
     }
 
     public bool NativeWrongChecksum
@@ -349,6 +365,23 @@ public sealed class MainViewModel : ObservableObject
         set => SetNative(() => Cfg.SplitTls = value, Cfg.SplitTls != value);
     }
 
+    public int NativeSplitPosition
+    {
+        get => Cfg.SplitPosition;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, 1400);
+            SetNative(() => Cfg.SplitPosition = clamped, Cfg.SplitPosition != clamped);
+            if (clamped != value) OnPropertyChanged();
+        }
+    }
+
+    public bool NativeSplitSni
+    {
+        get => Cfg.SplitSni;
+        set => SetNative(() => Cfg.SplitSni = value, Cfg.SplitSni != value);
+    }
+
     public bool NativeReverseSplit
     {
         get => Cfg.ReverseSplit;
@@ -367,13 +400,55 @@ public sealed class MainViewModel : ObservableObject
         set => SetNative(() => Cfg.FragmentHttp = value, Cfg.FragmentHttp != value);
     }
 
-    private void SetNative(Action apply, bool changed, [System.Runtime.CompilerServices.CallerMemberName] string? name = null)
+    // Bagimli satirlar: ust ayar kapaliyken alt ayarlar soluk ve pasif gorunur.
+
+    /// <summary>TTL satirlari yalnizca sahte paket + dusuk TTL acikken anlamli.</summary>
+    public bool IsNativeTtlEditable => Cfg.FakePacket && Cfg.FakeTtl;
+
+    /// <summary>Sabit TTL degeri otomatik TTL kapaliyken asil deger, aciksa yedek.</summary>
+    public string NativeTtlHint => Cfg.AutoTtl
+        ? "Otomatik TTL ölçülemezse kullanılır"
+        : "Sahte paket bu kadar yönlendirici sonra düşer";
+
+    /// <summary>Sahte paket acik ama onu koruyan hicbir yontem secili degil.</summary>
+    public bool ShowFakeProtectionHint => Cfg.FakePacket && !Cfg.HasFakeProtection;
+
+    /// <summary>Hicbir atlatma teknigi secili degil: motor yalnizca DNS/QUIC isler.</summary>
+    public bool ShowNoTechniqueHint => !Cfg.FakePacket && !Cfg.SplitTls;
+
+    public RelayCommand ResetCustomNativeCommand { get; }
+
+    private static readonly string[] NativeOptionProperties =
+    [
+        nameof(NativeFakePacket), nameof(NativeFakeTtl), nameof(NativeAutoTtl), nameof(NativeTtl),
+        nameof(NativeWrongChecksum), nameof(NativeWrongSeq), nameof(NativeSplitTls),
+        nameof(NativeSplitPosition), nameof(NativeSplitSni), nameof(NativeReverseSplit),
+        nameof(NativeBlockQuic), nameof(NativeFragmentHttp),
+        nameof(IsNativeTtlEditable), nameof(NativeTtlHint),
+        nameof(ShowFakeProtectionHint), nameof(ShowNoTechniqueHint),
+    ];
+
+    private void SetNative(Action apply, bool changed)
     {
         if (!changed) return;
         apply();
         _settings.Save();
-        OnPropertyChanged(name);
+        RaiseNativeOptions();
         // Ozel profil etkinse degisikligi aninda uygula.
+        if (SelectedNativeProfile.Id == NativeProfile.CustomId) RestartIfRunning();
+    }
+
+    private void RaiseNativeOptions()
+    {
+        foreach (var name in NativeOptionProperties) OnPropertyChanged(name);
+    }
+
+    /// <summary>Ozel profili onerilen (Varsayilan) ayarlara dondurur.</summary>
+    private void ResetCustomNative()
+    {
+        _settings.Current.NativeCustom = new NativeDpiConfig();
+        _settings.Save();
+        RaiseNativeOptions();
         if (SelectedNativeProfile.Id == NativeProfile.CustomId) RestartIfRunning();
     }
 
@@ -390,6 +465,8 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasStartupWarning => !string.IsNullOrEmpty(StartupWarning);
 
+    public string VersionText => $"GoodbyeDPI UI {UpdateService.CurrentVersion.ToString(3)}";
+
     /// <summary>Alt satirda gosterilen ozet: "Motor · Yontem · DNS".</summary>
     public string ProfileSummary
     {
@@ -404,8 +481,8 @@ public sealed class MainViewModel : ObservableObject
     public void ReportStartupProblem(string? error)
     {
         StartupWarning = string.IsNullOrWhiteSpace(error)
-            ? "Windows ile baslatma ayarlanamadi."
-            : "Windows ile baslatma ayarlanamadi: " + error;
+            ? "Windows ile başlatma ayarlanamadı."
+            : "Windows ile başlatma ayarlanamadı: " + error;
     }
 
     // ----------------------------------------------------------- komutlar
@@ -502,19 +579,19 @@ public sealed class MainViewModel : ObservableObject
             if (info is null) return;
 
             UpdateAvailable = true;
-            UpdateStatusText = $"Yeni surum bulundu ({info.Tag}), indiriliyor...";
+            UpdateStatusText = $"Yeni sürüm bulundu ({info.Tag}), indiriliyor...";
 
             var path = await _updates.DownloadAsync(info);
             if (path is null)
             {
-                UpdateStatusText = "Guncelleme indirilemedi. Daha sonra tekrar denenecek.";
+                UpdateStatusText = "Güncelleme indirilemedi. Daha sonra tekrar denenecek.";
                 return;
             }
 
             _pendingSetup = path;
             _updateReady = true;
             ApplyUpdateCommand.RaiseCanExecuteChanged();
-            UpdateStatusText = $"Guncelleme hazir ({info.Tag}). Kuruluyor...";
+            UpdateStatusText = $"Güncelleme hazır ({info.Tag}). Kuruluyor...";
 
             // AutoUpdate acik: kurulumu otomatik baslat (uygulama kapanip guncellenecek).
             ApplyUpdate();
@@ -537,7 +614,7 @@ public sealed class MainViewModel : ObservableObject
         }
         else
         {
-            UpdateStatusText = "Kurulum baslatilamadi.";
+            UpdateStatusText = "Kurulum başlatılamadı.";
         }
     }
 
@@ -555,14 +632,20 @@ public sealed class MainViewModel : ObservableObject
         UpdateStatus();
     }
 
+    /// <summary>Bagliyken durum altindaki ozet satirini secimlere gore tazeler.</summary>
+    private void RefreshConnectedDetail()
+    {
+        if (State == ConnectionState.Connected) StatusDetail = ProfileSummary;
+    }
+
     private void UpdateStatus()
     {
         StatusText = State switch
         {
-            ConnectionState.Connected => "Baglandi",
-            ConnectionState.Connecting => "Baglaniyor",
+            ConnectionState.Connected => "Bağlandı",
+            ConnectionState.Connecting => "Bağlanıyor",
             ConnectionState.Failed => "Hata",
-            _ => "Kapali",
+            _ => "Kapalı",
         };
 
         StatusDetail = State switch

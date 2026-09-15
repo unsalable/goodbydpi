@@ -44,9 +44,14 @@
                 <TranslateTransform x:Name="RootShift" Y="12" />
             </Grid.RenderTransform>
 
+            <!--
+                Baslik cubugu sabit, govde kaydirilir. Pencere icerige gore uzar ama
+                MaxHeight (calisma alanina gore koddan verilir) asilinca buyumeyi
+                birakir ve govde kaydirma cubuguyla kaydirilir.
+            -->
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
             <!-- ============================================== baslik cubugu -->
@@ -72,7 +77,7 @@
                     <!-- Tema -->
                     <Button Style="{StaticResource TitleBarButton}"
                             Click="Theme_Click"
-                            ToolTip="Temayi degistir">
+                            ToolTip="Temayı değiştir">
                         <TextBlock FontFamily="{StaticResource IconFont}" FontSize="14">
                             <TextBlock.Style>
                                 <Style TargetType="TextBlock">
@@ -111,315 +116,458 @@
                         <TextBlock Text="&#xE713;" FontFamily="{StaticResource IconFont}" FontSize="14" />
                     </ToggleButton>
 
-                    <Button Style="{StaticResource TitleBarButton}" Click="Minimize_Click" ToolTip="Kucult">
+                    <Button Style="{StaticResource TitleBarButton}" Click="Minimize_Click" ToolTip="Küçült">
                         <TextBlock Text="&#xE921;" FontFamily="{StaticResource IconFont}" FontSize="11" />
                     </Button>
 
-                    <Button Style="{StaticResource CloseButton}" Click="Close_Click" ToolTip="Tepsiye kucult">
+                    <Button Style="{StaticResource CloseButton}" Click="Close_Click" ToolTip="Tepsiye küçült">
                         <TextBlock Text="&#xE8BB;" FontFamily="{StaticResource IconFont}" FontSize="11" />
                     </Button>
                 </StackPanel>
+
+                <!-- Govde kaydirildiginda beliren ayirici: icerik basligin altina "kesik" girmesin. -->
+                <Border x:Name="TitleDivider" Grid.ColumnSpan="2" Height="1" VerticalAlignment="Bottom"
+                        Background="{DynamicResource StrokeBrush}" Opacity="0" IsHitTestVisible="False" />
             </Grid>
 
             <!-- ===================================================== govde -->
-            <StackPanel Grid.Row="1" Margin="24,4,24,24">
+            <ScrollViewer x:Name="BodyScroll" Grid.Row="1"
+                          Style="{StaticResource ThinScrollViewer}"
+                          PreviewMouseWheel="BodyScroll_PreviewMouseWheel"
+                          ScrollChanged="BodyScroll_ScrollChanged">
+                <StackPanel Margin="24,4,24,22">
 
-                <Button Style="{StaticResource PowerButton}"
-                        Command="{Binding ToggleConnectionCommand}"
-                        HorizontalAlignment="Center"
-                        Margin="0,10,0,0" />
+                    <Button Style="{StaticResource PowerButton}"
+                            Command="{Binding ToggleConnectionCommand}"
+                            HorizontalAlignment="Center"
+                            Margin="0,10,0,0" />
 
-                <!-- Durum -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,26,0,0">
-                    <Ellipse Width="8" Height="8" VerticalAlignment="Center">
-                        <Ellipse.Style>
-                            <Style TargetType="Ellipse">
-                                <Setter Property="Fill" Value="{DynamicResource TextMutedBrush}" />
+                    <!-- Durum -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,26,0,0">
+                        <Ellipse Width="8" Height="8" VerticalAlignment="Center">
+                            <Ellipse.Style>
+                                <Style TargetType="Ellipse">
+                                    <Setter Property="Fill" Value="{DynamicResource TextMutedBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                            <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsConnecting}" Value="True">
+                                            <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding IsFailed}" Value="True">
+                                            <Setter Property="Fill" Value="{DynamicResource DangerBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Ellipse.Style>
+                        </Ellipse>
+
+                        <TextBlock Text="{Binding StatusText}"
+                                   Margin="8,0,0,0"
+                                   FontSize="17" FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextBrush}" />
+                    </StackPanel>
+
+                    <TextBlock Text="{Binding StatusDetail}"
+                               HorizontalAlignment="Center"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               MaxWidth="320"
+                               Margin="0,6,0,0"
+                               FontSize="12"
+                               LineHeight="17"
+                               Foreground="{DynamicResource TextMutedBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Visible" />
                                 <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsConnecting}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
+                                    <DataTrigger Binding="{Binding StatusDetail}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
                                     </DataTrigger>
                                     <DataTrigger Binding="{Binding IsFailed}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource DangerBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
-                        </Ellipse.Style>
-                    </Ellipse>
+                        </TextBlock.Style>
+                    </TextBlock>
 
-                    <TextBlock Text="{Binding StatusText}"
-                               Margin="8,0,0,0"
-                               FontSize="17" FontWeight="SemiBold"
-                               VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextBrush}" />
-                </StackPanel>
-
-                <TextBlock Text="{Binding StatusDetail}"
-                           HorizontalAlignment="Center"
-                           TextAlignment="Center"
-                           TextWrapping="Wrap"
-                           MaxWidth="320"
-                           Margin="0,6,0,0"
-                           FontSize="12"
-                           LineHeight="17"
-                           Foreground="{DynamicResource TextMutedBrush}">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Visible" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding StatusDetail}" Value="">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding IsFailed}" Value="True">
-                                    <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
-
-                <!-- ============================== guncelleme bildirimi -->
-                <Border CornerRadius="10" Margin="0,16,0,0" Padding="12,10"
-                        Background="{DynamicResource SurfaceBrush}"
-                        BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
-                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
-                    <Grid>
-                        <TextBlock Text="{Binding UpdateStatusText}"
-                                   FontSize="12" Margin="0,0,84,0"
-                                   TextWrapping="Wrap" VerticalAlignment="Center"
-                                   Foreground="{DynamicResource TextBrush}" />
-                        <Button Content="Simdi Guncelle"
-                                Style="{StaticResource GhostButton}"
-                                HorizontalAlignment="Right" VerticalAlignment="Center"
-                                Foreground="{DynamicResource AccentBrush}"
-                                Command="{Binding ApplyUpdateCommand}" />
-                    </Grid>
-                </Border>
-
-                <!-- ======================================= acilir ayarlar -->
-                <Border x:Name="SettingsPanel" Height="0" ClipToBounds="True">
-                    <StackPanel Margin="0,20,0,0">
-
-                        <!-- Altyapi secimi -->
-                        <TextBlock Text="ALTYAPI" FontSize="10" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,7" />
+                    <!-- ============================== guncelleme bildirimi -->
+                    <Border CornerRadius="10" Margin="0,16,0,0" Padding="12,10"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
+                            Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
                         <Grid>
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
-                                <TextBlock Text="Kendi motorumuz"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Kapaliyken hazir GoodbyeDPI altyapisi kullanilir"
-                                           FontSize="11" Margin="0,2,0,0"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-                            </StackPanel>
-                            <ToggleButton Style="{StaticResource Switch}"
-                                          HorizontalAlignment="Right" VerticalAlignment="Center"
-                                          IsChecked="{Binding IsNativeEngine, Mode=TwoWay}" />
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding UpdateStatusText}"
+                                       FontSize="12" Margin="0,0,8,0"
+                                       TextWrapping="Wrap" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <Button Grid.Column="1" Content="Şimdi Güncelle"
+                                    Style="{StaticResource GhostButton}"
+                                    VerticalAlignment="Center"
+                                    Foreground="{DynamicResource AccentBrush}"
+                                    Command="{Binding ApplyUpdateCommand}" />
                         </Grid>
+                    </Border>
 
-                        <!-- Yontem: kendi motoru -->
-                        <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
+                    <!-- ======================================= acilir ayarlar -->
+                    <!--
+                        Yukseklik yalnizca acilip kapanma animasyonu sirasinda sabit tutulur;
+                        acildiktan sonra otomatiğe (NaN) doner ki "Ozel" gibi alt paneller
+                        acilip kapandiginda icerik kirpilmasin ya da bos alan kalmasin.
+                    -->
+                    <Border x:Name="SettingsPanel" Height="0" ClipToBounds="True">
+                        <StackPanel Margin="0,4,0,0">
+
+                            <!-- Altyapi secimi -->
+                            <TextBlock Text="ALTYAPI" Style="{StaticResource SectionLabel}" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <TextBlock Text="Kendi motorumuz" Style="{StaticResource RowTitle}" />
+                                    <TextBlock Text="Kapalıyken hazır GoodbyeDPI altyapısı kullanılır"
+                                               Style="{StaticResource RowHint}" />
+                                </StackPanel>
+                                <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                              IsChecked="{Binding IsNativeEngine, Mode=TwoWay}" />
+                            </Grid>
+
+                            <!-- ============================ Yontem: kendi motoru -->
+                            <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="YÖNTEM" Style="{StaticResource SectionLabel}" />
+                                <ListBox Style="{StaticResource PillList}"
+                                         ItemsSource="{Binding NativeProfiles}"
+                                         SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}"
+                                         DisplayMemberPath="Name" />
+                                <TextBlock Text="{Binding SelectedNativeProfile.Description}"
+                                           Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+
+                                <!-- Ozel motor ayarlari -->
+                                <Border x:Name="CustomNativePanel"
+                                        CornerRadius="12" Margin="0,12,0,0" Padding="14,12,14,14"
+                                        Background="{DynamicResource SurfaceBrush}"
+                                        BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                                        Visibility="{Binding ShowCustomNative, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+
+                                        <!-- ====== sahte paket -->
+                                        <Grid>
+                                            <TextBlock Text="SAHTE PAKET" Style="{StaticResource GroupLabel}"
+                                                       VerticalAlignment="Center" />
+                                            <Button Content="Varsayılana dön"
+                                                    Style="{StaticResource GhostButton}"
+                                                    HorizontalAlignment="Right" Margin="0,-6,-9,-6"
+                                                    ToolTip="Özel ayarları önerilen değerlere döndür"
+                                                    Command="{Binding ResetCustomNativeCommand}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Sahte paket gönder" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Önce engelsiz bir siteye ait sahte istek gider"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeFakePacket, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Düşük TTL ile gönder" Style="{StaticResource OptionTitle}" Margin="0,0,12,0" />
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeFakeTtl, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding IsNativeTtlEditable}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Otomatik TTL" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Sunucuya olan mesafeye göre hesaplanır"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeAutoTtl, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding IsNativeTtlEditable}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="TTL değeri" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="{Binding NativeTtlHint}" Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Style="{StaticResource InputBox}"
+                                                     Width="64" TextAlignment="Center" VerticalAlignment="Center"
+                                                     ToolTip="1-255 (Enter ile uygula)"
+                                                     Text="{Binding NativeTtl, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Yanlış sağlama (checksum)" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Bazı ağlarda bağlantıyı bozar; TTL ile birlikte açma"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeWrongChecksum, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeFakePacket}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Yanlış SEQ/ACK" Style="{StaticResource OptionTitle}" Margin="0,0,12,0" />
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeWrongSeq, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <TextBlock Text="Koruma seçilmedi: sahte paket güvenlik için düşük TTL ile gönderilecek."
+                                                   Style="{StaticResource OptionHint}" Margin="0,10,0,0"
+                                                   Foreground="{DynamicResource DangerBrush}"
+                                                   Visibility="{Binding ShowFakeProtectionHint, Converter={StaticResource BoolToVis}}" />
+
+                                        <!-- ====== bolme -->
+                                        <Border Style="{StaticResource GroupDivider}" />
+                                        <TextBlock Text="BÖLME" Style="{StaticResource GroupLabel}" />
+
+                                        <Grid Style="{StaticResource OptionRow}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="İsteği parçalara böl" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="TLS ClientHello birden çok TCP parçasıyla gider"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeSplitTls, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeSplitTls}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Bölme konumu (bayt)" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="0 verilirse sabit konumdan bölünmez"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <TextBox Grid.Column="1" Style="{StaticResource InputBox}"
+                                                     Width="64" TextAlignment="Center" VerticalAlignment="Center"
+                                                     ToolTip="0-1400 (Enter ile uygula)"
+                                                     Text="{Binding NativeSplitPosition, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeSplitTls}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="Site adının ortasından da böl" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="SNI hiçbir parçada tam görünmez"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeSplitSni, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}" IsEnabled="{Binding NativeSplitTls}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="Parçaları ters sırada gönder" Style="{StaticResource OptionTitle}" Margin="0,0,12,0" />
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeReverseSplit, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <!-- ====== diger -->
+                                        <Border Style="{StaticResource GroupDivider}" />
+                                        <TextBlock Text="DİĞER" Style="{StaticResource GroupLabel}" />
+
+                                        <Grid Style="{StaticResource OptionRow}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
+                                                <TextBlock Text="QUIC (HTTP/3) engelle" Style="{StaticResource OptionTitle}" />
+                                                <TextBlock Text="Uygulamalar denetlenebilen TCP bağlantısına geçer"
+                                                           Style="{StaticResource OptionHint}" />
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeBlockQuic, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <Grid Style="{StaticResource OptionRow}">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="HTTP (80) isteklerine de uygula" Style="{StaticResource OptionTitle}" Margin="0,0,12,0" />
+                                            <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                                          IsChecked="{Binding NativeFragmentHttp, Mode=TwoWay}" />
+                                        </Grid>
+
+                                        <TextBlock Text="Sahte paket ve bölme kapalı: motor yalnızca DNS ve QUIC ayarlarını uygular."
+                                                   Style="{StaticResource OptionHint}" Margin="0,12,0,0"
+                                                   Foreground="{DynamicResource DangerBrush}"
+                                                   Visibility="{Binding ShowNoTechniqueHint, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- ========================== Yontem: hazir GoodbyeDPI -->
+                            <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
+                                <TextBlock Text="YÖNTEM (GoodbyeDPI)" Style="{StaticResource SectionLabel}" />
+                                <ListBox Style="{StaticResource PillList}"
+                                         ItemsSource="{Binding Methods}"
+                                         SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
+                                         DisplayMemberPath="Name" />
+                                <TextBlock Text="{Binding SelectedMethod.Description}"
+                                           Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+                            </StackPanel>
+
+                            <!-- ============================================ DNS -->
+                            <TextBlock Text="DNS" Style="{StaticResource SectionLabel}" />
                             <ListBox Style="{StaticResource PillList}"
-                                     ItemsSource="{Binding NativeProfiles}"
-                                     SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}"
+                                     ItemsSource="{Binding DnsProfiles}"
+                                     SelectedItem="{Binding SelectedDns, Mode=TwoWay}"
                                      DisplayMemberPath="Name" />
+                            <TextBlock Text="{Binding SelectedDns.Description}"
+                                       Style="{StaticResource RowHint}" Margin="1,0,0,0" />
 
-                            <!-- Ozel motor ayarlari -->
-                            <Border CornerRadius="10" Background="{DynamicResource SurfaceBrush}"
-                                    Padding="12" Margin="0,10,0,0"
-                                    Visibility="{Binding ShowCustomNative, Converter={StaticResource BoolToVis}}">
+                            <!-- Ozel DNS girisi -->
+                            <Border x:Name="CustomDnsPanel"
+                                    CornerRadius="12" Margin="0,12,0,0" Padding="14,12,14,14"
+                                    Background="{DynamicResource SurfaceBrush}"
+                                    BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                                    Visibility="{Binding ShowCustomDns, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
-                                    <Grid Margin="0,0,0,4">
-                                        <TextBlock Text="Sahte paketin TTL degeri" FontSize="12"
-                                                   VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <TextBox Style="{StaticResource InputBox}"
-                                                 Width="64" HorizontalAlignment="Right"
-                                                 Text="{Binding NativeTtl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Text="KENDİ DNS SUNUCUN" Style="{StaticResource GroupLabel}" Margin="0,0,0,10" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="72" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
+                                                 Text="{Binding DnsCustomV4, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="IPv4 DNS adresi, örn. 8.8.8.8" />
+                                        <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
+                                                 TextAlignment="Center"
+                                                 Text="{Binding DnsCustomV4Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Port" />
                                     </Grid>
+                                    <TextBlock Text="IPv4 adresi ve port" Style="{StaticResource OptionHint}" Margin="2,4,0,0" />
 
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="Sahte paket gonder" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeFakePacket, Mode=TwoWay}" />
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="72" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
+                                                 Text="{Binding DnsCustomV6, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="IPv6 DNS adresi (isteğe bağlı)" />
+                                        <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
+                                                 TextAlignment="Center"
+                                                 Text="{Binding DnsCustomV6Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Port" />
                                     </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="Dusuk TTL kullan" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeFakeTtl, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="Yanlis saglama (checksum)" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeWrongChecksum, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="Yanlis SEQ/ACK" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeWrongSeq, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="TLS ClientHello'yu bol" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeSplitTls, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="Parcalari ters sirada gonder" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeReverseSplit, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="QUIC (UDP 443) engelle" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeBlockQuic, Mode=TwoWay}" />
-                                    </Grid>
-                                    <Grid Margin="0,8,0,0">
-                                        <TextBlock Text="HTTP isteklerini de parcala" FontSize="12" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextBrush}" />
-                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
-                                                      IsChecked="{Binding NativeFragmentHttp, Mode=TwoWay}" />
-                                    </Grid>
+                                    <TextBlock Text="IPv6 adresi ve port (isteğe bağlı)" Style="{StaticResource OptionHint}" Margin="2,4,0,0" />
+
+                                    <TextBlock Text="{Binding DnsWarning}" Style="{StaticResource OptionHint}" Margin="0,10,0,0"
+                                               Foreground="{DynamicResource DangerBrush}"
+                                               Visibility="{Binding HasDnsWarning, Converter={StaticResource BoolToVis}}" />
                                 </StackPanel>
                             </Border>
+
+                            <Border Height="1" Background="{DynamicResource StrokeBrush}" Margin="0,20,0,0" />
+
+                            <!-- Windows ile baslat -->
+                            <Grid Margin="0,16,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <TextBlock Text="Windows ile başlat" Style="{StaticResource RowTitle}" />
+                                    <TextBlock Text="Açılışta tepside sessizce başlar" Style="{StaticResource RowHint}" />
+                                </StackPanel>
+                                <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                              IsChecked="{Binding RunAtStartup, Mode=TwoWay}" />
+                            </Grid>
+
+                            <!-- Otomatik baglan -->
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <TextBlock Text="Otomatik bağlan" Style="{StaticResource RowTitle}" />
+                                    <TextBlock Text="Uygulama açılır açılmaz bağlantıyı başlatır" Style="{StaticResource RowHint}" />
+                                </StackPanel>
+                                <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                              IsChecked="{Binding AutoConnect, Mode=TwoWay}" />
+                            </Grid>
+
+                            <!-- Otomatik guncelle -->
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <TextBlock Text="Otomatik güncelle" Style="{StaticResource RowTitle}" />
+                                    <TextBlock Text="Açılışta GitHub'da yeni sürüm varsa kurar" Style="{StaticResource RowHint}" />
+                                </StackPanel>
+                                <ToggleButton Grid.Column="1" Style="{StaticResource Switch}" VerticalAlignment="Center"
+                                              IsChecked="{Binding AutoUpdate, Mode=TwoWay}" />
+                            </Grid>
+
+                            <!-- Gorev olusturulamadiysa sebebini goster -->
+                            <TextBlock Text="{Binding StartupWarning}"
+                                       Style="{StaticResource RowHint}"
+                                       Margin="0,10,0,0"
+                                       Foreground="{DynamicResource DangerBrush}"
+                                       Visibility="{Binding HasStartupWarning, Converter={StaticResource BoolToVis}}" />
+
+                            <TextBlock Text="{Binding VersionText}"
+                                       HorizontalAlignment="Center" Margin="0,20,0,0"
+                                       FontSize="10.5" Foreground="{DynamicResource TextMutedBrush}" />
                         </StackPanel>
-
-                        <!-- Yontem: hazir GoodbyeDPI -->
-                        <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
-                            <TextBlock Text="YONTEM (GoodbyeDPI)" FontSize="10" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
-                            <ListBox Style="{StaticResource PillList}"
-                                     ItemsSource="{Binding Methods}"
-                                     SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
-                                     DisplayMemberPath="Name" />
-                        </StackPanel>
-
-                        <!-- DNS -->
-                        <TextBlock Text="DNS" FontSize="10" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
-                        <ListBox Style="{StaticResource PillList}"
-                                 ItemsSource="{Binding DnsProfiles}"
-                                 SelectedItem="{Binding SelectedDns, Mode=TwoWay}"
-                                 DisplayMemberPath="Name" />
-
-                        <!-- Ozel DNS girisi -->
-                        <Border CornerRadius="10" Background="{DynamicResource SurfaceBrush}"
-                                Padding="12" Margin="0,10,0,0"
-                                Visibility="{Binding ShowCustomDns, Converter={StaticResource BoolToVis}}">
-                            <StackPanel>
-                                <TextBlock Text="Kendi DNS sunucun" FontSize="12" FontWeight="SemiBold"
-                                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,8" />
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="72" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
-                                             Text="{Binding DnsCustomV4, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                             ToolTip="IPv4 DNS adresi, orn. 8.8.8.8" />
-                                    <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
-                                             Text="{Binding DnsCustomV4Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                             ToolTip="Port" />
-                                </Grid>
-                                <TextBlock Text="IPv4 adresi : port" FontSize="10" Margin="2,3,0,0"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-
-                                <Grid Margin="0,8,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="72" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
-                                             Text="{Binding DnsCustomV6, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                             ToolTip="IPv6 DNS adresi (istege bagli)" />
-                                    <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
-                                             Text="{Binding DnsCustomV6Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                             ToolTip="Port" />
-                                </Grid>
-                                <TextBlock Text="IPv6 adresi : port (istege bagli)" FontSize="10" Margin="2,3,0,0"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-
-                                <TextBlock Text="{Binding DnsWarning}" FontSize="11" Margin="0,8,0,0"
-                                           TextWrapping="Wrap" Foreground="{DynamicResource DangerBrush}"
-                                           Visibility="{Binding HasDnsWarning, Converter={StaticResource BoolToVis}}" />
-                            </StackPanel>
-                        </Border>
-
-                        <Border Height="1" Background="{DynamicResource StrokeBrush}" Margin="0,14,0,0" />
-
-                        <!-- Windows ile baslat -->
-                        <Grid Margin="0,14,0,0">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
-                                <TextBlock Text="Windows ile baslat"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Acilista tepside sessizce baslar"
-                                           FontSize="11" Margin="0,2,0,0"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-                            </StackPanel>
-
-                            <ToggleButton Style="{StaticResource Switch}"
-                                          HorizontalAlignment="Right" VerticalAlignment="Center"
-                                          IsChecked="{Binding RunAtStartup, Mode=TwoWay}" />
-                        </Grid>
-
-                        <!-- Otomatik baglan -->
-                        <Grid Margin="0,14,0,0">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
-                                <TextBlock Text="Otomatik baglan"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Uygulama acilir acilmaz baglantiyi baslatir"
-                                           FontSize="11" Margin="0,2,0,0"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-                            </StackPanel>
-
-                            <ToggleButton Style="{StaticResource Switch}"
-                                          HorizontalAlignment="Right" VerticalAlignment="Center"
-                                          IsChecked="{Binding AutoConnect, Mode=TwoWay}" />
-                        </Grid>
-
-                        <!-- Otomatik guncelle -->
-                        <Grid Margin="0,14,0,0">
-                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
-                                <TextBlock Text="Otomatik guncelle"
-                                           FontSize="13"
-                                           Foreground="{DynamicResource TextBrush}" />
-                                <TextBlock Text="Acilista GitHub'da yeni surum varsa kurar"
-                                           FontSize="11" Margin="0,2,0,0"
-                                           TextWrapping="Wrap"
-                                           Foreground="{DynamicResource TextMutedBrush}" />
-                            </StackPanel>
-
-                            <ToggleButton Style="{StaticResource Switch}"
-                                          HorizontalAlignment="Right" VerticalAlignment="Center"
-                                          IsChecked="{Binding AutoUpdate, Mode=TwoWay}" />
-                        </Grid>
-
-                        <!-- Gorev olusturulamadiysa sebebini goster -->
-                        <TextBlock Text="{Binding StartupWarning}"
-                                   FontSize="11"
-                                   Margin="0,8,0,0"
-                                   TextWrapping="Wrap"
-                                   Foreground="{DynamicResource DangerBrush}"
-                                   Visibility="{Binding HasStartupWarning, Converter={StaticResource BoolToVis}}" />
-                    </StackPanel>
-                </Border>
-            </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
 
         <!--
