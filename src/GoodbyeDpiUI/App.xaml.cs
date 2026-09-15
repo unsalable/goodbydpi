@@ -16,13 +16,27 @@ public partial class App : Application
 #endif
 
     private Mutex? _singleInstance;
-    private GoodbyeDpiService? _dpi;
+    private DpiController? _dpi;
     private SettingsService? _settings;
     private TrayService? _tray;
     private MainViewModel? _vm;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Yonetici gerektirmeyen ic dogrulama: paket/TLS/DNS/surum mantigini test edip cikar.
+        if (e.Args.Any(a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.Exit(SelfTest.Run());
+            return;
+        }
+
+        // Canli motor testi (yonetici gerekir): WinDivert'i acar, agi dener, cikar.
+        if (e.Args.Any(a => string.Equals(a, "--enginetest", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.Exit(EngineTest.Run(e.Args));
+            return;
+        }
+
         // Tek ornek: ikinci kopya sessizce cikar, WinDivert cakismasi olmaz.
         _singleInstance = new Mutex(initiallyOwned: true, MutexName, out var isFirst);
         if (!isFirst)
@@ -39,8 +53,12 @@ public partial class App : Application
         var theme = new ThemeService();
         theme.Initialize(settings.DarkMode);
 
-        _dpi = new GoodbyeDpiService();
-        _vm = new MainViewModel(_dpi, _settings, theme);
+        _dpi = new DpiController();
+        var updates = new UpdateService();
+        _vm = new MainViewModel(_dpi, _settings, theme, updates)
+        {
+            RequestShutdown = ExitApplication,
+        };
 
         var window = new MainWindow { DataContext = _vm };
         MainWindow = window;
@@ -59,6 +77,9 @@ public partial class App : Application
         SyncStartupTask(settings.RunAtStartup);
 
         if (settings.AutoConnect) _ = _vm.AutoConnectAsync();
+
+        // Acilista guncelleme kontrolu (AutoUpdate acikca kapatilmadikca otomatik kurar).
+        _ = _vm.CheckForUpdatesAsync();
 
 #if UITEST
         // Yalnizca dogrulama derlemesi: tepsi tiklamasini taklit etmek zor oldugu

@@ -1,8 +1,14 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
+
 namespace GoodbyeDpiUI.Models;
 
 /// <summary>
-/// DPI atlatma yontemi. Argumanlar GoodbyeDPI-Turkey 0.2.3rc3 release'indeki
-/// turkey_dnsredir*.cmd dosyalarindan birebir alinmistir.
+/// DPI atlatma yontemi (yalnizca hazir goodbyedpi.exe altyapisi icin).
+/// Argumanlar GoodbyeDPI-Turkey 0.2.3rc3 release'indeki turkey_dnsredir*.cmd
+/// dosyalarindan birebir alinmistir. Kendi motorumuz bunun yerine
+/// <see cref="NativeProfile"/> / <see cref="NativeDpiConfig"/> kullanir.
 /// </summary>
 public sealed record DpiMethod(string Id, string Name, string Description, string Arguments)
 {
@@ -36,18 +42,24 @@ public sealed record DpiMethod(string Id, string Name, string Description, strin
         All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Default;
 }
 
-/// <summary>DNS yonlendirme secenegi. GoodbyeDPI'in --dns-addr / --dns-port argumanlarina cevrilir.</summary>
-public sealed record DnsProfile(string Id, string Name, string Description, string Arguments)
+/// <summary>
+/// DNS yonlendirme secenegi. Yapisal alanlar (adres + port) tutulur; hazir
+/// goodbyedpi altyapisi icin <see cref="Arguments"/> bunlardan uretilir, kendi
+/// motorumuz ise dogrudan alanlari kullanir.
+/// </summary>
+public sealed record DnsProfile(
+    string Id,
+    string Name,
+    string Description,
+    string? V4Addr,
+    int V4Port,
+    string? V6Addr,
+    int V6Port)
 {
-    /// <summary>
-    /// Turkiye icin asil ise yarayan secenek: 1253 standart disi bir port oldugu icin
-    /// ISS'in 53. porttaki DNS kacirmasindan kurtulur.
-    /// </summary>
-    public static readonly DnsProfile Yandex = new(
-        "yandex",
-        "Yandex (1253)",
-        "77.88.8.8:1253 - ISS DNS kacirmasini asar, repo varsayilani.",
-        "--dns-addr 77.88.8.8 --dns-port 1253 --dnsv6-addr 2a02:6b8::feed:0ff --dnsv6-port 1253");
+    public const string CustomId = "custom";
+
+    /// <summary>DNS yonlendirmesi acik mi (en az bir adres tanimli mi)?</summary>
+    public bool IsActive => !string.IsNullOrWhiteSpace(V4Addr) || !string.IsNullOrWhiteSpace(V6Addr);
 
     /// <summary>
     /// Cloudflare yalnizca 53. portta hizmet verir. Hizli ve gizlilik dostudur ama
@@ -57,16 +69,100 @@ public sealed record DnsProfile(string Id, string Name, string Description, stri
         "cloudflare",
         "Cloudflare",
         "1.1.1.1:53 - hizli, ancak ISS 53. portu kaciriyorsa etkisiz kalabilir.",
-        "--dns-addr 1.1.1.1 --dnsv6-addr 2606:4700:4700::1111");
+        "1.1.1.1", 53, "2606:4700:4700::1111", 53);
+
+    /// <summary>
+    /// Turkiye icin asil ise yarayan secenek: 1253 standart disi bir port oldugu icin
+    /// ISS'in 53. porttaki DNS kacirmasindan kurtulur.
+    /// </summary>
+    public static readonly DnsProfile Yandex = new(
+        "yandex",
+        "Yandex (1253)",
+        "77.88.8.8:1253 - ISS DNS kacirmasini asar, repo varsayilani.",
+        "77.88.8.8", 1253, "2a02:6b8::feed:0ff", 1253);
 
     public static readonly DnsProfile Off = new(
         "off",
         "Kapali",
         "DNS'e dokunulmaz, yalnizca DPI atlatma yapilir.",
-        string.Empty);
+        null, 0, null, 0);
 
-    public static readonly IReadOnlyList<DnsProfile> All = new[] { Cloudflare, Yandex, Off };
+    /// <summary>Yerlesik (kullanicinin duzenlemedigi) profiller.</summary>
+    public static readonly IReadOnlyList<DnsProfile> BuiltIn = new[] { Cloudflare, Yandex, Off };
 
-    public static DnsProfile FromId(string? id) =>
-        All.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Cloudflare;
+    /// <summary>Kullanicinin girdigi adres/porttan bir "Ozel" profil olusturur.</summary>
+    public static DnsProfile CreateCustom(string? v4Addr, int v4Port, string? v6Addr, int v6Port)
+    {
+        v4Addr = string.IsNullOrWhiteSpace(v4Addr) ? null : v4Addr.Trim();
+        v6Addr = string.IsNullOrWhiteSpace(v6Addr) ? null : v6Addr.Trim();
+
+        var summary = v4Addr is not null
+            ? $"{v4Addr}:{(v4Port <= 0 ? 53 : v4Port)}"
+            : v6Addr is not null ? $"[{v6Addr}]:{(v6Port <= 0 ? 53 : v6Port)}" : "tanimsiz";
+
+        return new DnsProfile(
+            CustomId,
+            "Ozel",
+            $"Kendi DNS sunucun: {summary}",
+            v4Addr,
+            v4Port <= 0 ? 53 : v4Port,
+            v6Addr,
+            v6Port <= 0 ? 53 : v6Port);
+    }
+
+    /// <summary>Kimlige gore yerlesik profili bulur; "custom" ise saglayicidan alir.</summary>
+    public static DnsProfile FromId(string? id, Func<DnsProfile>? customProvider = null)
+    {
+        if (string.Equals(id, CustomId, StringComparison.OrdinalIgnoreCase) && customProvider is not null)
+            return customProvider();
+
+        return BuiltIn.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Cloudflare;
+    }
+
+    /// <summary>Adres metinlerinin gecerli IP olup olmadigini denetler.</summary>
+    public string? Validate()
+    {
+        if (!IsActive) return null;
+
+        if (V4Addr is not null &&
+            (!IPAddress.TryParse(V4Addr, out var v4) || v4.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork))
+            return "Gecersiz IPv4 adresi.";
+
+        if (V6Addr is not null &&
+            (!IPAddress.TryParse(V6Addr, out var v6) || v6.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6))
+            return "Gecersiz IPv6 adresi.";
+
+        if (V4Port is < 0 or > 65535 || V6Port is < 0 or > 65535)
+            return "Port 0-65535 araliginda olmali.";
+
+        return null;
+    }
+
+    /// <summary>goodbyedpi.exe icin --dns-addr/--dns-port arguman dizisi.</summary>
+    public string Arguments
+    {
+        get
+        {
+            if (!IsActive) return string.Empty;
+
+            var sb = new StringBuilder();
+
+            if (!string.IsNullOrWhiteSpace(V4Addr))
+            {
+                sb.Append("--dns-addr ").Append(V4Addr);
+                if (V4Port is not 53 and > 0)
+                    sb.Append(" --dns-port ").Append(V4Port.ToString(CultureInfo.InvariantCulture));
+            }
+
+            if (!string.IsNullOrWhiteSpace(V6Addr))
+            {
+                if (sb.Length > 0) sb.Append(' ');
+                sb.Append("--dnsv6-addr ").Append(V6Addr);
+                if (V6Port is not 53 and > 0)
+                    sb.Append(" --dnsv6-port ").Append(V6Port.ToString(CultureInfo.InvariantCulture));
+            }
+
+            return sb.ToString();
+        }
+    }
 }

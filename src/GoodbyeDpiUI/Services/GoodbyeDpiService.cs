@@ -5,8 +5,8 @@ using GoodbyeDpiUI.Models;
 
 namespace GoodbyeDpiUI.Services;
 
-/// <summary>goodbyedpi.exe surecinin yasam dongusunu yonetir.</summary>
-public sealed class GoodbyeDpiService : IDisposable
+/// <summary>Hazir goodbyedpi.exe surecinin yasam dongusunu yoneten altyapi.</summary>
+public sealed class GoodbyeDpiService : IDpiBackend
 {
     private const string ProcessName = "goodbyedpi";
 
@@ -81,6 +81,8 @@ public sealed class GoodbyeDpiService : IDisposable
             : method.Arguments + " " + dns.Arguments;
 
     // ---------------------------------------------------------------- baslatma
+
+    public Task StartAsync(EngineRequest request) => StartAsync(request.GoodbyeMethod, request.Dns);
 
     public async Task StartAsync(DpiMethod method, DnsProfile dns)
     {

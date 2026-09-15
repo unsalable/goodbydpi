@@ -181,23 +181,181 @@
                     </TextBlock.Style>
                 </TextBlock>
 
+                <!-- ============================== guncelleme bildirimi -->
+                <Border CornerRadius="10" Margin="0,16,0,0" Padding="12,10"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
+                        Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
+                    <Grid>
+                        <TextBlock Text="{Binding UpdateStatusText}"
+                                   FontSize="12" Margin="0,0,84,0"
+                                   TextWrapping="Wrap" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextBrush}" />
+                        <Button Content="Simdi Guncelle"
+                                Style="{StaticResource GhostButton}"
+                                HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Foreground="{DynamicResource AccentBrush}"
+                                Command="{Binding ApplyUpdateCommand}" />
+                    </Grid>
+                </Border>
+
                 <!-- ======================================= acilir ayarlar -->
                 <Border x:Name="SettingsPanel" Height="0" ClipToBounds="True">
                     <StackPanel Margin="0,20,0,0">
 
-                        <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
+                        <!-- Altyapi secimi -->
+                        <TextBlock Text="ALTYAPI" FontSize="10" FontWeight="SemiBold"
                                    Foreground="{DynamicResource TextMutedBrush}" Margin="0,0,0,7" />
-                        <ListBox Style="{StaticResource PillList}"
-                                 ItemsSource="{Binding Methods}"
-                                 SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
-                                 DisplayMemberPath="Name" />
+                        <Grid>
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
+                                <TextBlock Text="Kendi motorumuz"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Kapaliyken hazir GoodbyeDPI altyapisi kullanilir"
+                                           FontSize="11" Margin="0,2,0,0"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+                            </StackPanel>
+                            <ToggleButton Style="{StaticResource Switch}"
+                                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                                          IsChecked="{Binding IsNativeEngine, Mode=TwoWay}" />
+                        </Grid>
 
+                        <!-- Yontem: kendi motoru -->
+                        <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
+                            <ListBox Style="{StaticResource PillList}"
+                                     ItemsSource="{Binding NativeProfiles}"
+                                     SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}"
+                                     DisplayMemberPath="Name" />
+
+                            <!-- Ozel motor ayarlari -->
+                            <Border CornerRadius="10" Background="{DynamicResource SurfaceBrush}"
+                                    Padding="12" Margin="0,10,0,0"
+                                    Visibility="{Binding ShowCustomNative, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,4">
+                                        <TextBlock Text="Sahte paketin TTL degeri" FontSize="12"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <TextBox Style="{StaticResource InputBox}"
+                                                 Width="64" HorizontalAlignment="Right"
+                                                 Text="{Binding NativeTtl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    </Grid>
+
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="Sahte paket gonder" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeFakePacket, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="Dusuk TTL kullan" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeFakeTtl, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="Yanlis saglama (checksum)" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeWrongChecksum, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="Yanlis SEQ/ACK" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeWrongSeq, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="TLS ClientHello'yu bol" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeSplitTls, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="Parcalari ters sirada gonder" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeReverseSplit, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="QUIC (UDP 443) engelle" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeBlockQuic, Mode=TwoWay}" />
+                                    </Grid>
+                                    <Grid Margin="0,8,0,0">
+                                        <TextBlock Text="HTTP isteklerini de parcala" FontSize="12" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextBrush}" />
+                                        <ToggleButton Style="{StaticResource Switch}" HorizontalAlignment="Right"
+                                                      IsChecked="{Binding NativeFragmentHttp, Mode=TwoWay}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Yontem: hazir GoodbyeDPI -->
+                        <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
+                            <TextBlock Text="YONTEM (GoodbyeDPI)" FontSize="10" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
+                            <ListBox Style="{StaticResource PillList}"
+                                     ItemsSource="{Binding Methods}"
+                                     SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
+                                     DisplayMemberPath="Name" />
+                        </StackPanel>
+
+                        <!-- DNS -->
                         <TextBlock Text="DNS" FontSize="10" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,8,0,7" />
+                                   Foreground="{DynamicResource TextMutedBrush}" Margin="0,14,0,7" />
                         <ListBox Style="{StaticResource PillList}"
                                  ItemsSource="{Binding DnsProfiles}"
                                  SelectedItem="{Binding SelectedDns, Mode=TwoWay}"
                                  DisplayMemberPath="Name" />
+
+                        <!-- Ozel DNS girisi -->
+                        <Border CornerRadius="10" Background="{DynamicResource SurfaceBrush}"
+                                Padding="12" Margin="0,10,0,0"
+                                Visibility="{Binding ShowCustomDns, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <TextBlock Text="Kendi DNS sunucun" FontSize="12" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextBrush}" Margin="0,0,0,8" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="72" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
+                                             Text="{Binding DnsCustomV4, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             ToolTip="IPv4 DNS adresi, orn. 8.8.8.8" />
+                                    <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
+                                             Text="{Binding DnsCustomV4Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             ToolTip="Port" />
+                                </Grid>
+                                <TextBlock Text="IPv4 adresi : port" FontSize="10" Margin="2,3,0,0"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+
+                                <Grid Margin="0,8,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="72" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0" Style="{StaticResource InputBox}"
+                                             Text="{Binding DnsCustomV6, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             ToolTip="IPv6 DNS adresi (istege bagli)" />
+                                    <TextBox Grid.Column="1" Style="{StaticResource InputBox}" Margin="6,0,0,0"
+                                             Text="{Binding DnsCustomV6Port, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                             ToolTip="Port" />
+                                </Grid>
+                                <TextBlock Text="IPv6 adresi : port (istege bagli)" FontSize="10" Margin="2,3,0,0"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+
+                                <TextBlock Text="{Binding DnsWarning}" FontSize="11" Margin="0,8,0,0"
+                                           TextWrapping="Wrap" Foreground="{DynamicResource DangerBrush}"
+                                           Visibility="{Binding HasDnsWarning, Converter={StaticResource BoolToVis}}" />
+                            </StackPanel>
+                        </Border>
 
                         <Border Height="1" Background="{DynamicResource StrokeBrush}" Margin="0,14,0,0" />
 
@@ -235,23 +393,30 @@
                                           IsChecked="{Binding AutoConnect, Mode=TwoWay}" />
                         </Grid>
 
+                        <!-- Otomatik guncelle -->
+                        <Grid Margin="0,14,0,0">
+                            <StackPanel VerticalAlignment="Center" Margin="0,0,56,0">
+                                <TextBlock Text="Otomatik guncelle"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource TextBrush}" />
+                                <TextBlock Text="Acilista GitHub'da yeni surum varsa kurar"
+                                           FontSize="11" Margin="0,2,0,0"
+                                           TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextMutedBrush}" />
+                            </StackPanel>
+
+                            <ToggleButton Style="{StaticResource Switch}"
+                                          HorizontalAlignment="Right" VerticalAlignment="Center"
+                                          IsChecked="{Binding AutoUpdate, Mode=TwoWay}" />
+                        </Grid>
+
                         <!-- Gorev olusturulamadiysa sebebini goster -->
                         <TextBlock Text="{Binding StartupWarning}"
                                    FontSize="11"
                                    Margin="0,8,0,0"
                                    TextWrapping="Wrap"
-                                   Foreground="{DynamicResource DangerBrush}">
-                            <TextBlock.Style>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding HasStartupWarning}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                        </TextBlock>
+                                   Foreground="{DynamicResource DangerBrush}"
+                                   Visibility="{Binding HasStartupWarning, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </Border>
             </StackPanel>

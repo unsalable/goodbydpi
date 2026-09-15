@@ -93,12 +93,23 @@
             </Button>
 
             <!-- ============================================== profiller -->
-            <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
-                       Foreground="{DynamicResource TextMutedBrush}" Margin="0,16,0,7" />
-            <ListBox Style="{StaticResource PillList}"
-                     ItemsSource="{Binding Methods}"
-                     SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
-                     DisplayMemberPath="Name" />
+            <!-- Kendi motoru etkinken native profiller, degilse GoodbyeDPI yontemleri. -->
+            <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
+                <TextBlock Text="YONTEM" FontSize="10" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,16,0,7" />
+                <ListBox Style="{StaticResource PillList}"
+                         ItemsSource="{Binding NativeProfiles}"
+                         SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}"
+                         DisplayMemberPath="Name" />
+            </StackPanel>
+            <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
+                <TextBlock Text="YONTEM (GoodbyeDPI)" FontSize="10" FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextMutedBrush}" Margin="0,16,0,7" />
+                <ListBox Style="{StaticResource PillList}"
+                         ItemsSource="{Binding Methods}"
+                         SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
+                         DisplayMemberPath="Name" />
+            </StackPanel>
 
             <TextBlock Text="DNS" FontSize="10" FontWeight="SemiBold"
                        Foreground="{DynamicResource TextMutedBrush}" Margin="0,8,0,7" />
