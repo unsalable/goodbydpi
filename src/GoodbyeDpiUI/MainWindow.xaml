@@ -244,22 +244,20 @@
                             <!-- ============================ Internet saglayicisi -->
                             <!-- Secilen ISS'in onerdigi yontem, GoodbyeDPI yontemi ve DNS birlikte uygulanir. -->
                             <TextBlock Text="İNTERNET SAĞLAYICI" Style="{StaticResource SectionLabel}" />
-                            <ListBox Style="{StaticResource PillList}"
+                            <ComboBox Style="{StaticResource Dropdown}"
                                      ItemsSource="{Binding Isps}"
-                                     SelectedItem="{Binding SelectedIsp, Mode=TwoWay}"
-                                     DisplayMemberPath="Name" />
+                                     SelectedItem="{Binding SelectedIsp, Mode=TwoWay}" />
                             <TextBlock Text="{Binding SelectedIsp.Description}"
-                                       Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+                                       Style="{StaticResource RowHint}" Margin="1,6,0,0" />
 
                             <!-- ============================ Yontem: kendi motoru -->
                             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
                                 <TextBlock Text="YÖNTEM" Style="{StaticResource SectionLabel}" />
-                                <ListBox Style="{StaticResource PillList}"
+                                <ComboBox Style="{StaticResource Dropdown}"
                                          ItemsSource="{Binding NativeProfiles}"
-                                         SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}"
-                                         DisplayMemberPath="Name" />
+                                         SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}" />
                                 <TextBlock Text="{Binding SelectedNativeProfile.Description}"
-                                           Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+                                           Style="{StaticResource RowHint}" Margin="1,6,0,0" />
 
                                 <!-- Ozel motor ayarlari -->
                                 <Border x:Name="CustomNativePanel"
@@ -547,22 +545,20 @@
                             <!-- ========================== Yontem: hazir GoodbyeDPI -->
                             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}, ConverterParameter=invert}">
                                 <TextBlock Text="YÖNTEM (GoodbyeDPI)" Style="{StaticResource SectionLabel}" />
-                                <ListBox Style="{StaticResource PillList}"
+                                <ComboBox Style="{StaticResource Dropdown}"
                                          ItemsSource="{Binding Methods}"
-                                         SelectedItem="{Binding SelectedMethod, Mode=TwoWay}"
-                                         DisplayMemberPath="Name" />
+                                         SelectedItem="{Binding SelectedMethod, Mode=TwoWay}" />
                                 <TextBlock Text="{Binding SelectedMethod.Description}"
-                                           Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+                                           Style="{StaticResource RowHint}" Margin="1,6,0,0" />
                             </StackPanel>
 
                             <!-- ============================================ DNS -->
                             <TextBlock Text="DNS" Style="{StaticResource SectionLabel}" />
-                            <ListBox Style="{StaticResource PillList}"
+                            <ComboBox Style="{StaticResource Dropdown}"
                                      ItemsSource="{Binding DnsProfiles}"
-                                     SelectedItem="{Binding SelectedDns, Mode=TwoWay}"
-                                     DisplayMemberPath="Name" />
+                                     SelectedItem="{Binding SelectedDns, Mode=TwoWay}" />
                             <TextBlock Text="{Binding SelectedDns.Description}"
-                                       Style="{StaticResource RowHint}" Margin="1,0,0,0" />
+                                       Style="{StaticResource RowHint}" Margin="1,6,0,0" />
 
                             <!-- Ozel DNS girisi -->
                             <Border x:Name="CustomDnsPanel"
