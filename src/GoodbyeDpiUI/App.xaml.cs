@@ -37,6 +37,13 @@ public partial class App : Application
             return;
         }
 
+        // Guncelleme yolu testi (yonetici gerekmez, kurmaz): GitHub'i sorgular, indirir, dogrular.
+        if (e.Args.Any(a => string.Equals(a, "--updatetest", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.Exit(UpdateTest.Run());
+            return;
+        }
+
         // Tek ornek: ikinci kopya sessizce cikar, WinDivert cakismasi olmaz.
         _singleInstance = new Mutex(initiallyOwned: true, MutexName, out var isFirst);
         if (!isFirst)
