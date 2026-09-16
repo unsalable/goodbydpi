@@ -116,6 +116,13 @@ public partial class App : Application
         if (layoutIndex >= 0 && layoutIndex + 1 < e.Args.Length)
             window.RunLayoutShot(e.Args[layoutIndex + 1]);
 
+        // --dropdowntest <onek> [--realinput]: acilir listede tekerlek / govde kaydirma regresyonu.
+        var dropdownIndex = Array.FindIndex(e.Args, a =>
+            string.Equals(a, "--dropdowntest", StringComparison.OrdinalIgnoreCase));
+        if (dropdownIndex >= 0 && dropdownIndex + 1 < e.Args.Length)
+            window.RunDropdownTest(e.Args[dropdownIndex + 1],
+                e.Args.Any(a => string.Equals(a, "--realinput", StringComparison.OrdinalIgnoreCase)));
+
         // --themeshot <onek>: acik + koyu temayi PNG olarak kaydeder.
         var shotIndex = Array.FindIndex(e.Args, a =>
             string.Equals(a, "--themeshot", StringComparison.OrdinalIgnoreCase));

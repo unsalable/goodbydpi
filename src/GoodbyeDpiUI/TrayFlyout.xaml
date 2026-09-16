@@ -1,6 +1,7 @@
 <Window x:Class="GoodbyeDpiUI.TrayFlyout"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:svc="clr-namespace:GoodbyeDpiUI.Services"
         Title="GoodbyeDPI"
         Width="300"
         SizeToContent="Height"
@@ -27,26 +28,16 @@
             <!-- =========================================== durum basligi -->
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse Width="9" Height="9" VerticalAlignment="Center">
-                        <Ellipse.Style>
-                            <Style TargetType="Ellipse">
-                                <Setter Property="Fill" Value="{DynamicResource TextMutedBrush}" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsConnecting}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding IsFailed}" Value="True">
-                                        <Setter Property="Fill" Value="{DynamicResource DangerBrush}" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Ellipse.Style>
-                    </Ellipse>
+                    <!-- Durum rengi capraz gecisle degisir. -->
+                    <Grid Width="9" Height="9" VerticalAlignment="Center">
+                        <Ellipse Fill="{DynamicResource TextMutedBrush}" Opacity="0" svc:Motion.Show="{Binding IsIdle}" />
+                        <Ellipse Fill="{DynamicResource AccentBrush}" Opacity="0" svc:Motion.Show="{Binding IsConnecting}" />
+                        <Ellipse Fill="{DynamicResource SuccessBrush}" Opacity="0" svc:Motion.Show="{Binding IsConnected}" />
+                        <Ellipse Fill="{DynamicResource DangerBrush}" Opacity="0" svc:Motion.Show="{Binding IsFailed}" />
+                    </Grid>
 
-                    <TextBlock Text="{Binding StatusText}"
+                    <TextBlock Text="{Binding StatusText, NotifyOnTargetUpdated=True}"
+                               svc:Motion.RefreshText="True"
                                Margin="9,0,0,0"
                                FontSize="15" FontWeight="SemiBold"
                                VerticalAlignment="Center"

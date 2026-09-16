@@ -8,7 +8,7 @@
 ; adiminda skipifsilent YOK - sessiz kurulumdan sonra uygulama yeniden acilir.
 
 #define AppName "GoodbyeDPI UI"
-#define AppVersion "2.1.1"
+#define AppVersion "2.2.0"
 #define AppPublisher "GoodbyeDPI UI"
 #define AppExe "GoodbyeDPI-UI.exe"
 #define AppMutexName "GoodbyeDPI-UI.SingleInstance.v1"

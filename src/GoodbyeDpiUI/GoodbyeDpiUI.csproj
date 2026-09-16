@@ -16,7 +16,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
 
-    <Version>2.1.1</Version>
+    <Version>2.2.0</Version>
     <Product>GoodbyeDPI UI</Product>
     <Company>GoodbyeDPI UI</Company>
     <Description>GoodbyeDPI icin sade ve hafif masaustu arayuzu</Description>

@@ -49,6 +49,10 @@ public sealed class MainViewModel : ObservableObject
     // ------------------------------------------------------------- durum
 
     public ConnectionState State => _dpi.State;
+
+    /// <summary>Kapali (bosta): arayuzde notr renkli katmanlar bu durumda gorunur.</summary>
+    public bool IsIdle => State == ConnectionState.Disconnected;
+
     public bool IsConnected => State == ConnectionState.Connected;
     public bool IsConnecting => State == ConnectionState.Connecting;
     public bool IsFailed => State == ConnectionState.Failed;
@@ -750,6 +754,7 @@ public sealed class MainViewModel : ObservableObject
         };
 
         OnPropertyChanged(nameof(State));
+        OnPropertyChanged(nameof(IsIdle));
         OnPropertyChanged(nameof(IsConnected));
         OnPropertyChanged(nameof(IsConnecting));
         OnPropertyChanged(nameof(IsFailed));
