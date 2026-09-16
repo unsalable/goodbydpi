@@ -44,6 +44,7 @@ internal static class SelfTest
         Section("Native profiller", NativeProfiles);
         Section("Internet saglayici profilleri", IspProfiles);
         Section("Surum", VersionParsing);
+        Section("Hareket: yay egrisi", SpringCurve);
 
         Log.Insert(0, _failed == 0
             ? $"TUM TESTLER GECTI ({_passed})\n\n"
@@ -949,6 +950,59 @@ internal static class SelfTest
         Check("duz tag", UpdateService.TryParseTag("3.0.0", out var b) && b == new Version(3, 0, 0));
         Check("bozuk tag red", !UpdateService.TryParseTag("final", out _));
         Check("kisa tag", UpdateService.TryParseTag("2.0", out var c) && c == new Version(2, 0, 0));
+    }
+
+    // =================================================== hareket: yay egrisi
+
+    /// <summary>
+    /// Arayuzdeki tum gecisler SpringEase uzerinden gidiyor; egri bozulursa animasyonlar
+    /// ya hedefi tutturamaz ya da ziplar. Ucundan ucuna ve sekil olarak dogrulaniyor.
+    /// </summary>
+    private static void SpringCurve()
+    {
+        double[] bounces = [0, 0.15, 0.32];
+
+        foreach (var bounce in bounces)
+        {
+            Check($"yay({bounce}) 0'da 0", Math.Abs(SpringEase.Evaluate(0, bounce)) < 1e-9);
+            Check($"yay({bounce}) 1'de 1", Math.Abs(SpringEase.Evaluate(1, bounce) - 1) < 1e-9,
+                $"{SpringEase.Evaluate(1, bounce)}");
+        }
+
+        // Sonumlu (bounce 0) egri hedefi asmadan, geri gitmeden ilerlemeli.
+        var previous = 0.0;
+        var monotonic = true;
+        var overshoot = 0.0;
+        for (var i = 1; i <= 200; i++)
+        {
+            var value = SpringEase.Evaluate(i / 200.0, 0);
+            if (value < previous - 1e-9) monotonic = false;
+            overshoot = Math.Max(overshoot, value);
+            previous = value;
+        }
+
+        Check("yay(0) geri gitmiyor", monotonic);
+        Check("yay(0) hedefi asmiyor", overshoot <= 1 + 1e-6, $"{overshoot}");
+
+        // Duragan baslayip hizla yol almali: yarida %85'i gecmis olsun.
+        Check("yay(0) yarida yolun cogunu aliyor", SpringEase.Evaluate(0.5, 0) > 0.85,
+            $"{SpringEase.Evaluate(0.5, 0):F3}");
+
+        // Ziplamali egri hedefi belirgin ama olculu asmali.
+        var peak = 0.0;
+        for (var i = 1; i <= 200; i++) peak = Math.Max(peak, SpringEase.Evaluate(i / 200.0, 0.32));
+        Check("yay(0.32) hedefi asiyor", peak is > 1.01 and < 1.15, $"{peak:F3}");
+
+        // EasingFunctionBase baglantisi: varsayilan EaseOut modunda egrinin kendisi cikmali.
+        var ease = new SpringEase { Bounce = 0.15 };
+        var wired = true;
+        for (var i = 0; i <= 10; i++)
+        {
+            var t = i / 10.0;
+            if (Math.Abs(ease.Ease(t) - SpringEase.Evaluate(t, 0.15)) > 1e-9) wired = false;
+        }
+
+        Check("SpringEase EaseOut modunda yay egrisini veriyor", wired);
     }
 
     // ============================================================ yardimcilar

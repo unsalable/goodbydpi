@@ -46,6 +46,10 @@ Tek düğme, sistem tepsisi, açık/koyu tema, Windows açılışında otomatik 
   "Özel" profilinden tek tek açılıp kapatılabilir.
 - **Özel DNS sunucusu** — DNS listesindeki "Özel" seçeneğiyle kendi IPv4/IPv6 adres ve
   portunuzu girebilirsiniz.
+- **Akıcı arayüz** — tüm geçişler (açılır listeler, anahtarlar, ayar paneli, güç düğmesi,
+  durum değişimleri) sönümlü yay eğrisiyle canlandırılır; fare tekerleği süzülerek kaydırır.
+  Açılır liste açıkken tekerlek listeyi kaydırır, arka plan yerinde durur ve liste kutunun
+  altına yapışık kalır. Windows'ta animasyon efektleri kapalıysa tüm geçişler anında uygulanır.
 - **Otomatik güncelleme** — uygulama her açıldığında GitHub'daki en son sürümü kontrol
   eder; daha yeni bir sürüm varsa setup dosyasını indirip (SHA-256 ile doğrulayarak)
   sessizce kurar ve kendini yeniden başlatır. Ayarlardan kapatılabilir.
@@ -102,3 +106,15 @@ doğrular.
 
 `--hold <sn> --ready <dosya> --stopfile <dosya>` motoru açık tutar; böylece yönetici
 olmayan bir oturumdan (ör. Chrome headless) da sonda yapılabilir.
+
+Arayüz doğrulaması (yönetici gerekmez; ayrı ayar dosyası kullanır, kurulu sürüme dokunmaz):
+
+```powershell
+dotnet build src\GoodbyeDpiUI\GoodbyeDpiUI.csproj -c UiTest -p:DefineConstants=UITEST
+$ui = "src\GoodbyeDpiUI\bin\UiTest\net8.0-windows\win-x64\GoodbyeDPI-UI.dll"
+
+# Acilir liste: tekerlek, kaydirma, konum takibi, klavye, acilis/kapanis animasyonu
+dotnet $ui --dropdowntest sonuc            # --realinput eklenirse imleci de kullanir
+dotnet $ui --layoutshot yerlesim           # ayar paneli / "Ozel" gecisleri + olculer
+dotnet $ui --settings --themeshot tema      # acik ve koyu tema goruntuleri
+```

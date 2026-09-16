@@ -7,6 +7,21 @@
 
     <svc:BoolToVisibilityConverter x:Key="BoolToVis" />
 
+    <!-- ================================================== hareket egrileri -->
+    <!--
+        Storyboard'larda kullanilan ortak egriler. Koddan yapilan gecisler (Services/Motion,
+        PopupMotion, SmoothScroll) ayni yay egrisini kullanir; arayuzun her yeri ayni
+        "fizikle" hareket etsin diye yeni animasyonlar da buradan beslenmeli.
+
+        Renk degisimleri Setter ile degil, ustte duran katmanin opakligi soldurularak
+        yapiliyor: temadaki muhurlu fircalarin rengi animasyonlanamiyor.
+    -->
+    <svc:SpringEase x:Key="Spring" />
+    <svc:SpringEase x:Key="SpringSoft" Bounce="0.15" />
+    <svc:SpringEase x:Key="SpringBouncy" Bounce="0.32" />
+    <QuadraticEase x:Key="EaseOut" EasingMode="EaseOut" />
+    <CubicEase x:Key="EaseOutStrong" EasingMode="EaseOut" />
+
     <!-- ================================================== metin girisi -->
     <Style x:Key="InputBox" TargetType="TextBox">
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -17,23 +32,23 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="TextBox">
-                    <Border x:Name="Bd"
-                            CornerRadius="8"
-                            Background="{DynamicResource SurfaceAltBrush}"
-                            BorderThickness="1"
-                            BorderBrush="Transparent"
-                            Padding="9,0">
-                        <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" />
-                    </Border>
+                    <Grid>
+                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}" Padding="10,0">
+                            <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" />
+                        </Border>
+                        <Border CornerRadius="8" BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                                IsHitTestVisible="False" Opacity="0"
+                                svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <Border CornerRadius="8" BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
+                                IsHitTestVisible="False" Opacity="0"
+                                svc:Motion.Show="{TemplateBinding IsKeyboardFocused}" />
+                        <Border x:Name="ErrorRing" CornerRadius="8" BorderThickness="1"
+                                BorderBrush="{DynamicResource DangerBrush}"
+                                IsHitTestVisible="False" Visibility="Collapsed" />
+                    </Grid>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsKeyboardFocused" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                        </Trigger>
                         <Trigger Property="Validation.HasError" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource DangerBrush}" />
+                            <Setter TargetName="ErrorRing" Property="Visibility" Value="Visible" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -79,13 +94,28 @@
 
     <!--
         Ozel ayar kutusundaki tek satir: solda metin (+ istege bagli aciklama),
-        sagda anahtar ya da giris kutusu. Pasifken tum satir soluklasir.
+        sagda anahtar ya da giris kutusu. Pasif olunca tum satir yumusakca soluklasir.
     -->
     <Style x:Key="OptionRow" TargetType="Grid">
         <Setter Property="Margin" Value="0,10,0,0" />
         <Style.Triggers>
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.4" />
+                <Trigger.EnterActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity" To="0.4" Duration="0:0:0.22"
+                                             EasingFunction="{StaticResource EaseOut}" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.22"
+                                             EasingFunction="{StaticResource EaseOut}" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </Trigger.ExitActions>
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -114,6 +144,7 @@
     <!--
         Govde pencereye sigmadiginda gorunen, temaya uyan ince cubuk. Icerigin
         ustunde durur (yer kaplamaz); govdenin yan boslugu zaten 24 px.
+        Imlec alanin disindayken soner, cubugun ustune gelince kalinlasir.
     -->
 
     <Style x:Key="ScrollThumb" TargetType="Thumb">
@@ -121,13 +152,38 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Thumb">
-                    <Border x:Name="Bd" CornerRadius="3" Background="{DynamicResource StrokeBrush}" />
+                    <Grid Background="Transparent">
+                        <Border x:Name="Bar" Width="4" CornerRadius="3" HorizontalAlignment="Center"
+                                Background="{DynamicResource StrokeBrush}" />
+                        <Border x:Name="BarHot" Width="4" CornerRadius="3" HorizontalAlignment="Center"
+                                Background="{DynamicResource TextMutedBrush}" Opacity="0"
+                                svc:Motion.Show="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ScrollBar}}" />
+                    </Grid>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource TextMutedBrush}" />
-                        </Trigger>
+                        <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ScrollBar}}" Value="True">
+                            <DataTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Bar" Storyboard.TargetProperty="Width"
+                                                         To="6" Duration="0:0:0.3" EasingFunction="{StaticResource SpringSoft}" />
+                                        <DoubleAnimation Storyboard.TargetName="BarHot" Storyboard.TargetProperty="Width"
+                                                         To="6" Duration="0:0:0.3" EasingFunction="{StaticResource SpringSoft}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </DataTrigger.EnterActions>
+                            <DataTrigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Bar" Storyboard.TargetProperty="Width"
+                                                         To="4" Duration="0:0:0.35" EasingFunction="{StaticResource Spring}" />
+                                        <DoubleAnimation Storyboard.TargetName="BarHot" Storyboard.TargetProperty="Width"
+                                                         To="4" Duration="0:0:0.35" EasingFunction="{StaticResource Spring}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </DataTrigger.ExitActions>
+                        </DataTrigger>
                         <Trigger Property="IsDragging" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}" />
+                            <Setter TargetName="BarHot" Property="Background" Value="{DynamicResource AccentBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -148,8 +204,8 @@
     </Style>
 
     <Style x:Key="ThinScrollBar" TargetType="ScrollBar">
-        <Setter Property="Width" Value="6" />
-        <Setter Property="MinWidth" Value="6" />
+        <Setter Property="Width" Value="8" />
+        <Setter Property="MinWidth" Value="8" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ScrollBar">
@@ -169,26 +225,34 @@
         </Setter>
     </Style>
 
+    <!--
+        Tekerlekle yumusak kaydirma (SmoothScroll) bu stili kullanan her alanda acik:
+        pencere govdesi ve acilir listeler. Seffaf arka plan, bosluklarin ustunde de
+        tekerlegin ve imlecin alani gormesini sagliyor.
+    -->
     <Style x:Key="ThinScrollViewer" TargetType="ScrollViewer">
         <Setter Property="Focusable" Value="False" />
         <Setter Property="HorizontalScrollBarVisibility" Value="Disabled" />
         <Setter Property="VerticalScrollBarVisibility" Value="Auto" />
+        <Setter Property="svc:SmoothScroll.IsEnabled" Value="True" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ScrollViewer">
-                    <Grid>
+                    <Grid Background="Transparent">
                         <ScrollContentPresenter x:Name="PART_ScrollContentPresenter"
                                                 CanContentScroll="{TemplateBinding CanContentScroll}" />
                         <ScrollBar x:Name="PART_VerticalScrollBar"
                                    Style="{StaticResource ThinScrollBar}"
                                    Orientation="Vertical"
                                    HorizontalAlignment="Right"
-                                   Margin="0,4,7,10"
+                                   Margin="0,4,6,10"
                                    Minimum="0"
                                    Maximum="{TemplateBinding ScrollableHeight}"
                                    ViewportSize="{TemplateBinding ViewportHeight}"
                                    Value="{TemplateBinding VerticalOffset}"
-                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}"
+                                   Opacity="0"
+                                   svc:Motion.Show="{TemplateBinding IsMouseOver}" />
                     </Grid>
                 </ControlTemplate>
             </Setter.Value>
@@ -196,6 +260,7 @@
     </Style>
 
     <!-- ==================================================== baslik cubugu dugmeleri -->
+    <!-- Uzerine gelince zemin solarak belirir, basinca simge yay gibi icine cokup geri esner. -->
 
     <Style x:Key="TitleBarButton" TargetType="Button">
         <Setter Property="Width" Value="34" />
@@ -207,12 +272,15 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="7">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
+                    <Grid Background="{TemplateBinding Background}">
+                        <Border CornerRadius="7" Background="{DynamicResource SurfaceAltBrush}" Opacity="0"
+                                svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          svc:Motion.Pressed="{TemplateBinding IsPressed}"
+                                          svc:Motion.PressScale="0.84" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -221,17 +289,20 @@
         </Setter>
     </Style>
 
-    <!-- Kapat dugmesi ayni sablonu kullanir ama uzerine gelince kirmiziya doner. -->
+    <!-- Kapat dugmesi ayni davranir ama uzerine gelince kirmizi zemin solarak gelir. -->
     <Style x:Key="CloseButton" TargetType="Button" BasedOn="{StaticResource TitleBarButton}">
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="Transparent" CornerRadius="7">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
+                    <Grid Background="Transparent">
+                        <Border CornerRadius="7" Background="{DynamicResource DangerBrush}" Opacity="0"
+                                svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          svc:Motion.Pressed="{TemplateBinding IsPressed}"
+                                          svc:Motion.PressScale="0.84" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource DangerBrush}" />
                             <Setter Property="Foreground" Value="White" />
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -242,11 +313,31 @@
 
     <!-- ============================================================== guc dugmesi -->
     <!--
-        Kompozisyon (disdan ice): nabiz halkasi > donen yay > govde > glif.
-        Durum animasyonlari DataTrigger ile VM'in State ozelligine bagli.
-        Nabiz ve donme yalnizca ilgili durumda calisir; kapali durumda
-        hicbir storyboard donmez, yani bosta CPU kullanimi sifira iner.
+        Kompozisyon (disdan ice): nabiz halkasi > ray > donen yay > govde > glif.
+
+        Her durumun (bagli, baglaniyor, hata) kendi ray / govde / glif katmani var ve
+        opakligi durum ozelligine bagli soluyor; durumlar arasi gecis boylece capraz
+        gecis oluyor, renk bir karede ziplamiyor. Uzerine gelme ve basma ayri olcekler
+        oldugu icin birbirini ezmiyor.
+
+        Nabiz ve donme yalnizca ilgili durumda ve pencere gorunurken calisir; kapali
+        durumda hicbir storyboard donmez, yani bosta CPU kullanimi sifira iner.
     -->
+
+    <Style x:Key="PowerGlyph" TargetType="Path">
+        <Setter Property="StrokeThickness" Value="5" />
+        <Setter Property="StrokeStartLineCap" Value="Round" />
+        <Setter Property="StrokeEndLineCap" Value="Round" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Data" Value="M 67.15,73.86 A 22,22 0 1 0 100.85,73.86 M 84,58 L 84,84" />
+    </Style>
+
+    <Style x:Key="PowerTrack" TargetType="Ellipse">
+        <Setter Property="Margin" Value="6" />
+        <Setter Property="StrokeThickness" Value="4" />
+        <Setter Property="IsHitTestVisible" Value="False" />
+    </Style>
+
     <Style x:Key="PowerButton" TargetType="Button">
         <Setter Property="Width" Value="{StaticResource PowerSize}" />
         <Setter Property="Height" Value="{StaticResource PowerSize}" />
@@ -256,15 +347,15 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5" Background="Transparent">
-                        <Grid.RenderTransform>
-                            <ScaleTransform x:Name="Scale" ScaleX="1" ScaleY="1" />
-                        </Grid.RenderTransform>
+                    <Grid Background="Transparent"
+                          svc:Motion.Hovered="{TemplateBinding IsMouseOver}" svc:Motion.HoverScale="1.04"
+                          svc:Motion.Pressed="{TemplateBinding IsPressed}" svc:Motion.PressScale="0.93">
 
                         <!-- Nabiz halkasi: baglandiginda disari dogru genisleyip soner. -->
                         <Ellipse x:Name="Pulse"
                                  Margin="4"
                                  Opacity="0"
+                                 IsHitTestVisible="False"
                                  Fill="{DynamicResource SuccessBrush}"
                                  RenderTransformOrigin="0.5,0.5">
                             <Ellipse.RenderTransform>
@@ -272,15 +363,18 @@
                             </Ellipse.RenderTransform>
                         </Ellipse>
 
-                        <!-- Sabit ray -->
-                        <Ellipse x:Name="Track"
-                                 Margin="6"
-                                 Stroke="{DynamicResource TrackBrush}"
-                                 StrokeThickness="4" />
+                        <!-- Ray: bosta, hata ve bagli renkleri ust uste -->
+                        <Ellipse Style="{StaticResource PowerTrack}" Stroke="{DynamicResource TrackBrush}" />
+                        <Ellipse Style="{StaticResource PowerTrack}" Stroke="{DynamicResource DangerBrush}"
+                                 Opacity="0" svc:Motion.Show="{Binding IsFailed}" />
+                        <Ellipse Style="{StaticResource PowerTrack}" Stroke="{DynamicResource SuccessBrush}"
+                                 Opacity="0" svc:Motion.Show="{Binding IsConnected}" />
 
                         <!-- Baglaniyor durumundaki donen yay -->
                         <Path x:Name="Arc"
                               Opacity="0"
+                              IsHitTestVisible="False"
+                              svc:Motion.Show="{Binding IsConnecting}"
                               Stroke="{DynamicResource AccentBrush}"
                               StrokeThickness="4"
                               StrokeStartLineCap="Round"
@@ -292,100 +386,53 @@
                             </Path.RenderTransform>
                         </Path>
 
-                        <!-- Govde -->
-                        <Ellipse x:Name="Core"
-                                 Margin="20"
-                                 Fill="{DynamicResource SurfaceAltBrush}" />
+                        <!-- Govde ve glif: baglaninca birlikte hafifce icine cokup yay ile oturur. -->
+                        <Grid RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform>
+                                <ScaleTransform x:Name="BodyScale" ScaleX="1" ScaleY="1" />
+                            </Grid.RenderTransform>
 
-                        <!-- Guc glifi -->
-                        <Path x:Name="Glyph"
-                              Stroke="{DynamicResource TextMutedBrush}"
-                              StrokeThickness="5"
-                              StrokeStartLineCap="Round"
-                              StrokeEndLineCap="Round"
-                              Data="M 67.15,73.86 A 22,22 0 1 0 100.85,73.86 M 84,58 L 84,84" />
+                            <Ellipse Margin="20" IsHitTestVisible="False" Fill="{DynamicResource SurfaceAltBrush}" />
+                            <Ellipse Margin="20" IsHitTestVisible="False" Fill="{DynamicResource AccentGradient}"
+                                     Opacity="0" svc:Motion.Show="{Binding IsConnected}" />
+
+                            <Path Style="{StaticResource PowerGlyph}" Stroke="{DynamicResource TextMutedBrush}"
+                                  Opacity="0" svc:Motion.Show="{Binding IsIdle}" />
+                            <Path Style="{StaticResource PowerGlyph}" Stroke="{DynamicResource DangerBrush}"
+                                  Opacity="0" svc:Motion.Show="{Binding IsFailed}" />
+                            <Path Style="{StaticResource PowerGlyph}" Stroke="{DynamicResource AccentBrush}"
+                                  Opacity="0" svc:Motion.Show="{Binding IsConnecting}" />
+                            <Path Style="{StaticResource PowerGlyph}" Stroke="White"
+                                  Opacity="0" svc:Motion.Show="{Binding IsConnected}" />
+                        </Grid>
                     </Grid>
 
                     <ControlTemplate.Triggers>
 
-                        <!-- ================================================ etkilesim -->
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Trigger.EnterActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                         To="1.045" Duration="0:0:0.18">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                         To="1.045" Duration="0:0:0.18">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.EnterActions>
-                            <Trigger.ExitActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                         To="1" Duration="0:0:0.22" />
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                         To="1" Duration="0:0:0.22" />
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.ExitActions>
-                        </Trigger>
-
-                        <Trigger Property="IsPressed" Value="True">
-                            <Trigger.EnterActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                         To="0.96" Duration="0:0:0.09" />
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                         To="0.96" Duration="0:0:0.09" />
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.EnterActions>
-                            <Trigger.ExitActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleX"
-                                                         To="1" Duration="0:0:0.16" />
-                                        <DoubleAnimation Storyboard.TargetName="Scale" Storyboard.TargetProperty="ScaleY"
-                                                         To="1" Duration="0:0:0.16" />
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.ExitActions>
-                        </Trigger>
-
-                        <!-- ============================================= BAGLANIYOR -->
-                        <DataTrigger Binding="{Binding IsConnecting}" Value="True">
-                            <Setter TargetName="Arc" Property="Opacity" Value="1" />
-                            <Setter TargetName="Glyph" Property="Stroke" Value="{DynamicResource AccentBrush}" />
-                        </DataTrigger>
-
-                        <!-- ============================================== BAGLANDI -->
+                        <!-- Baglanti kuruldugu an: govde kisa bir an icine cokup esneyerek yerine oturur. -->
                         <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                            <Setter TargetName="Core" Property="Fill" Value="{DynamicResource AccentGradient}" />
-                            <Setter TargetName="Glyph" Property="Stroke" Value="White" />
-                            <Setter TargetName="Track" Property="Stroke" Value="{DynamicResource SuccessBrush}" />
-                        </DataTrigger>
-
-                        <!-- ================================================== HATA -->
-                        <DataTrigger Binding="{Binding IsFailed}" Value="True">
-                            <Setter TargetName="Track" Property="Stroke" Value="{DynamicResource DangerBrush}" />
-                            <Setter TargetName="Glyph" Property="Stroke" Value="{DynamicResource DangerBrush}" />
+                            <DataTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimationUsingKeyFrames Storyboard.TargetName="BodyScale" Storyboard.TargetProperty="ScaleX">
+                                            <EasingDoubleKeyFrame KeyTime="0:0:0.12" Value="0.92" EasingFunction="{StaticResource EaseOut}" />
+                                            <EasingDoubleKeyFrame KeyTime="0:0:0.82" Value="1" EasingFunction="{StaticResource SpringBouncy}" />
+                                        </DoubleAnimationUsingKeyFrames>
+                                        <DoubleAnimationUsingKeyFrames Storyboard.TargetName="BodyScale" Storyboard.TargetProperty="ScaleY">
+                                            <EasingDoubleKeyFrame KeyTime="0:0:0.12" Value="0.92" EasingFunction="{StaticResource EaseOut}" />
+                                            <EasingDoubleKeyFrame KeyTime="0:0:0.82" Value="1" EasingFunction="{StaticResource SpringBouncy}" />
+                                        </DoubleAnimationUsingKeyFrames>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </DataTrigger.EnterActions>
                         </DataTrigger>
 
                         <!--
                             Surekli donen storyboard'lar yalnizca pencere gorunurken calisir.
                             AreAnimationsEnabled tepsiye kucululdugunde false olur ve
                             animasyon saatleri tamamen durur - bosta CPU kullanimi sifir.
+                            Yay durdurulurken yerinde birakiliyor (Pause): solarak kaybolurken
+                            basa ziplamasin.
                         -->
                         <MultiDataTrigger>
                             <MultiDataTrigger.Conditions>
@@ -403,7 +450,7 @@
                                 </BeginStoryboard>
                             </MultiDataTrigger.EnterActions>
                             <MultiDataTrigger.ExitActions>
-                                <StopStoryboard BeginStoryboardName="SpinStory" />
+                                <PauseStoryboard BeginStoryboardName="SpinStory" />
                             </MultiDataTrigger.ExitActions>
                         </MultiDataTrigger>
 
@@ -414,14 +461,17 @@
                             </MultiDataTrigger.Conditions>
                             <MultiDataTrigger.EnterActions>
                                 <BeginStoryboard x:Name="PulseStory">
+                                    <!-- Efekt yerine duz elips olcekliyoruz: GPU'da neredeyse bedava. -->
                                     <Storyboard RepeatBehavior="Forever">
-                                        <!-- Efekt yerine duz elips olcekliyoruz: GPU'da neredeyse bedava. -->
                                         <DoubleAnimation Storyboard.TargetName="PulseScale" Storyboard.TargetProperty="ScaleX"
-                                                         From="0.92" To="1.16" Duration="0:0:2.2" />
+                                                         From="0.92" To="1.17" Duration="0:0:2.4"
+                                                         EasingFunction="{StaticResource EaseOutStrong}" />
                                         <DoubleAnimation Storyboard.TargetName="PulseScale" Storyboard.TargetProperty="ScaleY"
-                                                         From="0.92" To="1.16" Duration="0:0:2.2" />
+                                                         From="0.92" To="1.17" Duration="0:0:2.4"
+                                                         EasingFunction="{StaticResource EaseOutStrong}" />
                                         <DoubleAnimation Storyboard.TargetName="Pulse" Storyboard.TargetProperty="Opacity"
-                                                         From="0.28" To="0" Duration="0:0:2.2" />
+                                                         From="0.3" To="0" Duration="0:0:2.4"
+                                                         EasingFunction="{StaticResource EaseOut}" />
                                     </Storyboard>
                                 </BeginStoryboard>
                             </MultiDataTrigger.EnterActions>
@@ -437,6 +487,10 @@
     </Style>
 
     <!-- ================================================================= anahtar -->
+    <!--
+        iOS anahtari gibi: dugme yay ile esneyerek kayar, zemin rengi solarak gecer,
+        basili tutulurken dugme kayacagi yone dogru uzar.
+    -->
 
     <Style x:Key="Switch" TargetType="ToggleButton">
         <Setter Property="Width" Value="44" />
@@ -446,34 +500,31 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Grid>
-                        <Border x:Name="Track" CornerRadius="13" Background="{DynamicResource TrackBrush}" />
-                        <Ellipse x:Name="Thumb"
-                                 Width="20" Height="20"
-                                 Fill="White"
-                                 HorizontalAlignment="Left"
-                                 Margin="3,0,0,0"
-                                 RenderTransformOrigin="0.5,0.5">
-                            <Ellipse.RenderTransform>
+                    <Grid Background="Transparent">
+                        <Border CornerRadius="13" Background="{DynamicResource TrackBrush}" />
+                        <Border CornerRadius="13" Background="{DynamicResource AccentBrush}" Opacity="0"
+                                svc:Motion.Show="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}}" />
+                        <Border x:Name="Thumb"
+                                Width="20" Height="20"
+                                CornerRadius="10"
+                                Background="White"
+                                HorizontalAlignment="Left"
+                                Margin="3,0,0,0">
+                            <Border.RenderTransform>
                                 <TranslateTransform x:Name="ThumbShift" X="0" />
-                            </Ellipse.RenderTransform>
-                            <Ellipse.Effect>
+                            </Border.RenderTransform>
+                            <Border.Effect>
                                 <DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.28" Color="#000000" />
-                            </Ellipse.Effect>
-                        </Ellipse>
+                            </Border.Effect>
+                        </Border>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Track" Property="Background" Value="{DynamicResource AccentBrush}" />
                             <Trigger.EnterActions>
                                 <BeginStoryboard>
                                     <Storyboard>
                                         <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
-                                                         To="18" Duration="0:0:0.2">
-                                            <DoubleAnimation.EasingFunction>
-                                                <BackEase EasingMode="EaseOut" Amplitude="0.35" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
+                                                         To="18" Duration="0:0:0.5" EasingFunction="{StaticResource SpringBouncy}" />
                                     </Storyboard>
                                 </BeginStoryboard>
                             </Trigger.EnterActions>
@@ -481,15 +532,58 @@
                                 <BeginStoryboard>
                                     <Storyboard>
                                         <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
-                                                         To="0" Duration="0:0:0.2">
-                                            <DoubleAnimation.EasingFunction>
-                                                <CubicEase EasingMode="EaseOut" />
-                                            </DoubleAnimation.EasingFunction>
-                                        </DoubleAnimation>
+                                                         To="0" Duration="0:0:0.5" EasingFunction="{StaticResource SpringBouncy}" />
                                     </Storyboard>
                                 </BeginStoryboard>
                             </Trigger.ExitActions>
                         </Trigger>
+
+                        <!-- Basili: dugme uzar. Kapaliyken saga, acikken sola dogru. -->
+                        <Trigger Property="IsPressed" Value="True">
+                            <Trigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Thumb" Storyboard.TargetProperty="Width"
+                                                         To="25" Duration="0:0:0.16" EasingFunction="{StaticResource EaseOut}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="Thumb" Storyboard.TargetProperty="Width"
+                                                         To="20" Duration="0:0:0.45" EasingFunction="{StaticResource SpringSoft}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.ExitActions>
+                        </Trigger>
+
+                        <!--
+                            Birakinca once IsPressed duser (bu cikis X'i 18'e dondurur), hemen
+                            ardindan tiklama IsChecked'i degistirir ve onun animasyonu son soze sahip olur.
+                        -->
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsPressed" Value="True" />
+                                <Condition Property="IsChecked" Value="True" />
+                            </MultiTrigger.Conditions>
+                            <MultiTrigger.EnterActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
+                                                         To="13" Duration="0:0:0.16" EasingFunction="{StaticResource EaseOut}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiTrigger.EnterActions>
+                            <MultiTrigger.ExitActions>
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X"
+                                                         To="18" Duration="0:0:0.45" EasingFunction="{StaticResource SpringSoft}" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </MultiTrigger.ExitActions>
+                        </MultiTrigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -497,7 +591,7 @@
     </Style>
 
     <!-- ==================================================== secim hapi (pill) -->
-    <!-- Yontem ve DNS secimi icin ComboBox yerine yatay hap listesi: daha az XAML, daha net. -->
+    <!-- Tepsi panelindeki yontem ve DNS secimi: yatay hap listesi. -->
 
     <Style x:Key="PillList" TargetType="ListBox">
         <Setter Property="Background" Value="Transparent" />
@@ -541,24 +635,24 @@
                     <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                     <Setter Property="Template">
                         <Setter.Value>
+                            <!--
+                                Secili zemin ve beyaz yazi ustten solarak gelir; normal yazi ayni
+                                anda soner. Tek bir yaziyi renklendirmek ani degisim olurdu.
+                            -->
                             <ControlTemplate TargetType="ListBoxItem">
-                                <Border x:Name="Bd"
-                                        CornerRadius="9"
-                                        Padding="11,6"
-                                        Background="{DynamicResource SurfaceAltBrush}"
-                                        BorderThickness="1"
-                                        BorderBrush="Transparent">
-                                    <ContentPresenter />
-                                </Border>
-                                <ControlTemplate.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
-                                    </Trigger>
-                                    <Trigger Property="IsSelected" Value="True">
-                                        <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentBrush}" />
-                                        <Setter Property="TextElement.Foreground" Value="White" />
-                                    </Trigger>
-                                </ControlTemplate.Triggers>
+                                <Grid>
+                                    <Border CornerRadius="9" Background="{DynamicResource SurfaceAltBrush}" />
+                                    <Border CornerRadius="9" BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                                            Opacity="0" svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                                    <Border CornerRadius="9" Background="{DynamicResource AccentBrush}"
+                                            Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}" />
+                                    <ContentPresenter Margin="11,6"
+                                                      TextElement.Foreground="{DynamicResource TextBrush}"
+                                                      svc:Motion.Hide="{TemplateBinding IsSelected}" />
+                                    <ContentPresenter Margin="11,6"
+                                                      TextElement.Foreground="White"
+                                                      Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}" />
+                                </Grid>
                             </ControlTemplate>
                         </Setter.Value>
                     </Setter>
@@ -581,8 +675,13 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBoxItem">
-                    <Border x:Name="Bd" CornerRadius="8" Padding="10,7" Background="Transparent">
-                        <Grid>
+                    <Grid Background="Transparent">
+                        <!-- Secili zemin ve uzerine gelme vurgusu ayri katmanlar: vurgu ogeler arasinda suzulur. -->
+                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}" />
+                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsHighlighted}" />
+                        <Grid Margin="10,7">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
@@ -595,22 +694,14 @@
                                            Foreground="{DynamicResource TextMutedBrush}"
                                            TextTrimming="CharacterEllipsis" />
                             </StackPanel>
-                            <Path x:Name="Check" Grid.Column="1" Margin="10,0,2,0"
-                                  VerticalAlignment="Center" Visibility="Collapsed"
+                            <Path Grid.Column="1" Margin="10,0,2,0"
+                                  VerticalAlignment="Center"
+                                  Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}"
                                   Data="M 0,5 L 4,9 L 12,1" StrokeThickness="1.8"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                   Stroke="{DynamicResource AccentBrush}" />
                         </Grid>
-                    </Border>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsHighlighted" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsSelected" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
-                            <Setter TargetName="Check" Property="Visibility" Value="Visible" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
+                    </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
@@ -622,54 +713,64 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Bd" CornerRadius="10"
-                            Background="{DynamicResource SurfaceAltBrush}"
-                            BorderThickness="1" BorderBrush="Transparent" />
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource StrokeBrush}" />
-                        </Trigger>
-                        <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                        </Trigger>
-                    </ControlTemplate.Triggers>
+                    <Grid>
+                        <Border CornerRadius="10" Background="{DynamicResource SurfaceAltBrush}" />
+                        <Border CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <Border CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
+                                Opacity="0"
+                                svc:Motion.Show="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}}" />
+                    </Grid>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
     </Style>
 
+    <!--
+        Acilir panel PopupMotion ile acilip kapanir: kutunun kenarindan hafif buyuyup
+        yay ile oturur, kapanirken kisa bir solmayla kaybolur. Popup.IsOpen bu yuzden
+        dogrudan IsDropDownOpen'a bagli degil.
+    -->
     <Style x:Key="Dropdown" TargetType="ComboBox">
         <Setter Property="Height" Value="40" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="ItemContainerStyle" Value="{StaticResource DropdownItem}" />
         <Setter Property="MaxDropDownHeight" Value="300" />
+        <!--
+            WPF'in ComboBox tema stili oge bazli kaydirmayi aciyor ve sablondaki ScrollViewer
+            bunu sessizce devraliyor: liste piksel yerine birer oge ziplardi. Piksel bazli
+            olunca tekerlekle yumusak kaydirma listede de calisiyor.
+        -->
+        <Setter Property="ScrollViewer.CanContentScroll" Value="False" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
-                    <Grid>
-                        <ToggleButton Style="{StaticResource DropdownToggle}"
+                    <Grid svc:Motion.Pressed="{Binding IsPressed, ElementName=Toggle}" svc:Motion.PressScale="0.985">
+                        <ToggleButton x:Name="Toggle"
+                                      Style="{StaticResource DropdownToggle}"
                                       IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
                         <Grid Margin="13,0,12,0" IsHitTestVisible="False">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding SelectedItem.Name, RelativeSource={RelativeSource TemplatedParent}}"
+                            <TextBlock Text="{Binding SelectedItem.Name, RelativeSource={RelativeSource TemplatedParent}, NotifyOnTargetUpdated=True}"
+                                       svc:Motion.RefreshText="True"
                                        VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}"
                                        TextTrimming="CharacterEllipsis" />
-                            <Path x:Name="Arrow" Grid.Column="1" VerticalAlignment="Center"
+                            <Path Grid.Column="1" VerticalAlignment="Center"
                                   Data="M 0,0 L 5,5 L 10,0" StrokeThickness="1.6"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
                                   Stroke="{DynamicResource TextMutedBrush}"
-                                  RenderTransformOrigin="0.5,0.5" />
+                                  svc:Motion.Turned="{TemplateBinding IsDropDownOpen}" />
                         </Grid>
 
                         <Popup x:Name="PART_Popup"
-                               IsOpen="{TemplateBinding IsDropDownOpen}"
+                               svc:PopupMotion.IsOpen="{TemplateBinding IsDropDownOpen}"
                                Placement="Bottom" VerticalOffset="2" HorizontalOffset="-8"
-                               AllowsTransparency="True" PopupAnimation="Fade"
+                               AllowsTransparency="True"
                                Focusable="False">
                             <!-- Golgeye yer acmak icin kenar boslugu birakiliyor. -->
                             <Border Margin="8,2,8,12"
@@ -687,15 +788,6 @@
                             </Border>
                         </Popup>
                     </Grid>
-                    <ControlTemplate.Triggers>
-                        <Trigger Property="IsDropDownOpen" Value="True">
-                            <Setter TargetName="Arrow" Property="RenderTransform">
-                                <Setter.Value>
-                                    <RotateTransform Angle="180" />
-                                </Setter.Value>
-                            </Setter>
-                        </Trigger>
-                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
@@ -712,48 +804,18 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd"
-                            CornerRadius="11"
-                            Background="{DynamicResource AccentGradient}"
-                            RenderTransformOrigin="0.5,0.5">
-                        <Border.RenderTransform>
-                            <ScaleTransform x:Name="Sc" ScaleX="1" ScaleY="1" />
-                        </Border.RenderTransform>
+                    <Grid svc:Motion.Hovered="{TemplateBinding IsMouseOver}" svc:Motion.HoverScale="1.02"
+                          svc:Motion.Pressed="{TemplateBinding IsPressed}" svc:Motion.PressScale="0.96">
+                        <Border CornerRadius="11" Background="{DynamicResource AccentGradient}" />
+                        <!-- Bagliyken eylem "kes" oldugu icin notr yuzey ustten solarak gelir. -->
+                        <Border CornerRadius="11" Background="{DynamicResource SurfaceAltBrush}"
+                                Opacity="0" svc:Motion.Show="{Binding IsConnected}" />
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                    </Border>
+                    </Grid>
                     <ControlTemplate.Triggers>
-                        <!-- Bagliyken eylem "kes" oldugu icin notr yuzeye doner. -->
                         <DataTrigger Binding="{Binding IsConnected}" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                         </DataTrigger>
-
-                        <Trigger Property="IsMouseOver" Value="True">
-                            <Trigger.EnterActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX"
-                                                         To="1.02" Duration="0:0:0.15" />
-                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY"
-                                                         To="1.06" Duration="0:0:0.15" />
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.EnterActions>
-                            <Trigger.ExitActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleX"
-                                                         To="1" Duration="0:0:0.18" />
-                                        <DoubleAnimation Storyboard.TargetName="Sc" Storyboard.TargetProperty="ScaleY"
-                                                         To="1" Duration="0:0:0.18" />
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.ExitActions>
-                        </Trigger>
-
-                        <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Bd" Property="Opacity" Value="0.82" />
-                        </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
@@ -771,12 +833,15 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" CornerRadius="8" Padding="9,5" Background="Transparent">
-                        <ContentPresenter />
-                    </Border>
+                    <Grid Background="Transparent">
+                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <ContentPresenter Margin="9,5"
+                                          svc:Motion.Pressed="{TemplateBinding IsPressed}"
+                                          svc:Motion.PressScale="0.94" />
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
                             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
                         </Trigger>
                         <MultiTrigger>

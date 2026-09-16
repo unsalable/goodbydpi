@@ -82,16 +82,16 @@ public partial class MainWindow : Window
                 vm.SelectedNativeProfile = Models.NativeProfile.Custom;
                 await Step("3-ozel", 900);
 
-                // Imlec hap listesinin ustundeyken tekerlek govdeyi kaydirmali.
+                // Imlec (kapali) secim kutusunun ustundeyken tekerlek govdeyi kaydirmali.
                 BodyScroll.ScrollToTop();
                 await Task.Delay(150);
-                var pills = FindDescendant<ListBox>(SettingsPanel);
-                pills?.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -360)
+                var dropdown = FindDescendant<ComboBox>(SettingsPanel);
+                dropdown?.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -360)
                 {
                     RoutedEvent = UIElement.PreviewMouseWheelEvent,
                 });
                 await Task.Delay(450);
-                log.AppendLine($"tekerlek-hap-ustunde: ofset 0 -> {BodyScroll.VerticalOffset:F0} (liste bulundu: {pills is not null})");
+                log.AppendLine($"tekerlek-kutu-ustunde: ofset 0 -> {BodyScroll.VerticalOffset:F0} (kutu bulundu: {dropdown is not null})");
 
                 BodyScroll.ScrollToEnd();
                 await Step("4-ozel-alt", 500);
@@ -214,7 +214,7 @@ public partial class MainWindow : Window
                         ApplyTitleBarTheme();
                         break;
 
-                    // Ozel panel acildiginda kullanici onu aramak zorunda kalmasin.
+                    // Ozel panel acildiginda kullanici onu aramak zorunda kalmasin: govde ona suzulur.
                     case nameof(MainViewModel.ShowCustomNative) when vm.ShowCustomNative:
                         RevealWhenLaidOut(CustomNativePanel);
                         break;
@@ -271,55 +271,11 @@ public partial class MainWindow : Window
     private void RevealWhenLaidOut(FrameworkElement element) =>
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
-            if (element.IsVisible) element.BringIntoView();
+            if (element.IsVisible) SmoothScroll.BringIntoView(BodyScroll, element);
         });
 
-    // Fare tekerlegi: yumusak kaydirma. Hedef ofset biriktirilir, kisa bir animasyonla gidilir.
-
-    private double _scrollTarget;
-    private double _lastAnimatedOffset = double.NaN;
-
-    private static readonly DependencyProperty AnimatedOffsetProperty = DependencyProperty.Register(
-        "AnimatedOffset", typeof(double), typeof(MainWindow),
-        new PropertyMetadata(0.0, (d, e) =>
-        {
-            var w = (MainWindow)d;
-            w._lastAnimatedOffset = (double)e.NewValue;
-            w.BodyScroll.ScrollToVerticalOffset((double)e.NewValue);
-        }));
-
-    private void BodyScroll_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        if (BodyScroll.ScrollableHeight <= 0) return;
-
-        e.Handled = true;
-
-        // Kullanici arada cubugu surukleyip ya da BringIntoView ile yer degistirdiyse
-        // hedefi oradan baslat.
-        var current = BodyScroll.VerticalOffset;
-        if (double.IsNaN(_lastAnimatedOffset) || Math.Abs(current - _lastAnimatedOffset) > 1)
-            _scrollTarget = current;
-
-        _scrollTarget = Math.Clamp(_scrollTarget - e.Delta * 0.45, 0, BodyScroll.ScrollableHeight);
-
-        if (Vm?.AreAnimationsEnabled == false || SystemParameters.ClientAreaAnimation == false)
-        {
-            BodyScroll.ScrollToVerticalOffset(_scrollTarget);
-            _lastAnimatedOffset = _scrollTarget;
-            return;
-        }
-
-        BeginAnimation(AnimatedOffsetProperty, new DoubleAnimation
-        {
-            From = current,
-            To = _scrollTarget,
-            Duration = TimeSpan.FromMilliseconds(160),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
-        }, HandoffBehavior.SnapshotAndReplace);
-    }
-
     private void BodyScroll_ScrollChanged(object sender, ScrollChangedEventArgs e) =>
-        TitleDivider.Opacity = BodyScroll.VerticalOffset > 0.5 ? 1 : 0;
+        Motion.SetShow(TitleDivider, BodyScroll.VerticalOffset > 0.5);
 
     /// <summary>Sayi/adres kutularinda Enter degeri hemen uygular (odak kaybini beklemez).</summary>
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -346,6 +302,28 @@ public partial class MainWindow : Window
         CaptureForCrossfade();
         vm.IsDark = !vm.IsDark;
         StartCrossfade();
+        PlayThemeIconTurn();
+    }
+
+    /// <summary>
+    /// Ay/gunes simgesi yay ile donup buyuyerek yerine gelir. Anlik goruntu alindiktan
+    /// SONRA baslatiliyor; yoksa soldurulan eski goruntude simge yarim donmus kalirdi.
+    /// </summary>
+    private void PlayThemeIconTurn()
+    {
+        if (!SystemParameters.ClientAreaAnimation) return;
+
+        var turn = new RotateTransform();
+        var scale = new ScaleTransform();
+        ThemeIcon.RenderTransformOrigin = new Point(0.5, 0.5);
+        ThemeIcon.RenderTransform = new TransformGroup { Children = { scale, turn } };
+
+        var spring = new SpringEase { Bounce = 0.3 };
+        var duration = TimeSpan.FromMilliseconds(640);
+
+        turn.BeginAnimation(RotateTransform.AngleProperty, new DoubleAnimation(-100, 0, duration) { EasingFunction = spring });
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.4, 1, duration) { EasingFunction = spring });
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.4, 1, duration) { EasingFunction = spring });
     }
 
     private void CaptureForCrossfade()
@@ -443,6 +421,34 @@ public partial class MainWindow : Window
     private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (Vm is { } vm) vm.AreAnimationsEnabled = IsVisible;
+        if (IsVisible) PlayAppear();
+    }
+
+    /// <summary>
+    /// Pencere her gosterildiginde (acilis ya da tepsiden geri gelis) icerik hafifce
+    /// buyuyup yukari kayarak solgunluktan gelir.
+    /// </summary>
+    private void PlayAppear()
+    {
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            RootPanel.BeginAnimation(OpacityProperty, null);
+            RootShift.BeginAnimation(TranslateTransform.YProperty, null);
+            RootPanel.Opacity = 1;
+            RootShift.Y = 0;
+            return;
+        }
+
+        var spring = new SpringEase { Bounce = 0.12 };
+        var settle = TimeSpan.FromMilliseconds(640);
+
+        RootPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(300))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+        });
+        RootShift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(14, 0, settle) { EasingFunction = spring });
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(0.975, 1, settle) { EasingFunction = spring });
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(0.975, 1, settle) { EasingFunction = spring });
     }
 
     /// <summary>
@@ -465,15 +471,29 @@ public partial class MainWindow : Window
     ///
     /// Eskiden animasyonun son degeri kalici kaliyordu: acilistan sonra "Ozel"
     /// secilince yeni satirlar kirpiliyor, geri donunce de altta bos alan kaliyordu.
+    ///
+    /// Yukseklik sonumlu yay ile (duragan baslayip yumusak oturarak) acilir; icerik de
+    /// ayni anda hafif yukaridan inip solarak gelir, cekmece acilir gibi.
     /// </summary>
     private void OpenSettingsPanel()
     {
+        var target = MeasureSettingsContent();
+
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            SettingsPanel.BeginAnimation(HeightProperty, null);
+            SettingsPanel.Height = double.NaN;
+            SettingsContent.BeginAnimation(OpacityProperty, null);
+            SettingsContent.Opacity = 1;
+            return;
+        }
+
         var animation = new DoubleAnimation
         {
             From = SettingsPanel.ActualHeight,
-            To = MeasureSettingsContent(),
-            Duration = TimeSpan.FromMilliseconds(260),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            To = target,
+            Duration = TimeSpan.FromMilliseconds(560),
+            EasingFunction = new SpringEase(),
         };
 
         animation.Completed += (_, _) =>
@@ -484,16 +504,24 @@ public partial class MainWindow : Window
         };
 
         SettingsPanel.BeginAnimation(HeightProperty, animation);
+        Motion.PlayReveal(SettingsContent, offsetY: -10);
     }
 
     private void CloseSettingsPanel()
     {
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            SettingsPanel.BeginAnimation(HeightProperty, null);
+            SettingsPanel.Height = 0;
+            return;
+        }
+
         var animation = new DoubleAnimation
         {
             From = SettingsPanel.ActualHeight,
             To = 0,
-            Duration = TimeSpan.FromMilliseconds(240),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut },
+            Duration = TimeSpan.FromMilliseconds(420),
+            EasingFunction = new SpringEase(),
         };
 
         animation.Completed += (_, _) =>
@@ -504,5 +532,6 @@ public partial class MainWindow : Window
         };
 
         SettingsPanel.BeginAnimation(HeightProperty, animation);
+        Motion.PlayFadeOut(SettingsContent, 180);
     }
 }

@@ -75,21 +75,30 @@ public partial class TrayFlyout : Window
         Hide();
     }
 
+    /// <summary>Icerik solarak ve hafif yay esnemesiyle yukari kayarak yerine oturur.</summary>
     private void PlayEnterAnimation()
     {
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            RootShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, null);
+            RootShift.Y = 0;
+            return;
+        }
+
         Root.BeginAnimation(OpacityProperty, new DoubleAnimation
         {
             From = 0,
             To = 1,
-            Duration = TimeSpan.FromMilliseconds(140),
+            Duration = TimeSpan.FromMilliseconds(200),
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
         });
 
         RootShift.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, new DoubleAnimation
         {
-            From = 10,
+            From = 12,
             To = 0,
-            Duration = TimeSpan.FromMilliseconds(220),
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            Duration = TimeSpan.FromMilliseconds(560),
+            EasingFunction = new SpringEase { Bounce = 0.18 },
         });
     }
 
