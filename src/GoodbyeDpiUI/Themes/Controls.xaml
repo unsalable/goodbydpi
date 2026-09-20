@@ -668,33 +668,42 @@
         ComboBox. Ogelerde Name ve Description ozellikleri olmali (ISS, yontem, DNS).
     -->
 
+    <!--
+        Oge yuksekligi dengeli olsun diye aciklama en fazla iki satir: MaxHeight
+        satir yuksekliginin iki kati, tasan kisim ucnoktayla kesiliyor. Eskiden
+        aciklama tek satira kirpiliyordu ve uzun metinler yarim kaliyordu.
+    -->
     <Style x:Key="DropdownItem" TargetType="ComboBoxItem">
         <Setter Property="Cursor" Value="Hand" />
-        <Setter Property="Margin" Value="0,0,0,2" />
+        <Setter Property="Margin" Value="0,0,0,3" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBoxItem">
                     <Grid Background="Transparent">
-                        <!-- Secili zemin ve uzerine gelme vurgusu ayri katmanlar: vurgu ogeler arasinda suzulur. -->
-                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}"
-                                Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}" />
-                        <Border CornerRadius="8" Background="{DynamicResource SurfaceAltBrush}"
+                        <!-- Uzerine gelme vurgusu ve secili zemin ayri katmanlar: vurgu ogeler arasinda suzulur. -->
+                        <Border CornerRadius="10" Background="{DynamicResource SurfaceAltBrush}"
                                 Opacity="0" svc:Motion.Show="{TemplateBinding IsHighlighted}" />
-                        <Grid Margin="10,7">
+                        <Border CornerRadius="10" Background="{DynamicResource AccentSoftBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}" />
+
+                        <Grid Margin="12,9,11,10">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <StackPanel>
+
+                            <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextBrush}"
                                            TextTrimming="CharacterEllipsis" />
-                                <TextBlock Text="{Binding Description}" FontSize="11" Margin="0,1,0,0"
+                                <TextBlock Text="{Binding Description}" FontSize="11" Margin="0,3,0,0"
+                                           LineHeight="15" LineStackingStrategy="BlockLineHeight" MaxHeight="30"
                                            Foreground="{DynamicResource TextMutedBrush}"
-                                           TextTrimming="CharacterEllipsis" />
+                                           TextWrapping="Wrap" TextTrimming="CharacterEllipsis" />
                             </StackPanel>
-                            <Path Grid.Column="1" Margin="10,0,2,0"
+
+                            <Path Grid.Column="1" Margin="10,0,1,0"
                                   VerticalAlignment="Center"
                                   Opacity="0" svc:Motion.Show="{TemplateBinding IsSelected}"
                                   Data="M 0,5 L 4,9 L 12,1" StrokeThickness="1.8"
@@ -714,13 +723,47 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
                     <Grid>
-                        <Border CornerRadius="10" Background="{DynamicResource SurfaceAltBrush}" />
-                        <Border CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
+                        <Border CornerRadius="12" Background="{DynamicResource SurfaceAltBrush}" />
+                        <Border CornerRadius="12" BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}"
                                 Opacity="0" svc:Motion.Show="{TemplateBinding IsMouseOver}" />
-                        <Border CornerRadius="10" BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
+                        <Border CornerRadius="12" BorderThickness="1.4" BorderBrush="{DynamicResource AccentBrush}"
                                 Opacity="0"
                                 svc:Motion.Show="{Binding IsChecked, RelativeSource={RelativeSource TemplatedParent}}" />
                     </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+        Acilir listenin kaydirma alani. ThinScrollViewer'dan tek farki: cubuk
+        icerigin ustunde durdugu icin sag bosluk YALNIZCA cubuk gorunurken
+        aciliyor. Sabit sag bosluk, kaydirma gerekmeyen kisa listelerde ogeleri
+        sola kaydirip kutuyla hizasini bozuyordu.
+    -->
+    <Style x:Key="DropdownScrollViewer" TargetType="ScrollViewer" BasedOn="{StaticResource ThinScrollViewer}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollViewer">
+                    <Grid Background="Transparent">
+                        <ScrollContentPresenter x:Name="Presenter"
+                                                CanContentScroll="{TemplateBinding CanContentScroll}" />
+                        <ScrollBar x:Name="PART_VerticalScrollBar"
+                                   Style="{StaticResource ThinScrollBar}"
+                                   Orientation="Vertical"
+                                   HorizontalAlignment="Right"
+                                   Margin="0,2,1,2"
+                                   Minimum="0"
+                                   Maximum="{TemplateBinding ScrollableHeight}"
+                                   ViewportSize="{TemplateBinding ViewportHeight}"
+                                   Value="{TemplateBinding VerticalOffset}"
+                                   Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="ComputedVerticalScrollBarVisibility" Value="Visible">
+                            <Setter TargetName="Presenter" Property="Margin" Value="0,0,10,0" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
@@ -732,11 +775,11 @@
         dogrudan IsDropDownOpen'a bagli degil.
     -->
     <Style x:Key="Dropdown" TargetType="ComboBox">
-        <Setter Property="Height" Value="40" />
+        <Setter Property="Height" Value="46" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
         <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
         <Setter Property="ItemContainerStyle" Value="{StaticResource DropdownItem}" />
-        <Setter Property="MaxDropDownHeight" Value="300" />
+        <Setter Property="MaxDropDownHeight" Value="340" />
         <!--
             WPF'in ComboBox tema stili oge bazli kaydirmayi aciyor ve sablondaki ScrollViewer
             bunu sessizce devraliyor: liste piksel yerine birer oge ziplardi. Piksel bazli
@@ -750,40 +793,51 @@
                         <ToggleButton x:Name="Toggle"
                                       Style="{StaticResource DropdownToggle}"
                                       IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
-                        <Grid Margin="13,0,12,0" IsHitTestVisible="False">
+                        <Grid Margin="15,0,14,0" IsHitTestVisible="False">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding SelectedItem.Name, RelativeSource={RelativeSource TemplatedParent}, NotifyOnTargetUpdated=True}"
                                        svc:Motion.RefreshText="True"
-                                       VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" FontSize="13.5" FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextBrush}"
                                        TextTrimming="CharacterEllipsis" />
-                            <Path Grid.Column="1" VerticalAlignment="Center"
-                                  Data="M 0,0 L 5,5 L 10,0" StrokeThickness="1.6"
-                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                                  Stroke="{DynamicResource TextMutedBrush}"
-                                  svc:Motion.Turned="{TemplateBinding IsDropDownOpen}" />
+
+                            <!-- Ok kapaliyken notr, acikken vurgu renginde; iki katman capraz gecisle. -->
+                            <Grid Grid.Column="1" Width="11" Height="6" Margin="10,0,0,0" VerticalAlignment="Center">
+                                <Path Data="M 0.5,0.5 L 5.5,5.5 L 10.5,0.5" StrokeThickness="1.7"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Stroke="{DynamicResource TextMutedBrush}"
+                                      svc:Motion.Hide="{TemplateBinding IsDropDownOpen}"
+                                      svc:Motion.Turned="{TemplateBinding IsDropDownOpen}" />
+                                <Path Data="M 0.5,0.5 L 5.5,5.5 L 10.5,0.5" StrokeThickness="1.7"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                                      Stroke="{DynamicResource AccentBrush}"
+                                      Opacity="0"
+                                      svc:Motion.Show="{TemplateBinding IsDropDownOpen}"
+                                      svc:Motion.Turned="{TemplateBinding IsDropDownOpen}" />
+                            </Grid>
                         </Grid>
 
                         <Popup x:Name="PART_Popup"
                                svc:PopupMotion.IsOpen="{TemplateBinding IsDropDownOpen}"
-                               Placement="Bottom" VerticalOffset="2" HorizontalOffset="-8"
+                               Placement="Bottom" VerticalOffset="3" HorizontalOffset="-10"
                                AllowsTransparency="True"
                                Focusable="False">
                             <!-- Golgeye yer acmak icin kenar boslugu birakiliyor. -->
-                            <Border Margin="8,2,8,12"
+                            <Border Margin="10,3,10,16"
                                     Width="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
                                     MaxHeight="{TemplateBinding MaxDropDownHeight}"
-                                    CornerRadius="12" Padding="5,5,5,3"
+                                    CornerRadius="14" Padding="6,6,6,3"
                                     Background="{DynamicResource SurfaceBrush}"
                                     BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}">
                                 <Border.Effect>
-                                    <DropShadowEffect BlurRadius="14" ShadowDepth="3" Opacity="0.35" Direction="270" />
+                                    <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.3" Direction="270" />
                                 </Border.Effect>
-                                <ScrollViewer Style="{StaticResource ThinScrollViewer}">
-                                    <ItemsPresenter Margin="0,0,10,0" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                <ScrollViewer Style="{StaticResource DropdownScrollViewer}">
+                                    <ItemsPresenter svc:Motion.Stagger="True"
+                                                    KeyboardNavigation.DirectionalNavigation="Contained" />
                                 </ScrollViewer>
                             </Border>
                         </Popup>
@@ -855,6 +909,79 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- ================================================== simge dugmesi -->
+    <!--
+        Kare, yalnizca simge tasiyan dugme (ozel profil satirindaki cogalt / sil).
+        GhostButton ile ayni davranir, sadece olcusu ve icerik hizasi sabit.
+    -->
+    <Style x:Key="IconGhostButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+        <Setter Property="Width" Value="32" />
+        <Setter Property="Height" Value="32" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid Background="Transparent">
+                        <Border CornerRadius="9" Background="{DynamicResource SurfaceAltBrush}"
+                                Opacity="0" svc:Motion.Show="{TemplateBinding IsMouseOver}" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          svc:Motion.Pressed="{TemplateBinding IsPressed}"
+                                          svc:Motion.PressScale="0.86" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                        </Trigger>
+                        <MultiTrigger>
+                            <MultiTrigger.Conditions>
+                                <Condition Property="IsMouseOver" Value="True" />
+                                <Condition Property="Tag" Value="danger" />
+                            </MultiTrigger.Conditions>
+                            <Setter Property="Foreground" Value="{DynamicResource DangerBrush}" />
+                        </MultiTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- =============================================== vurgu eylem dugmesi -->
+    <!-- Guncelleme kartindaki "Şimdi güncelle" gibi tek basina duran ana eylem. -->
+
+    <Style x:Key="AccentButton" TargetType="Button">
+        <Setter Property="Height" Value="38" />
+        <Setter Property="MinWidth" Value="128" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Grid svc:Motion.Hovered="{TemplateBinding IsMouseOver}" svc:Motion.HoverScale="1.025"
+                          svc:Motion.Pressed="{TemplateBinding IsPressed}" svc:Motion.PressScale="0.96">
+                        <Border CornerRadius="11" Background="{DynamicResource AccentGradient}" />
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="16,0" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ============================================== ilerleme cubugu -->
+    <!--
+        Dolgu, geriden gelen rayin uzerinde soldan saga olceklenir (Motion.FillRatio).
+        Genislik animasyonu yerine olcek: yerlesimi her karede yeniden hesaplatmaz.
+    -->
+    <Style x:Key="ProgressTrack" TargetType="Border">
+        <Setter Property="Height" Value="6" />
+        <Setter Property="CornerRadius" Value="3" />
+        <Setter Property="Background" Value="{DynamicResource TrackBrush}" />
+        <Setter Property="ClipToBounds" Value="True" />
     </Style>
 
 </ResourceDictionary>

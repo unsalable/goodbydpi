@@ -42,6 +42,7 @@ internal static class SelfTest
         Section("WinDivert: filtre paket eslesmesi", WinDivertFilterMatches);
         Section("DNS profilleri", () => { DnsArguments(); DnsValidation(); });
         Section("Native profiller", NativeProfiles);
+        Section("Ozel profiller (kaydetme / tasima)", CustomProfileStore);
         Section("Internet saglayici profilleri", IspProfiles);
         Section("Surum", VersionParsing);
         Section("Hareket: yay egrisi", SpringCurve);
@@ -906,6 +907,108 @@ internal static class SelfTest
         Check("MD5: TTL'siz, md5sig", NativeProfile.Md5Sig.Build() is { FakeTtl: false, FakeMd5Sig: true, SplitTls: false });
         Check("Bos sahte: sifir bayt, TTL 5", NativeProfile.ZeroFake.Build() is { FakePayload: FakePayloadKind.Zeros, AutoTtl: false, Ttl: 5 });
         Check("Butun hazir yontemlerde Discord ses acik", NativeProfile.All.All(p => p.Build().VoiceFake));
+    }
+
+    /// <summary>
+    /// Kullanicinin adlandirdigi ozel profiller: eski tek profilli ayar dosyalarindan
+    /// tasima, benzersiz kimlik/ad uretimi, JSON gidis-donusu ve kimlik bazli esitlik.
+    /// </summary>
+    private static void CustomProfileStore()
+    {
+        // ---- eski (2.2.0 ve oncesi) dosya: tek ozel yontem + tek ozel DNS
+        const string legacyJson = """
+            {"nativeProfile":"custom","nativeCustom":{"ttl":7,"splitTls":false},
+             "dns":"custom","dnsCustomV4":"9.9.9.9","dnsCustomV4Port":5353}
+            """;
+
+        var s = System.Text.Json.JsonSerializer.Deserialize(legacyJson, AppSettingsJsonContext.Default.AppSettings)!;
+        s.Migrate();
+
+        Check("Tasima: ozel yontem listeye gecti",
+            s.CustomProfiles.Count == 1 && s.CustomProfiles[0].Id == "custom");
+        Check("Tasima: ayarlar korundu", s.CustomProfiles[0].Config is { Ttl: 7, SplitTls: false });
+        Check("Tasima: kayitli secim hala bu profili gosteriyor", s.CustomProfiles[0].Id == s.NativeProfile);
+        Check("Tasima: eski yontem alani temizlendi", s.NativeCustom is null);
+
+        Check("Tasima: ozel DNS listeye gecti",
+            s.CustomDns.Count == 1 && s.CustomDns[0] is { Id: "custom", V4: "9.9.9.9", V4Port: 5353 });
+        Check("Tasima: eski DNS alanlari temizlendi",
+            s.DnsCustomV4 is null && s.DnsCustomV4Port is null && s.DnsCustomV6 is null && s.DnsCustomV6Port is null);
+
+        s.Migrate();
+        Check("Tasima iki kez cagrilinca cogaltmiyor", s.CustomProfiles.Count == 1 && s.CustomDns.Count == 1);
+
+        // ---- yeni kurulum: listeler bos baslar, tasima birer giris birakir
+        var fresh = new AppSettings();
+        fresh.Migrate();
+        Check("Yeni kurulumda birer ozel giris hazir",
+            fresh.CustomProfiles.Count == 1 && fresh.CustomDns.Count == 1);
+
+        // ---- birden fazla profil: kimlik ve ad cakismamali
+        var list = new List<CustomNativeProfile>(fresh.CustomProfiles);
+        list.Add(CustomNativeProfile.CreateNew(list, NativeProfile.Disorder.Build()));
+        list.Add(CustomNativeProfile.CreateNew(list, NativeProfile.FakeTtl4.Build()));
+        list.Add(CustomNativeProfile.CreateNew(list, NativeProfile.Md5Sig.Build(), "Ters sıra (özel)"));
+
+        Check("Kimlikler benzersiz",
+            list.Select(p => p.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() == list.Count);
+        Check("Adlar benzersiz",
+            list.Select(p => p.Name).Distinct(StringComparer.CurrentCultureIgnoreCase).Count() == list.Count,
+            string.Join(" | ", list.Select(p => p.Name)));
+        Check("Ilk kimlik eski dosyalarla uyumlu", list[0].Id == "custom");
+        Check("Sonraki kimlikler onekli ve ozel sayiliyor",
+            list.Skip(1).All(p => NativeProfile.IsCustomId(p.Id) && p.Id.StartsWith("custom:")));
+        Check("Kaynak yontemin ayarlari kopyalandi", list[1].Config is { FakePacket: false, SeqOverlap: 1 });
+        Check("Kopya kaynaktan bagimsiz", !ReferenceEquals(list[1].Config, list[2].Config));
+
+        // ---- JSON gidis-donusu
+        fresh.CustomProfiles = list;
+        fresh.CustomDns.Add(CustomDnsEntry.CreateNew(fresh.CustomDns,
+            new CustomDnsEntry { Name = "İş", V4 = "1.1.1.1", V4Port = 53 }));
+
+        var json = System.Text.Json.JsonSerializer.Serialize(fresh, AppSettingsJsonContext.Default.AppSettings);
+        var round = System.Text.Json.JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings)!;
+
+        Check("JSON: profiller geri okundu",
+            round.CustomProfiles.Count == list.Count && round.CustomProfiles[1].Config.SeqOverlap == 1);
+        Check("JSON: DNS girisleri geri okundu",
+            round.CustomDns.Count == 2 && round.CustomDns[1] is { Name: "İş", V4: "1.1.1.1" });
+        Check("JSON: tasinmis eski alanlar yazilmiyor",
+            !json.Contains("nativeCustom") && !json.Contains("dnsCustomV4"), json);
+
+        // ---- listelerde gosterilen karsiliklar
+        var profile = list[1].ToProfile();
+        Check("Profil karsiligi adi ve kimligi tasir", profile.Id == list[1].Id && profile.Name == list[1].Name);
+        Check("Profil karsiligi guncel ayari uretir", profile.Build() is { FakePacket: false, SeqOverlap: 1 });
+
+        list[1].Config.BlockQuic = false;
+        Check("Ayar degisince ureteci de guncel", !profile.Build().BlockQuic);
+
+        var dns = fresh.CustomDns[1].ToProfile();
+        Check("DNS karsiligi arguman uretir", dns.Arguments == "--dns-addr 1.1.1.1", dns.Arguments);
+        Check("DNS karsiligi ozel sayilir", DnsProfile.IsCustomId(dns.Id));
+
+        // ---- kimlik bazli esitlik: liste her tazelendiginde secim kaybolmamali
+        Check("Ayni kimlikli iki profil esit", list[1].ToProfile() == list[1].ToProfile());
+        Check("Farkli kimlikli profiller esit degil", list[1].ToProfile() != list[2].ToProfile());
+        Check("Adres degisse de DNS girisi ayni kalir",
+            DnsProfile.CreateCustom("custom", "Özel", "1.1.1.1", 53, null, 0)
+            == DnsProfile.CreateCustom("custom", "Özel", "8.8.8.8", 53, null, 0));
+
+        // ---- kullanici profilleri yerlesik kataloglara sizmamali
+        Check("Ozel profiller yontem katalogunda yok", NativeProfile.All.All(p => !NativeProfile.IsCustomId(p.Id) || p.Id == NativeProfile.CustomId));
+        Check("Ozel girisler DNS katalogunda yok", DnsProfile.BuiltIn.All(p => !DnsProfile.IsCustomId(p.Id)));
+        Check("Bilinmeyen kimlik ozel sayilmaz", !NativeProfile.IsCustomId("disorder") && !DnsProfile.IsCustomId("yandex"));
+
+        // ---- acilir listede gorunen ozet
+        Check("Ozet: varsayilan", new NativeDpiConfig().Summary ==
+            "sahte paket (oto TTL) · ters sıra bölme · QUIC engeli · Discord ses",
+            new NativeDpiConfig().Summary);
+        Check("Ozet: teknik yoksa uyarir",
+            new NativeDpiConfig { FakePacket = false, SplitTls = false, BlockQuic = false, VoiceFake = false }
+                .Summary == "Atlatma tekniği seçilmedi.");
+        Check("Ozet: sabit TTL yaziliyor", NativeProfile.FakeTtl4.Build().Summary.Contains("TTL 4"),
+            NativeProfile.FakeTtl4.Build().Summary);
     }
 
     private static void IspProfiles()

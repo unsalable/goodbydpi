@@ -131,6 +131,44 @@ public sealed class NativeDpiConfig
     [JsonIgnore]
     public bool HasFakeProtection => FakeTtl || FakeWrongChecksum || FakeWrongSeq || FakeMd5Sig;
 
+    /// <summary>
+    /// Acilir listede profilin altinda gorunen kisa ozet: hangi tekniklerin acik oldugu.
+    /// Kullanicinin adlandirdigi profiller birbirinden ancak bu satirla ayirt edilebiliyor.
+    /// </summary>
+    [JsonIgnore]
+    public string Summary
+    {
+        get
+        {
+            var parts = new List<string>(4);
+
+            if (FakePacket)
+            {
+                var how =
+                    AutoTtl && FakeTtl ? "oto TTL" :
+                    FakeTtl ? $"TTL {Ttl}" :
+                    FakeMd5Sig ? "MD5" :
+                    FakeWrongChecksum || FakeWrongSeq ? "bozuk sağlama" :
+                    "korumasız";
+
+                var payload = FakePayload == FakePayloadKind.Zeros ? "boş sahte" : "sahte paket";
+                parts.Add(SplitFake ? $"{payload} ({how}, bölünmüş)" : $"{payload} ({how})");
+            }
+
+            if (SplitTls)
+            {
+                var split = ReverseSplit ? "ters sıra bölme" : "bölme";
+                if (SeqOverlap > 0) split += $" +{SeqOverlap} örtüşme";
+                parts.Add(split);
+            }
+
+            if (BlockQuic) parts.Add("QUIC engeli");
+            if (VoiceFake) parts.Add("Discord ses");
+
+            return parts.Count == 0 ? "Atlatma tekniği seçilmedi." : string.Join(" · ", parts);
+        }
+    }
+
     public NativeDpiConfig Clone() => (NativeDpiConfig)MemberwiseClone();
 }
 
@@ -143,6 +181,19 @@ public sealed class NativeDpiConfig
 public sealed record NativeProfile(string Id, string Name, string Description, Func<NativeDpiConfig> Build)
 {
     public const string CustomId = "custom";
+
+    /// <summary>Kimlik kullanicinin olusturdugu bir ozel profile mi ait?</summary>
+    public static bool IsCustomId(string? id) => CustomIds.IsCustom(id);
+
+    /// <summary>
+    /// Esitlik yalnizca kimlige bakar. Kullanicinin profilleri liste her
+    /// tazelendiginde yeniden uretiliyor; kayit varsayilani <see cref="Build"/>
+    /// temsilcisini de karsilastirdigi icin ComboBox secili ogeyi kaybediyordu.
+    /// </summary>
+    public bool Equals(NativeProfile? other) =>
+        other is not null && string.Equals(Id, other.Id, StringComparison.OrdinalIgnoreCase);
+
+    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(Id);
 
     // Canli testte (Turk ISS, Discord/Roblox): TTL tabanli profiller calisti; yanlis
     // saglama/SEQ ve sahte paketsiz bolme calismadi (GoodbyeDPI -9 da ayni). Onlar,

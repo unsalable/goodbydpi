@@ -41,6 +41,9 @@ public sealed class SettingsService
             Current = new AppSettings();
         }
 
+        // Eski tekil "Ozel" ayarlarini adlandirilmis profil listelerine tasi.
+        Current.Migrate();
+
         return Current;
     }
 

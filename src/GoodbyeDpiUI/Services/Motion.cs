@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 
 namespace GoodbyeDpiUI.Services;
 
@@ -204,6 +205,104 @@ public static class Motion
     {
         Run(element, UIElement.OpacityProperty, 0, TimeSpan.FromMilliseconds(milliseconds),
             FadeOutEase, SystemParameters.ClientAreaAnimation);
+    }
+
+    // =========================================================== Stagger
+
+    /// <summary>
+    /// Bir liste kabi gorunur oldugunda ogeleri sirayla, hafifce asagidan yukselerek
+    /// getirir. Acilir listede kullaniliyor: panel tek parca halinde belirmek yerine
+    /// ogeler pesi sira doluyor.
+    /// </summary>
+    public static readonly DependencyProperty StaggerProperty = DependencyProperty.RegisterAttached(
+        "Stagger", typeof(bool), typeof(Motion), new PropertyMetadata(false, OnStaggerChanged));
+
+    public static bool GetStagger(DependencyObject element) => (bool)element.GetValue(StaggerProperty);
+
+    public static void SetStagger(DependencyObject element, bool value) => element.SetValue(StaggerProperty, value);
+
+    private static void OnStaggerChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not FrameworkElement element) return;
+
+        element.IsVisibleChanged -= OnStaggerVisibleChanged;
+        if ((bool)e.NewValue) element.IsVisibleChanged += OnStaggerVisibleChanged;
+    }
+
+    private static void OnStaggerVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (e.NewValue is not true || sender is not FrameworkElement host) return;
+        if (!SystemParameters.ClientAreaAnimation) return;
+
+        // Ogeler daha uretilmemis olabilir; yerlesim bittikten sonra oynat.
+        host.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            if (host.IsVisible) PlayStagger(host);
+        });
+    }
+
+    private static void PlayStagger(FrameworkElement host)
+    {
+        var index = 0;
+
+        foreach (var child in ItemContainers(host))
+        {
+            // Gecikme bir yerden sonra artmasin: uzun listede son oge beklemesin.
+            var delay = TimeSpan.FromMilliseconds(Math.Min(index, 8) * 26);
+
+            child.BeginAnimation(UIElement.OpacityProperty,
+                new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(190)) { BeginTime = delay, EasingFunction = EaseOut });
+
+            TransformsOf(child).Shift.BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(7, 0, TimeSpan.FromMilliseconds(420)) { BeginTime = delay, EasingFunction = SettleSpring });
+
+            index++;
+        }
+    }
+
+    /// <summary>ItemsPresenter'in altindaki panelin cocuklari (oge kaplari).</summary>
+    private static IEnumerable<UIElement> ItemContainers(DependencyObject host)
+    {
+        if (VisualTreeHelper.GetChildrenCount(host) == 0) yield break;
+
+        var panel = VisualTreeHelper.GetChild(host, 0);
+        var count = VisualTreeHelper.GetChildrenCount(panel);
+
+        for (var i = 0; i < count; i++)
+            if (VisualTreeHelper.GetChild(panel, i) is UIElement child)
+                yield return child;
+    }
+
+    // ========================================================= FillRatio
+
+    /// <summary>
+    /// Ilerleme cubugunun dolulugu (0-1): oge sol kenarindan yatay olarak olceklenir.
+    /// Deger her yenilendiginde yumusakca kayar, yuzde adim adim ziplamaz.
+    /// </summary>
+    public static readonly DependencyProperty FillRatioProperty = DependencyProperty.RegisterAttached(
+        "FillRatio", typeof(double), typeof(Motion), new PropertyMetadata(0.0, OnFillRatioChanged));
+
+    public static double GetFillRatio(DependencyObject element) => (double)element.GetValue(FillRatioProperty);
+
+    public static void SetFillRatio(DependencyObject element, double value) => element.SetValue(FillRatioProperty, value);
+
+    private static readonly DependencyProperty FillScaleProperty = DependencyProperty.RegisterAttached(
+        "FillScale", typeof(ScaleTransform), typeof(Motion));
+
+    private static void OnFillRatioChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not FrameworkElement element) return;
+
+        if (element.GetValue(FillScaleProperty) is not ScaleTransform scale)
+        {
+            scale = new ScaleTransform(0, 1);
+            element.RenderTransformOrigin = new Point(0, 0.5);
+            element.RenderTransform = scale;
+            element.SetValue(FillScaleProperty, scale);
+        }
+
+        Run(scale, ScaleTransform.ScaleXProperty, Math.Clamp((double)e.NewValue, 0, 1),
+            TimeSpan.FromMilliseconds(260), EaseOut, IsLive(element));
     }
 
     // ======================================================== RefreshText

@@ -42,17 +42,31 @@ Tek düğme, sistem tepsisi, açık/koyu tema, Windows açılışında otomatik 
   Discord ses desteği açık ve DNS Yandex (1253) seçilir.
 - **Hazır GoodbyeDPI altyapısı** — isteyen, hâlihazırda çalışan `goodbyedpi.exe`
   altyapısını da seçebilir. Ayarlardaki "Kendi motorumuz" anahtarıyla geçiş yapılır.
-- **Özel DPI ayarı** — kendi motor için TTL, bölme, sağlama, QUIC gibi tüm teknikler
-  "Özel" profilinden tek tek açılıp kapatılabilir.
-- **Özel DNS sunucusu** — DNS listesindeki "Özel" seçeneğiyle kendi IPv4/IPv6 adres ve
-  portunuzu girebilirsiniz.
+- **Adlandırılmış özel profiller** — *Yöntem* bölümündeki **+ Yeni özel ayar** ile
+  istediğiniz kadar profil oluşturabilirsiniz: her biri kendi adıyla listede görünür,
+  TTL / bölme / sağlama / QUIC gibi tüm teknikler profil bazında ayarlanır ve aralarında
+  tek tıkla geçilir. Yeni profil, o an seçili yöntemin ayarlarıyla başlar; ayar kutusundaki
+  simgelerle çoğaltılır, yeniden adlandırılır ya da silinir. Listedeki açıklama satırı
+  profilin ne yaptığını özetler (ör. "sahte paket (oto TTL) · ters sıra bölme · QUIC engeli").
+- **Adlandırılmış özel DNS sunucuları** — aynı mantık DNS için de geçerli: **+ Yeni DNS**
+  ile birden fazla IPv4/IPv6 adres-port çifti tanımlayıp aralarında geçiş yapabilirsiniz.
+- **Profiller bilgisayarınızda kalır** — hepsi `%AppData%\GoodbyeDPI-UI\settings.json`
+  içinde saklanır; hiçbir yere gönderilmez. Eski sürümlerden gelen tek "Özel" ayar
+  ilk açılışta otomatik olarak listeye taşınır.
 - **Akıcı arayüz** — tüm geçişler (açılır listeler, anahtarlar, ayar paneli, güç düğmesi,
   durum değişimleri) sönümlü yay eğrisiyle canlandırılır; fare tekerleği süzülerek kaydırır.
   Açılır liste açıkken tekerlek listeyi kaydırır, arka plan yerinde durur ve liste kutunun
   altına yapışık kalır. Windows'ta animasyon efektleri kapalıysa tüm geçişler anında uygulanır.
 - **Otomatik güncelleme** — uygulama her açıldığında GitHub'daki en son sürümü kontrol
-  eder; daha yeni bir sürüm varsa setup dosyasını indirip (SHA-256 ile doğrulayarak)
-  sessizce kurar ve kendini yeniden başlatır. Ayarlardan kapatılabilir.
+  eder; daha yeni bir sürüm varsa **kendisi indirir, kurar ve kendini yeniden açar** —
+  kapatıp açmanıza gerek yok. Tepside başlatılmışsa yine tepside geri gelir.
+  Ayarlardan kapatılabilir.
+- **Anlaşılır güncelleme ekranı** — indirme sırasında hangi sürümden hangisine
+  geçildiğini, yüzdeyi ve MB'ı, sıradaki adımın ne olduğunu gösteren tek bir kart
+  çıkar: *indiriliyor → doğrulanıyor (SHA-256) → kuruluyor*. "Daha sonra" ile
+  kapatılıp küçük bir şeritten sonra devam ettirilebilir; bir şey ters giderse
+  sebebi yazıp "Tekrar dene" sunar. Güncelleme bittikten sonraki ilk açılışta
+  hangi sürüme geçildiğini söyleyen bir bildirim gösterilir.
 
 Hazır GoodbyeDPI parametreleri [cagritaskn/GoodbyeDPI-Turkey](https://github.com/cagritaskn/GoodbyeDPI-Turkey)
 `0.2.3rc3-turkey` sürümündeki `turkey_dnsredir*.cmd` dosyalarından alınmıştır.
@@ -115,6 +129,19 @@ $ui = "src\GoodbyeDpiUI\bin\UiTest\net8.0-windows\win-x64\GoodbyeDPI-UI.dll"
 
 # Acilir liste: tekerlek, kaydirma, konum takibi, klavye, acilis/kapanis animasyonu
 dotnet $ui --dropdowntest sonuc            # --realinput eklenirse imleci de kullanir
+dotnet $ui --profiletest profil            # ozel yontem / DNS profilleri: ekle, adlandir, sil, kaydet
 dotnet $ui --layoutshot yerlesim           # ayar paneli / "Ozel" gecisleri + olculer
+dotnet $ui --updateshot guncelleme         # guncelleme ekraninin her adimi (indirme yapmaz)
 dotnet $ui --settings --themeshot tema      # acik ve koyu tema goruntuleri
+```
+
+`--dropdowntest` acilir listenin acik kalmasina dayanir: kosarken baska bir pencereye
+tiklanirsa Windows listeyi kapatir ve kontroller kalir. Masaustu bos degilken kosmayin.
+
+Guncelleme yolunun canli dogrulamasi (indirir ve SHA-256 ile dogrular, KURMAZ). Yeni
+surum gorebilmesi icin dusuk bir surumle derleyin:
+
+```powershell
+dotnet build src\GoodbyeDpiUI\GoodbyeDpiUI.csproj -p:Version=1.0.0 -o build\updatetest
+dotnet build\updatetest\GoodbyeDPI-UI.dll --updatetest   # sonuc: %TEMP%\goodbyedpi-updatetest.txt
 ```
