@@ -4,12 +4,14 @@ using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Windows;
 
 namespace GoodbyeDpiUI.Services;
 
 /// <summary>Bir GitHub release'inde bulunan, kurulabilir yeni surum.</summary>
-public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string DownloadUrl, string? Sha256);
+public sealed record UpdateInfo(Version Version, string Tag, string AssetName, string DownloadUrl, string? Sha256, long Size);
+
+/// <summary>Indirme ilerlemesi: su ana kadar inen ve toplam bayt (toplam bilinmiyorsa 0).</summary>
+public readonly record struct DownloadProgress(long Done, long Total);
 
 /// <summary>
 /// Acilista GitHub'daki en son release'i kontrol eder; daha yeni bir surum varsa
@@ -26,11 +28,22 @@ public sealed class UpdateService
     private const string Repo = "goodbydpi";
     private const string ApiUrl = $"https://api.github.com/repos/{Owner}/{Repo}/releases/latest";
 
+    /// <summary>GitHub API sorgusunun ust siniri; yanit gelmiyorsa acilisi bekletmeyelim.</summary>
+    private static readonly TimeSpan CheckTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>Indirme ust siniri. ~60 MB'lik setup yavas hatta uzun surebilir.</summary>
+    private static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(20);
+
+    /// <summary>Ilerleme bu kadar bayt biriktikce bildirilir (yuzde basina ~2-3 adim).</summary>
+    private const long ProgressStep = 256 * 1024;
+
     private static readonly HttpClient Http = CreateClient();
 
     private static HttpClient CreateClient()
     {
-        var c = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        // Zaman asimi istek basina veriliyor: HttpClient.Timeout govde okunurken de
+        // isliyor ve tek bir 30 sn'lik sinir buyuk indirmeyi ortasinda kesiyordu.
+        var c = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         // GitHub API User-Agent zorunlu tutar.
         c.DefaultRequestHeaders.UserAgent.ParseAdd("GoodbyeDPI-UI-Updater");
         c.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
@@ -52,7 +65,10 @@ public sealed class UpdateService
     {
         try
         {
-            using var doc = JsonDocument.Parse(await Http.GetStringAsync(ApiUrl, ct).ConfigureAwait(false));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(CheckTimeout);
+
+            using var doc = JsonDocument.Parse(await Http.GetStringAsync(ApiUrl, timeout.Token).ConfigureAwait(false));
             var root = doc.RootElement;
 
             if (root.TryGetProperty("draft", out var draft) && draft.GetBoolean()) return null;
@@ -87,7 +103,9 @@ public sealed class UpdateService
                 d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
                 sha = d["sha256:".Length..];
 
-            return new UpdateInfo(version, tag, assetName, url, sha);
+            var size = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var bytes) ? bytes : 0;
+
+            return new UpdateInfo(version, tag, assetName, url, sha, size);
         }
         catch
         {
@@ -95,26 +113,56 @@ public sealed class UpdateService
         }
     }
 
-    /// <summary>Setup dosyasini gecici klasore indirir; SHA-256 varsa dogrular. Yol doner.</summary>
-    public async Task<string?> DownloadAsync(UpdateInfo info, CancellationToken ct = default)
+    /// <summary>
+    /// Setup dosyasini gecici klasore indirir; SHA-256 varsa dogrular. Yol doner.
+    /// Ilerleme <paramref name="progress"/> ile bildirilir; iptal edilirse yarim
+    /// dosya silinir ve null donulur.
+    /// </summary>
+    public async Task<string?> DownloadAsync(
+        UpdateInfo info, IProgress<DownloadProgress>? progress = null, CancellationToken ct = default)
     {
+        var path = Path.Combine(Path.GetTempPath(), "GoodbyeDPI-UI-Update", info.AssetName);
+
         try
         {
-            var dir = Path.Combine(Path.GetTempPath(), "GoodbyeDPI-UI-Update");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, info.AssetName);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(DownloadTimeout);
+            var token = timeout.Token;
 
-            using (var resp = await Http.GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            using (var resp = await Http
+                       .GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, token)
+                       .ConfigureAwait(false))
             {
                 resp.EnsureSuccessStatusCode();
-                await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+
+                var total = resp.Content.Headers.ContentLength ?? info.Size;
+                progress?.Report(new DownloadProgress(0, total));
+
+                await using var src = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
                 await using var dst = File.Create(path);
-                await src.CopyToAsync(dst, ct).ConfigureAwait(false);
+
+                var buffer = new byte[81920];
+                long done = 0, reported = 0;
+
+                int read;
+                while ((read = await src.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
+                {
+                    await dst.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+                    done += read;
+
+                    if (done - reported < ProgressStep && done != total) continue;
+                    reported = done;
+                    progress?.Report(new DownloadProgress(done, total));
+                }
+
+                progress?.Report(new DownloadProgress(done, total == 0 ? done : total));
             }
 
             if (info.Sha256 is not null && !await VerifyHashAsync(path, info.Sha256, ct).ConfigureAwait(false))
             {
-                try { File.Delete(path); } catch { /* onemsiz */ }
+                Delete(path);
                 return null;
             }
 
@@ -122,8 +170,14 @@ public sealed class UpdateService
         }
         catch
         {
+            Delete(path); // yarim inen dosya kalmasin
             return null;
         }
+    }
+
+    private static void Delete(string path)
+    {
+        try { File.Delete(path); } catch { /* onemsiz */ }
     }
 
     private static async Task<bool> VerifyHashAsync(string path, string expected, CancellationToken ct)
@@ -135,20 +189,43 @@ public sealed class UpdateService
     }
 
     /// <summary>
-    /// Sessiz kurulumu baslatir ve uygulamadan cikar. Kurucu dosyalari degistirip
-    /// uygulamayi yeniden baslatir. Yonetici yetkisi ust surecten devralinir.
+    /// Sessiz kurulumu baslatir. Cagiran taraf hemen uygulamadan cikmali: kurucu
+    /// calisan uygulamanin kapanmasini bekler (AppMutex), dosyalari degistirir ve
+    /// uygulamayi yeniden acar.
+    ///
+    /// Kurucunun kendi [Run] adimina guvenmek yetmiyordu (sessiz kurulumdan sonra
+    /// uygulama kimi zaman geri gelmiyordu), bu yuzden gizli bir kabuk kurulumun
+    /// bitmesini bekleyip uygulamayi <paramref name="relaunchArguments"/> ile
+    /// kendisi aciyor. Uygulama tek ornek oldugundan iki yol da calissa ikinci
+    /// kopya sessizce cikar.
     /// </summary>
-    public static bool LaunchInstaller(string setupPath)
+    public static bool LaunchInstaller(string setupPath, string? relaunchArguments = null)
     {
+        // Inno Setup sessiz kurulum bayraklari.
+        const string SetupArguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+
         try
         {
+            var command = $"\"{setupPath}\" {SetupArguments}";
+
+            // "&&" degil "&": kurulum hata verse bile uygulamayi geri aciyoruz,
+            // kullanici guncellenmemis de olsa kapanmis bir uygulamayla kalmasin.
+            if (Environment.ProcessPath is { } exe)
+            {
+                var args = string.IsNullOrWhiteSpace(relaunchArguments) ? "" : " " + relaunchArguments.Trim();
+                command += $" & start \"\" \"{exe}\"{args}";
+            }
+
             var psi = new ProcessStartInfo
             {
-                FileName = setupPath,
-                // Inno Setup sessiz kurulum bayraklari. Calisan uygulamayi kapatir,
-                // kurar ve (installer script'indeki [Run] ile) yeniden acar.
-                Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
+                FileName = "cmd.exe",
+                // /s: disttaki tirnak cifti kaldirilir, ic tirnaklar oldugu gibi kalir.
+                Arguments = $"/s /c \"{command}\"",
                 UseShellExecute = false,
+                CreateNoWindow = true,
+                // Kabugun calisma klasoru kurulum klasoru OLMAMALI: acik bir klasor
+                // tanitici kurucunun dosya degistirmesini zorlastirabiliyor.
+                WorkingDirectory = Path.GetTempPath(),
             };
 
             Process.Start(psi);

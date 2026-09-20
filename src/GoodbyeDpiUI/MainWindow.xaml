@@ -178,26 +178,61 @@
                         </TextBlock.Style>
                     </TextBlock>
 
-                    <!-- ============================== guncelleme bildirimi -->
-                    <Border CornerRadius="10" Margin="0,16,0,0" Padding="12,10"
+                    <!-- ============================== guncelleme bildirimleri -->
+                    <!--
+                        Guncelleme ekrani "Daha sonra" ile kapatildiysa kucuk bir serit
+                        kaliyor; buradan her an geri donulebiliyor.
+                    -->
+                    <Border CornerRadius="12" Margin="0,16,0,0" Padding="12,9"
                             Background="{DynamicResource SurfaceBrush}"
                             BorderThickness="1" BorderBrush="{DynamicResource AccentBrush}"
                             svc:Motion.Reveal="True"
                             Visibility="{Binding UpdateAvailable, Converter={StaticResource BoolToVis}}">
                         <Grid>
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding UpdateStatusText}"
-                                       FontSize="12" Margin="0,0,8,0"
+                            <TextBlock Text="&#xE896;" FontFamily="{StaticResource IconFont}" FontSize="14"
+                                       VerticalAlignment="Center" Margin="3,0,10,0"
+                                       Foreground="{DynamicResource AccentBrush}" />
+                            <TextBlock Grid.Column="1" Text="{Binding UpdateBannerText}"
+                                       FontSize="12" Margin="0,0,6,0"
                                        TextWrapping="Wrap" VerticalAlignment="Center"
                                        Foreground="{DynamicResource TextBrush}" />
-                            <Button Grid.Column="1" Content="Şimdi Güncelle"
+                            <Button Grid.Column="2" Content="Şimdi güncelle"
                                     Style="{StaticResource GhostButton}"
-                                    VerticalAlignment="Center"
+                                    VerticalAlignment="Center" Margin="0,-4,-8,-4"
                                     Foreground="{DynamicResource AccentBrush}"
                                     Command="{Binding ApplyUpdateCommand}" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Guncellemeden sonraki ilk acilista: ne oldugunu soyleyip cekiliyor. -->
+                    <Border CornerRadius="12" Margin="0,16,0,0" Padding="12,9"
+                            Background="{DynamicResource SurfaceBrush}"
+                            BorderThickness="1" BorderBrush="{DynamicResource SuccessBrush}"
+                            svc:Motion.Reveal="True"
+                            Visibility="{Binding HasUpdateDone, Converter={StaticResource BoolToVis}}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="&#xE930;" FontFamily="{StaticResource IconFont}" FontSize="14"
+                                       VerticalAlignment="Center" Margin="3,0,10,0"
+                                       Foreground="{DynamicResource SuccessBrush}" />
+                            <TextBlock Grid.Column="1" Text="{Binding UpdateDoneText}"
+                                       FontSize="12" Margin="0,0,6,0"
+                                       TextWrapping="Wrap" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextBrush}" />
+                            <Button Grid.Column="2" Style="{StaticResource IconGhostButton}"
+                                    Content="&#xE8BB;" FontSize="10"
+                                    VerticalAlignment="Center" Margin="0,-4,-8,-4"
+                                    ToolTip="Bildirimi kapat"
+                                    Command="{Binding DismissUpdateDoneCommand}" />
                         </Grid>
                     </Border>
 
@@ -229,22 +264,39 @@
                             <!-- ============================ Internet saglayicisi -->
                             <!-- Secilen ISS'in onerdigi yontem, GoodbyeDPI yontemi ve DNS birlikte uygulanir. -->
                             <TextBlock Text="İNTERNET SAĞLAYICI" Style="{StaticResource SectionLabel}" />
-                            <ComboBox Style="{StaticResource Dropdown}"
+                            <ComboBox x:Name="IspBox" Style="{StaticResource Dropdown}"
                                      ItemsSource="{Binding Isps}"
                                      SelectedItem="{Binding SelectedIsp, Mode=TwoWay}" />
                             <TextBlock Text="{Binding SelectedIsp.Description, NotifyOnTargetUpdated=True}"
                                        svc:Motion.RefreshText="True"
-                                       Style="{StaticResource RowHint}" Margin="1,6,0,0" />
+                                       Style="{StaticResource RowHint}" Margin="2,8,2,0" />
 
                             <!-- ============================ Yontem: kendi motoru -->
                             <StackPanel Visibility="{Binding ShowNativeSettings, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="YÖNTEM" Style="{StaticResource SectionLabel}" />
-                                <ComboBox Style="{StaticResource Dropdown}"
+                                <!--
+                                    Yeni profil listeden degil buradan olusturuluyor: acilir
+                                    listeye konan bir "eylem" ogesi, liste her tazelendiginde
+                                    WPF tarafindan yeniden seciliyor ve profil ustune profil
+                                    olusturuyordu.
+                                -->
+                                <Grid>
+                                    <TextBlock Text="YÖNTEM" Style="{StaticResource SectionLabel}"
+                                               VerticalAlignment="Bottom" />
+                                    <Button Content="+ Yeni özel ayar"
+                                            Style="{StaticResource GhostButton}"
+                                            FontSize="11"
+                                            HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                            Margin="0,0,-9,-2"
+                                            Foreground="{DynamicResource AccentBrush}"
+                                            ToolTip="Seçili yöntemi kopyalayarak kendi profilini oluştur"
+                                            Command="{Binding AddCustomProfileCommand}" />
+                                </Grid>
+                                <ComboBox x:Name="MethodBox" Style="{StaticResource Dropdown}"
                                          ItemsSource="{Binding NativeProfiles}"
                                          SelectedItem="{Binding SelectedNativeProfile, Mode=TwoWay}" />
                                 <TextBlock Text="{Binding SelectedNativeProfile.Description, NotifyOnTargetUpdated=True}"
                                            svc:Motion.RefreshText="True"
-                                           Style="{StaticResource RowHint}" Margin="1,6,0,0" />
+                                           Style="{StaticResource RowHint}" Margin="2,8,2,0" />
 
                                 <!-- Ozel motor ayarlari -->
                                 <Border x:Name="CustomNativePanel"
@@ -255,14 +307,42 @@
                                         Visibility="{Binding ShowCustomNative, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
 
+                                        <!-- ====== profil adi ve yonetimi -->
+                                        <!--
+                                            Kullanici birden fazla ozel profil tutabiliyor; hepsi
+                                            yontem listesinde adiyla gorunuyor ve ayar dosyasinda
+                                            (%AppData%) saklaniyor.
+                                        -->
+                                        <TextBlock Text="PROFİL" Style="{StaticResource GroupLabel}" />
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Style="{StaticResource InputBox}"
+                                                     Text="{Binding CustomProfileName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                     ToolTip="Profilin listede görünecek adı (Enter ile uygula)" />
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="4,0,-6,0">
+                                                <Button Style="{StaticResource IconGhostButton}" Content="&#xE8C8;"
+                                                        ToolTip="Bu profili kopyalayarak yeni bir profil oluştur"
+                                                        Command="{Binding AddCustomProfileCommand}" />
+                                                <Button Style="{StaticResource IconGhostButton}" Content="&#xE74D;" Tag="danger"
+                                                        ToolTip="Bu profili sil"
+                                                        Command="{Binding DeleteCustomProfileCommand}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Text="Yöntem listesinden istediğin kadar özel profil ekleyip aralarında geçiş yapabilirsin."
+                                                   Style="{StaticResource OptionHint}" Margin="2,6,0,0" />
+
                                         <!-- ====== sahte paket -->
+                                        <Border Style="{StaticResource GroupDivider}" />
                                         <Grid>
                                             <TextBlock Text="SAHTE PAKET" Style="{StaticResource GroupLabel}"
                                                        VerticalAlignment="Center" />
                                             <Button Content="Önerilene dön"
                                                     Style="{StaticResource GhostButton}"
                                                     HorizontalAlignment="Right" Margin="0,-6,-9,-6"
-                                                    ToolTip="Özel ayarları seçili sağlayıcının önerdiği yöntemin değerlerine döndür"
+                                                    ToolTip="Bu profili seçili sağlayıcının önerdiği yöntemin değerlerine döndür"
                                                     Command="{Binding ResetCustomNativeCommand}" />
                                         </Grid>
 
@@ -540,17 +620,28 @@
                                          SelectedItem="{Binding SelectedMethod, Mode=TwoWay}" />
                                 <TextBlock Text="{Binding SelectedMethod.Description, NotifyOnTargetUpdated=True}"
                                            svc:Motion.RefreshText="True"
-                                           Style="{StaticResource RowHint}" Margin="1,6,0,0" />
+                                           Style="{StaticResource RowHint}" Margin="2,8,2,0" />
                             </StackPanel>
 
                             <!-- ============================================ DNS -->
-                            <TextBlock Text="DNS" Style="{StaticResource SectionLabel}" />
-                            <ComboBox Style="{StaticResource Dropdown}"
+                            <Grid>
+                                <TextBlock Text="DNS" Style="{StaticResource SectionLabel}"
+                                           VerticalAlignment="Bottom" />
+                                <Button Content="+ Yeni DNS"
+                                        Style="{StaticResource GhostButton}"
+                                        FontSize="11"
+                                        HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                        Margin="0,0,-9,-2"
+                                        Foreground="{DynamicResource AccentBrush}"
+                                        ToolTip="Kendi adres ve portunu gireceğin bir DNS sunucusu ekle"
+                                        Command="{Binding AddCustomDnsCommand}" />
+                            </Grid>
+                            <ComboBox x:Name="DnsBox" Style="{StaticResource Dropdown}"
                                      ItemsSource="{Binding DnsProfiles}"
                                      SelectedItem="{Binding SelectedDns, Mode=TwoWay}" />
                             <TextBlock Text="{Binding SelectedDns.Description, NotifyOnTargetUpdated=True}"
                                        svc:Motion.RefreshText="True"
-                                       Style="{StaticResource RowHint}" Margin="1,6,0,0" />
+                                       Style="{StaticResource RowHint}" Margin="2,8,2,0" />
 
                             <!-- Ozel DNS girisi -->
                             <Border x:Name="CustomDnsPanel"
@@ -560,6 +651,27 @@
                                     svc:Motion.Reveal="True"
                                     Visibility="{Binding ShowCustomDns, Converter={StaticResource BoolToVis}}">
                                 <StackPanel>
+                                    <!-- Yontem profilleriyle ayni mantik: birden fazla DNS girisi tutulabilir. -->
+                                    <TextBlock Text="DNS PROFİLİ" Style="{StaticResource GroupLabel}" />
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Style="{StaticResource InputBox}"
+                                                 Text="{Binding CustomDnsName, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="DNS girişinin listede görünecek adı (Enter ile uygula)" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="4,0,-6,0">
+                                            <Button Style="{StaticResource IconGhostButton}" Content="&#xE8C8;"
+                                                    ToolTip="Bu girişi kopyalayarak yeni bir DNS ekle"
+                                                    Command="{Binding AddCustomDnsCommand}" />
+                                            <Button Style="{StaticResource IconGhostButton}" Content="&#xE74D;" Tag="danger"
+                                                    ToolTip="Bu DNS girişini sil"
+                                                    Command="{Binding DeleteCustomDnsCommand}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Border Style="{StaticResource GroupDivider}" />
                                     <TextBlock Text="KENDİ DNS SUNUCUN" Style="{StaticResource GroupLabel}" Margin="0,0,0,10" />
                                     <Grid>
                                         <Grid.ColumnDefinitions>
@@ -657,6 +769,121 @@
                     </Border>
                 </StackPanel>
             </ScrollViewer>
+
+            <!-- ============================================ guncelleme ekrani -->
+            <!--
+                Govdenin ustunu kapatan bilgilendirme karti: hangi surumden hangisine
+                gecildigi, indirmenin nerede oldugu ve sonraki adimin ne olacagi tek
+                bakista gorunsun diye. Baslik cubugu acikta: pencere tasinabilir ve
+                guncelleme surerken tepsiye kucultulebilir.
+            -->
+            <Grid Grid.Row="1"
+                  Background="{DynamicResource BgBrush}"
+                  svc:Motion.Reveal="True"
+                  Visibility="{Binding ShowUpdateScreen, Converter={StaticResource BoolToVis}}">
+                <Border Margin="22,0,22,20" Padding="20,22,20,16" CornerRadius="18"
+                        VerticalAlignment="Center"
+                        Background="{DynamicResource SurfaceBrush}"
+                        BorderThickness="1" BorderBrush="{DynamicResource StrokeBrush}">
+                    <StackPanel>
+
+                        <!-- Simge; calisirken cevresinde bir yay doner. -->
+                        <Grid Width="62" Height="62" HorizontalAlignment="Center">
+                            <Ellipse Margin="5" Fill="{DynamicResource SurfaceAltBrush}" />
+
+                            <Path Stroke="{DynamicResource AccentBrush}"
+                                  StrokeThickness="2.6"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Data="M 31,3 A 28,28 0 0 1 55.2,45"
+                                  Opacity="0"
+                                  svc:Motion.Show="{Binding UpdateBusy}"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <Path.RenderTransform>
+                                    <RotateTransform Angle="0" />
+                                </Path.RenderTransform>
+                                <Path.Style>
+                                    <Style TargetType="Path">
+                                        <Style.Triggers>
+                                            <!-- Pencere gizliyken saat durur: tepside bos yere donmesin. -->
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding UpdateBusy}" Value="True" />
+                                                    <Condition Binding="{Binding AreAnimationsEnabled}" Value="True" />
+                                                </MultiDataTrigger.Conditions>
+                                                <MultiDataTrigger.EnterActions>
+                                                    <BeginStoryboard x:Name="UpdateSpin">
+                                                        <Storyboard>
+                                                            <DoubleAnimation
+                                                                Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                                From="0" To="360" Duration="0:0:1.4"
+                                                                RepeatBehavior="Forever" />
+                                                        </Storyboard>
+                                                    </BeginStoryboard>
+                                                </MultiDataTrigger.EnterActions>
+                                                <MultiDataTrigger.ExitActions>
+                                                    <StopStoryboard BeginStoryboardName="UpdateSpin" />
+                                                </MultiDataTrigger.ExitActions>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Path.Style>
+                            </Path>
+
+                            <TextBlock Text="{Binding UpdateGlyph, NotifyOnTargetUpdated=True}"
+                                       svc:Motion.RefreshText="True"
+                                       FontFamily="{StaticResource IconFont}" FontSize="20"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Foreground="{DynamicResource AccentBrush}" />
+                        </Grid>
+
+                        <TextBlock Text="{Binding UpdateTitle, NotifyOnTargetUpdated=True}"
+                                   svc:Motion.RefreshText="True"
+                                   HorizontalAlignment="Center" Margin="0,16,0,0"
+                                   FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextBrush}" />
+
+                        <TextBlock Text="{Binding UpdateVersionText}"
+                                   HorizontalAlignment="Center" Margin="0,5,0,0"
+                                   FontSize="11.5" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+
+                        <!-- Indirme cubugu: dolgu soldan saga olceklenerek buyur. -->
+                        <StackPanel Margin="0,18,0,0"
+                                    Visibility="{Binding ShowUpdateProgress, Converter={StaticResource BoolToVis}}">
+                            <Border Style="{StaticResource ProgressTrack}">
+                                <Border CornerRadius="3" Background="{DynamicResource AccentGradient}"
+                                        svc:Motion.FillRatio="{Binding UpdateFraction}" />
+                            </Border>
+                            <TextBlock Text="{Binding UpdateProgressText}"
+                                       HorizontalAlignment="Center" Margin="0,9,0,0"
+                                       FontSize="11.5"
+                                       Foreground="{DynamicResource TextMutedBrush}" />
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding UpdateMessage, NotifyOnTargetUpdated=True}"
+                                   svc:Motion.RefreshText="True"
+                                   HorizontalAlignment="Center" TextAlignment="Center"
+                                   TextWrapping="Wrap" MaxWidth="290"
+                                   Margin="0,16,0,0"
+                                   FontSize="12" LineHeight="18"
+                                   Foreground="{DynamicResource TextMutedBrush}" />
+
+                        <Grid Margin="0,18,0,0">
+                            <Button Content="Daha sonra"
+                                    Style="{StaticResource GhostButton}"
+                                    HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-9,0,0,0"
+                                    Command="{Binding LaterUpdateCommand}"
+                                    Visibility="{Binding ShowUpdateLater, Converter={StaticResource BoolToVis}}" />
+
+                            <Button Content="Tekrar dene"
+                                    Style="{StaticResource AccentButton}"
+                                    HorizontalAlignment="Right"
+                                    Command="{Binding ApplyUpdateCommand}"
+                                    Visibility="{Binding ShowUpdateRetry, Converter={StaticResource BoolToVis}}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
         </Grid>
 
         <!--

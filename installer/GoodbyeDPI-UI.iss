@@ -6,9 +6,13 @@
 ; Uygulama yayini once yapilmis olmali (build\app icinde tek dosya exe + Runtime).
 ; Otomatik guncelleme bu setup'i /VERYSILENT ile calistirir; bu yuzden [Run]
 ; adiminda skipifsilent YOK - sessiz kurulumdan sonra uygulama yeniden acilir.
+;
+; Uygulama (2.3.0'dan itibaren) kurucunun bitmesini bekleyip kendini AYRICA aciyor.
+; Iki yol da calissa sorun olmaz: tek ornek kilidi yuzunden ikinci kopya sessizce cikar.
+; Asagidaki [Run] adimi eski surumlerden guncelleyenler icin gerekli - kaldirmayin.
 
 #define AppName "GoodbyeDPI UI"
-#define AppVersion "2.2.0"
+#define AppVersion "2.3.0"
 #define AppPublisher "GoodbyeDPI UI"
 #define AppExe "GoodbyeDPI-UI.exe"
 #define AppMutexName "GoodbyeDPI-UI.SingleInstance.v1"

@@ -22,6 +22,7 @@
     <SolidColorBrush x:Key="TextBrush"          Color="#FF0F172A" po:Freeze="True" />
     <SolidColorBrush x:Key="TextMutedBrush"     Color="#FF64748B" po:Freeze="True" />
     <SolidColorBrush x:Key="AccentBrush"        Color="#FF6366F1" po:Freeze="True" />
+    <SolidColorBrush x:Key="AccentSoftBrush"    Color="#FFE4E6F8" po:Freeze="True" />
     <SolidColorBrush x:Key="AccentAltBrush"     Color="#FF8B5CF6" po:Freeze="True" />
     <SolidColorBrush x:Key="SuccessBrush"       Color="#FF10B981" po:Freeze="True" />
     <SolidColorBrush x:Key="DangerBrush"        Color="#FFEF4444" po:Freeze="True" />

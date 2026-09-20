@@ -29,14 +29,35 @@ internal static class UpdateTest
         }
 
         log.AppendLine($"Yeni surum: {info.Tag} ({info.Version})");
-        log.AppendLine($"Dosya: {info.AssetName}");
+        log.AppendLine($"Dosya: {info.AssetName} ({info.Size / 1024 / 1024} MB)");
         log.AppendLine($"URL: {info.DownloadUrl}");
         log.AppendLine($"Beklenen SHA-256: {info.Sha256 ?? "(yok)"}");
         log.AppendLine("Indiriliyor + dogrulaniyor...");
 
-        var path = svc.DownloadAsync(info).GetAwaiter().GetResult();
+        // Guncelleme ekrani bu bildirimlerle besleniyor: geldiklerini de dogrula.
+        var reports = 0;
+        var lastPercent = -1;
+        var monotonic = true;
+        long lastDone = 0;
 
-        var ok = path is not null;
+        var progress = new InlineProgress<DownloadProgress>(p =>
+        {
+            reports++;
+            if (p.Done < lastDone) monotonic = false;
+            lastDone = p.Done;
+
+            if (p.Total <= 0) return;
+            var percent = (int)(100.0 * p.Done / p.Total);
+            if (percent / 10 == lastPercent / 10) return;
+            lastPercent = percent;
+            log.AppendLine($"  %{percent} ({p.Done / 1024 / 1024} / {p.Total / 1024 / 1024} MB)");
+        });
+
+        var path = svc.DownloadAsync(info, progress).GetAwaiter().GetResult();
+
+        log.AppendLine($"Ilerleme bildirimi: {reports} adet, geri gitmedi: {monotonic}");
+
+        var ok = path is not null && reports > 0 && monotonic;
         if (ok)
         {
             var size = new FileInfo(path!).Length;
@@ -50,6 +71,15 @@ internal static class UpdateTest
 
         Write(log, ok);
         return ok ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Ilerlemeyi indiren is parcaciginda dogrudan bildirir. Burada bir gonderici
+    /// dongusu donmedigi icin <see cref="Progress{T}"/> geri cagrilari hic isletilmezdi.
+    /// </summary>
+    private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
     }
 
     private static void Write(StringBuilder log, bool pass)

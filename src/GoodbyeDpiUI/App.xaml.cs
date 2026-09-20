@@ -64,11 +64,17 @@ public partial class App : Application
         var theme = new ThemeService();
         theme.Initialize(settings.DarkMode);
 
+        // Gorev Zamanlayici bizi --tray ile baslatir: pencere acilmadan tepside dur.
+        var startHidden = e.Args.Any(a =>
+            string.Equals(a, StartupService.TrayArgument, StringComparison.OrdinalIgnoreCase));
+
         _dpi = new DpiController();
         var updates = new UpdateService();
         _vm = new MainViewModel(_dpi, _settings, theme, updates)
         {
             RequestShutdown = ExitApplication,
+            // Guncellemeden sonra uygulama nasil baslatildiysa oyle geri gelsin.
+            RelaunchArguments = startHidden ? StartupService.TrayArgument : null,
         };
 
         var window = new MainWindow { DataContext = _vm };
@@ -77,10 +83,6 @@ public partial class App : Application
         // Panel ilk tepsi tiklamasina kadar olusturulmaz: acilista is yapmaz.
         _tray = new TrayService(_vm, () => new TrayFlyout(_vm, ShowMainWindow, ExitApplication));
         window.Tray = _tray;
-
-        // Gorev Zamanlayici bizi --tray ile baslatir: pencere acilmadan tepside dur.
-        var startHidden = e.Args.Any(a =>
-            string.Equals(a, StartupService.TrayArgument, StringComparison.OrdinalIgnoreCase));
 
         if (!startHidden) window.Show();
 
@@ -122,6 +124,18 @@ public partial class App : Application
         if (dropdownIndex >= 0 && dropdownIndex + 1 < e.Args.Length)
             window.RunDropdownTest(e.Args[dropdownIndex + 1],
                 e.Args.Any(a => string.Equals(a, "--realinput", StringComparison.OrdinalIgnoreCase)));
+
+        // --profiletest <onek>: adlandirilmis ozel yontem / DNS profillerinin regresyonu.
+        var profileIndex = Array.FindIndex(e.Args, a =>
+            string.Equals(a, "--profiletest", StringComparison.OrdinalIgnoreCase));
+        if (profileIndex >= 0 && profileIndex + 1 < e.Args.Length)
+            window.RunProfileTest(e.Args[profileIndex + 1]);
+
+        // --updateshot <onek>: guncelleme ekraninin her adimini kaydeder.
+        var updateIndex = Array.FindIndex(e.Args, a =>
+            string.Equals(a, "--updateshot", StringComparison.OrdinalIgnoreCase));
+        if (updateIndex >= 0 && updateIndex + 1 < e.Args.Length)
+            window.RunUpdateShot(e.Args[updateIndex + 1]);
 
         // --themeshot <onek>: acik + koyu temayi PNG olarak kaydeder.
         var shotIndex = Array.FindIndex(e.Args, a =>

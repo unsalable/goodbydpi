@@ -58,6 +58,19 @@ public sealed record DnsProfile(
 {
     public const string CustomId = "custom";
 
+    /// <summary>Kimlik kullanicinin girdigi bir DNS sunucusuna mi ait?</summary>
+    public static bool IsCustomId(string? id) => CustomIds.IsCustom(id);
+
+    /// <summary>
+    /// Esitlik yalnizca kimlige bakar. Ozel girisler adres degistikce yeniden
+    /// uretiliyor; tum alanlari karsilastiran kayit varsayilani ComboBox'in
+    /// secili ogeyi her duzenlemede kaybetmesine yol aciyordu.
+    /// </summary>
+    public bool Equals(DnsProfile? other) =>
+        other is not null && string.Equals(Id, other.Id, StringComparison.OrdinalIgnoreCase);
+
+    public override int GetHashCode() => StringComparer.OrdinalIgnoreCase.GetHashCode(Id);
+
     /// <summary>DNS yonlendirmesi acik mi (en az bir adres tanimli mi)?</summary>
     public bool IsActive => !string.IsNullOrWhiteSpace(V4Addr) || !string.IsNullOrWhiteSpace(V6Addr);
 
@@ -90,19 +103,19 @@ public sealed record DnsProfile(
     /// <summary>Yerlesik (kullanicinin duzenlemedigi) profiller.</summary>
     public static readonly IReadOnlyList<DnsProfile> BuiltIn = new[] { Cloudflare, Yandex, Off };
 
-    /// <summary>Kullanicinin girdigi adres/porttan bir "Ozel" profil olusturur.</summary>
-    public static DnsProfile CreateCustom(string? v4Addr, int v4Port, string? v6Addr, int v6Port)
+    /// <summary>Kullanicinin girdigi adres/porttan adlandirilmis bir "Ozel" profil olusturur.</summary>
+    public static DnsProfile CreateCustom(string id, string name, string? v4Addr, int v4Port, string? v6Addr, int v6Port)
     {
         v4Addr = string.IsNullOrWhiteSpace(v4Addr) ? null : v4Addr.Trim();
         v6Addr = string.IsNullOrWhiteSpace(v6Addr) ? null : v6Addr.Trim();
 
         var summary = v4Addr is not null
             ? $"{v4Addr}:{(v4Port <= 0 ? 53 : v4Port)}"
-            : v6Addr is not null ? $"[{v6Addr}]:{(v6Port <= 0 ? 53 : v6Port)}" : "tanımsız";
+            : v6Addr is not null ? $"[{v6Addr}]:{(v6Port <= 0 ? 53 : v6Port)}" : "adres girilmedi";
 
         return new DnsProfile(
-            CustomId,
-            "Özel",
+            id,
+            name,
             $"Kendi DNS sunucun: {summary}",
             v4Addr,
             v4Port <= 0 ? 53 : v4Port,
@@ -110,14 +123,16 @@ public sealed record DnsProfile(
             v6Port <= 0 ? 53 : v6Port);
     }
 
-    /// <summary>Kimlige gore yerlesik profili bulur; "custom" ise saglayicidan alir.</summary>
-    public static DnsProfile FromId(string? id, Func<DnsProfile>? customProvider = null)
-    {
-        if (string.Equals(id, CustomId, StringComparison.OrdinalIgnoreCase) && customProvider is not null)
-            return customProvider();
+    /// <summary>Tek ozel girisi olan eski kurulumlar ve testler icin kisa yol.</summary>
+    public static DnsProfile CreateCustom(string? v4Addr, int v4Port, string? v6Addr, int v6Port) =>
+        CreateCustom(CustomId, "Özel", v4Addr, v4Port, v6Addr, v6Port);
 
-        return BuiltIn.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Cloudflare;
-    }
+    /// <summary>
+    /// Kimlige gore yerlesik profili bulur. Kullanicinin kendi girdigi sunucular
+    /// ayar dosyasindaki listede tutuldugu icin onlari cagiran taraf cozer.
+    /// </summary>
+    public static DnsProfile FromId(string? id) =>
+        BuiltIn.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.OrdinalIgnoreCase)) ?? Cloudflare;
 
     /// <summary>Adres metinlerinin gecerli IP olup olmadigini denetler.</summary>
     public string? Validate()

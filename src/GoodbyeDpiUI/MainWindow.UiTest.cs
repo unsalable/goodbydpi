@@ -231,6 +231,237 @@ public partial class MainWindow
         };
     }
 
+    /// <summary>
+    /// Adlandirilmis ozel profillerin uctan uca kontrolu: yeni profil olusturma,
+    /// adlandirma, ayar degistirince listedeki ozetin tazelenmesi, silme ve her seyin
+    /// ayar dosyasina yazilmasi. Ayni akis DNS girisleri icin de kosuluyor.
+    ///
+    /// Her adimdan sonra ACILIR KUTUNUN secili ogesi de kontrol ediliyor: liste her
+    /// tazelendiginde yeniden uretildigi icin secimin kutuda da korunmasi sart.
+    /// </summary>
+    public void RunProfileTest(string prefix)
+    {
+        ContentRendered += async (_, _) =>
+        {
+            if (Vm is not { } vm) return;
+
+            var log = new StringBuilder();
+            var failures = 0;
+
+            void Check(bool ok, string what)
+            {
+                if (!ok) failures++;
+                log.AppendLine((ok ? "GECTI  " : "KALDI  ") + what);
+            }
+
+            SettingsToggle.IsChecked = true;
+            await Task.Delay(800);
+
+            // Bilinen baslangic: Genel saglayici (yontem listesi sabit).
+            vm.SelectedIsp = Models.IspProfile.General;
+            await Task.Delay(300);
+
+            var startMethods = vm.NativeProfiles.Count;
+            var startDns = vm.DnsProfiles.Count;
+            log.AppendLine($"baslangic: yontem={startMethods} dns={startDns}");
+
+            // ---------------------------------------- 1) yeni profil olustur
+            vm.AddCustomProfileCommand.Execute(null);
+            await Task.Delay(500);
+
+            var created = vm.SelectedNativeProfile;
+            log.AppendLine($"olusan: id={created.Id} ad=\"{created.Name}\" ozet=\"{created.Description}\"");
+
+            Check(Models.NativeProfile.IsCustomId(created.Id), "yeni ozel profil olustu ve secildi");
+            Check(Equals(MethodBox.SelectedItem, created), "kutu yeni profili gosteriyor");
+            Check(vm.NativeProfiles.Count == startMethods + 1,
+                $"liste bir uzadi ({startMethods} -> {vm.NativeProfiles.Count})");
+            Check(vm.ShowCustomNative, "ozel ayar paneli acildi");
+            SaveRender($"{prefix}-1-yeni-profil.png");
+
+            // ---------------------------------------- 2) adlandirma listeye yansimali
+            vm.CustomProfileName = "Gece profili";
+            await Task.Delay(400);
+
+            Check(vm.SelectedNativeProfile.Name == "Gece profili", "profil adi degisti");
+            Check(vm.NativeProfiles.Any(p => p.Name == "Gece profili"), "yeni ad listede gorunuyor");
+            Check(Equals(MethodBox.SelectedItem, vm.SelectedNativeProfile), "ad degisince secim korundu");
+            Check(BoxName(MethodBox) == "Gece profili", $"kutuda yazan ad tazelendi (\"{BoxName(MethodBox)}\")");
+
+            // ------------------------- 3) ayar degisince listedeki ozet de tazelenmeli
+            vm.NativeBlockQuic = false;
+            await Task.Delay(300);
+            var summary = vm.SelectedNativeProfile.Description;
+            log.AppendLine($"ozet: \"{summary}\"");
+            Check(!summary.Contains("QUIC"), "QUIC kapatilinca ozetten dustu");
+            Check(Equals(MethodBox.SelectedItem, vm.SelectedNativeProfile), "ayar degisince secim korundu");
+            Check(BoxDescription(MethodBox) == summary, "kutunun gosterdigi ozet de tazelendi");
+
+            // ------------------------- 4) ikinci profil: ad ve kimlik cakismamali
+            vm.AddCustomProfileCommand.Execute(null);
+            await Task.Delay(500);
+
+            var second = vm.SelectedNativeProfile;
+            var customIds = vm.NativeProfiles.Where(p => Models.NativeProfile.IsCustomId(p.Id)).ToList();
+            log.AppendLine($"ozel profiller: {string.Join(" | ", customIds.Select(p => p.Name))}");
+
+            Check(second.Id != created.Id, "ikinci profil ayri kimlik aldi");
+            Check(Equals(MethodBox.SelectedItem, second), "kutu ikinci profili gosteriyor");
+            Check(customIds.Count >= 3, $"birden fazla ozel profil listeleniyor ({customIds.Count})");
+            Check(customIds.Select(p => p.Name).Distinct().Count() == customIds.Count, "adlar cakismiyor");
+            Check(second.Build().BlockQuic == false, "yeni profil kaynak profilin ayarlarini kopyaladi");
+            SaveRender($"{prefix}-2-ikinci-profil.png");
+
+            // ---- 4b) saglayici KUTUDAN degistirilince yontem listesi ve secim tazelenmeli
+            //          (listeyi degistiren tek baglama surumlu yol bu.)
+            var ispIndex = vm.Isps.ToList().FindIndex(i => i.Id == Models.IspProfile.Superonline.Id);
+            IspBox.SelectedIndex = ispIndex;
+            await Task.Delay(500);
+
+            log.AppendLine($"saglayici: {vm.SelectedIsp.Name} -> yontem {vm.SelectedNativeProfile.Name}, " +
+                           $"liste: {string.Join(" | ", vm.NativeProfiles.Select(p => p.Name))}");
+
+            Check(vm.SelectedIsp == Models.IspProfile.Superonline, "kutudan saglayici degisti");
+            Check(Equals(IspBox.SelectedItem, vm.SelectedIsp), "saglayici kutusu secimi korudu");
+            Check(vm.SelectedNativeProfile == Models.IspProfile.Superonline.Recommended,
+                "yontem saglayicinin onerisine gecti");
+            Check(Equals(MethodBox.SelectedItem, vm.SelectedNativeProfile), "yontem kutusu da onerilene gecti");
+            Check(vm.NativeProfiles.Any(p => p.Name == "Gece profili"), "ozel profiller listede kaldi");
+            Check(vm.NativeProfiles.Contains(Models.NativeProfile.Md5Sig), "saglayicinin yontemleri geldi");
+
+            vm.SelectedIsp = Models.IspProfile.General;
+            await Task.Delay(400);
+            Check(Equals(IspBox.SelectedItem, vm.SelectedIsp), "genele donunce kutu da dondu");
+
+            // Silme adimlari onerilen yonteme donuyor; secimi yeniden ozel profile al.
+            vm.SelectedNativeProfile = second;
+            await Task.Delay(300);
+
+            // ------------------------- 5) ayar dosyasina gercekten yaziliyor mu
+            var saved = new Services.SettingsService().Load();
+            Check(saved.CustomProfiles.Any(p => p.Name == "Gece profili"), "profil ayar dosyasina yazildi");
+            Check(saved.NativeProfile == second.Id, "secim ayar dosyasina yazildi");
+            log.AppendLine($"dosyadaki profiller: {string.Join(" | ", saved.CustomProfiles.Select(p => p.Name))}");
+
+            // ------------------------- 6) DNS tarafi: yeni giris + adres
+            vm.AddCustomDnsCommand.Execute(null);
+            await Task.Delay(500);
+
+            Check(Models.DnsProfile.IsCustomId(vm.SelectedDns.Id), "yeni DNS girisi olustu ve secildi");
+            Check(Equals(DnsBox.SelectedItem, vm.SelectedDns), "DNS kutusu yeni girisi gosteriyor");
+            Check(vm.ShowCustomDns, "ozel DNS paneli acildi");
+            Check(vm.DnsProfiles.Count == startDns + 1, $"DNS listesi bir uzadi ({startDns} -> {vm.DnsProfiles.Count})");
+
+            vm.CustomDnsName = "Ev DNS";
+            vm.DnsCustomV4 = "9.9.9.9";
+            vm.DnsCustomV4Port = "5353";
+            await Task.Delay(400);
+
+            log.AppendLine($"dns: ad=\"{vm.SelectedDns.Name}\" arg=\"{vm.SelectedDns.Arguments}\" uyari=\"{vm.DnsWarning}\"");
+            Check(vm.SelectedDns.Name == "Ev DNS", "DNS girisi adlandirildi");
+            Check(BoxName(DnsBox) == "Ev DNS", $"DNS kutusunda yazan ad tazelendi (\"{BoxName(DnsBox)}\")");
+            Check(vm.SelectedDns.Arguments == "--dns-addr 9.9.9.9 --dns-port 5353", "adres ve port uygulandi");
+            Check(!vm.HasDnsWarning, "gecerli adres uyari uretmedi");
+            Check(Equals(DnsBox.SelectedItem, vm.SelectedDns), "adres degisince DNS secimi korundu");
+
+            vm.DnsCustomV4 = "999.1.1.1";
+            await Task.Delay(300);
+            Check(vm.HasDnsWarning, "gecersiz adres uyari verdi");
+            vm.DnsCustomV4 = "9.9.9.9";
+            await Task.Delay(300);
+            SaveRender($"{prefix}-3-ozel-dns.png");
+
+            // ------------------------- 7) silme: secim onerilene donmeli
+            vm.DeleteCustomDnsCommand.Execute(null);
+            await Task.Delay(400);
+            Check(!vm.ShowCustomDns, "DNS girisi silinince panel kapandi");
+            Check(vm.DnsProfiles.Count == startDns, $"DNS listesi eski boyuna dondu ({vm.DnsProfiles.Count})");
+
+            vm.DeleteCustomProfileCommand.Execute(null);
+            await Task.Delay(400);
+            Check(!vm.ShowCustomNative, "profil silinince ozel panel kapandi");
+            Check(vm.SelectedNativeProfile == vm.SelectedIsp.Recommended, "silince onerilen yonteme donuldu");
+            Check(Equals(MethodBox.SelectedItem, vm.SelectedNativeProfile), "silme sonrasi kutu da guncellendi");
+
+            // Testin yarattigi profil geriye kalmasin.
+            vm.SelectedNativeProfile = created;
+            await Task.Delay(300);
+            vm.DeleteCustomProfileCommand.Execute(null);
+            await Task.Delay(300);
+            Check(vm.NativeProfiles.Count == startMethods, $"liste baslangic boyuna dondu ({vm.NativeProfiles.Count})");
+            SaveRender($"{prefix}-4-temizlendi.png");
+
+            log.AppendLine(failures == 0 ? "SONUC: tum kontroller gecti" : $"SONUC: {failures} kontrol kaldi");
+            System.IO.File.WriteAllText(prefix + "-sonuc.txt", log.ToString());
+            Application.Current.Shutdown(failures == 0 ? 0 : 1);
+        };
+    }
+
+    /// <summary>
+    /// Guncelleme ekraninin her adimini sirayla gosterip kaydeder: indirme yuzdesi,
+    /// dogrulama, kurulum, hata ve kurulum sonrasi "guncellendi" seridi.
+    /// </summary>
+    public void RunUpdateShot(string prefix)
+    {
+        ContentRendered += async (_, _) =>
+        {
+            if (Vm is not { } vm) return;
+
+            const long Total = 61_800_000;
+            var log = new StringBuilder();
+
+            async Task Step(string name, ViewModels.UpdateStage stage, long done)
+            {
+                vm.PreviewUpdate(stage, done, Total);
+                await Task.Delay(700);
+                UpdateLayout();
+                SaveRender($"{prefix}-{name}.png");
+                log.AppendLine($"{name}: pencere={ActualHeight:F0} baslik=\"{vm.UpdateTitle}\" " +
+                               $"surum=\"{vm.UpdateVersionText}\" oran={vm.UpdateFraction:F2} " +
+                               $"ilerleme=\"{vm.UpdateProgressText}\" donuyor={vm.UpdateBusy}");
+            }
+
+            await Task.Delay(600);
+
+            await Step("1-indiriliyor", ViewModels.UpdateStage.Downloading, 14_200_000);
+            await Step("2-indiriliyor-ileri", ViewModels.UpdateStage.Downloading, 47_500_000);
+            await Step("3-dogrulaniyor", ViewModels.UpdateStage.Verifying, Total);
+            await Step("4-kuruluyor", ViewModels.UpdateStage.Installing, Total);
+            await Step("5-hata", ViewModels.UpdateStage.Failed, 0);
+
+            // Kart kapatilinca govdede kalan serit.
+            vm.LaterUpdateCommand.Execute(null);
+            await Task.Delay(700);
+            SaveRender($"{prefix}-6-serit.png");
+            log.AppendLine($"serit: gorunur={vm.UpdateAvailable} metin=\"{vm.UpdateBannerText}\" " +
+                           $"ekran={vm.ShowUpdateScreen}");
+
+            // Kurulum sonrasi ilk acilis bildirimi.
+            vm.PreviewUpdateDone();
+            await Task.Delay(700);
+            SaveRender($"{prefix}-7-guncellendi.png");
+            log.AppendLine($"guncellendi: gorunur={vm.HasUpdateDone} metin=\"{vm.UpdateDoneText}\"");
+
+            System.IO.File.WriteAllText(prefix + "-olcu.txt", log.ToString());
+            Application.Current.Shutdown();
+        };
+    }
+
+    /// <summary>Kutunun GERCEKTEN tuttugu nesnenin adi (baglama bunu gosteriyor).</summary>
+    private static string? BoxName(ComboBox box) => box.SelectedItem switch
+    {
+        Models.NativeProfile p => p.Name,
+        Models.DnsProfile d => d.Name,
+        _ => null,
+    };
+
+    private static string? BoxDescription(ComboBox box) => box.SelectedItem switch
+    {
+        Models.NativeProfile p => p.Description,
+        Models.DnsProfile d => d.Description,
+        _ => null,
+    };
+
     private static double CardScale(FrameworkElement card) =>
         card.RenderTransform is TransformGroup { Children: [ScaleTransform scale, ..] } ? scale.ScaleX : 1;
 
