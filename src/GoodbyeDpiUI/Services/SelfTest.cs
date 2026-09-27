@@ -338,6 +338,39 @@ internal static class SelfTest
         Check("Ters sira: ilk gelen veriyi tutan DPI ClientHello goremez", !TlsParser.IsClientHello(dpiView, 0, dpiView.Length),
             BitConverter.ToString(dpiView, 0, Math.Min(6, dpiView.Length)));
 
+        // Windows sunucu (SYN-ACK TTL 116 -> baslangic 128) ilk geleni tutar: ortusme sahte
+        // bayti istege yazardi (login.live.com baglantiyi sifirliyordu). Ortusmesiz ters sira.
+        foreach (var v6 in new[] { false, true })
+        {
+            var tag = v6 ? "v6" : "v4";
+            var win = new PacketProcessor(NativeProfile.Disorder.Build(), DnsProfile.Off);
+            var winSyn = BuildTcp(v6, 443, 50104, 1, 910_000, 0x12, 116, [], swapAddr: true);
+            win.Process(winSyn, winSyn.Length, outbound: false, output, 1000);
+            var winHello = BuildTcp(v6, 50104, 443, 910_000, 2, 0x18, 128, hello);
+            win.Process(winHello, winHello.Length, true, output, 1010);
+            Check($"{tag} Windows sunucu: 2 parca, ters sirada", output.Count == 2 &&
+                IpPacket.Parse(output[0].Data, output[0].Length).TcpSeq == 910_002, $"{output.Count}");
+            Check($"{tag} Windows sunucu: ilk geleni tutan sunucu orijinali alir",
+                FirstWinsView(output, 910_000).AsSpan().SequenceEqual(hello));
+            Check($"{tag} Windows sunucu: son geleni tutan sunucu da orijinali alir",
+                ReceiverView(output, 910_000).AsSpan().SequenceEqual(hello));
+            Check($"{tag} Windows sunucu: sayac", win.Stats.OverlapSkipped == 1, $"{win.Stats.OverlapSkipped}");
+
+            // Linux sunucu (SYN-ACK TTL 52 -> baslangic 64): ortusme korunur.
+            var linux = new PacketProcessor(NativeProfile.Disorder.Build(), DnsProfile.Off);
+            var linuxSyn = BuildTcp(v6, 443, 50105, 1, 920_000, 0x12, 52, [], swapAddr: true);
+            linux.Process(linuxSyn, linuxSyn.Length, outbound: false, output, 1000);
+            var linuxHello = BuildTcp(v6, 50105, 443, 920_000, 2, 0x18, 128, hello);
+            linux.Process(linuxHello, linuxHello.Length, true, output, 1010);
+            Check($"{tag} Linux sunucu: ortusme korunur (ilk giden SEQ+1)",
+                output.Count == 2 && IpPacket.Parse(output[0].Data, output[0].Length).TcpSeq == 920_001);
+            Check($"{tag} Linux sunucu: orijinali alir", ReceiverView(output, 920_000).AsSpan().SequenceEqual(hello));
+        }
+
+        Check("TTL 64 -> son geleni tutar", !PacketProcessor.IsFirstWinsInitialTtl(64));
+        Check("TTL 65 -> ilk geleni tutar", PacketProcessor.IsFirstWinsInitialTtl(65));
+        Check("TTL 243 -> ilk geleni tutar", PacketProcessor.IsFirstWinsInitialTtl(243));
+
         // Duz bolme + ortusme: ilk parcanin SEQ'i geri cekilir, sunucu pencere disini atar.
         var fwd = new PacketProcessor(
             new NativeDpiConfig { FakePacket = false, SplitSni = false, ReverseSplit = false, SeqOverlap = 3 }, DnsProfile.Off);
@@ -832,6 +865,8 @@ internal static class SelfTest
             Check($"{tag} Ters sira: ClientHello yakalanir", Eval(tt, hello, true, v6));
             Check($"{tag} Ters sira: devam paketi yakalanmaz", !Eval(tt, cont, true, v6));
             Check($"{tag} Ters sira: Discord ses yakalanir", Eval(tt, disc, true, v6));
+            var ttSyn = BuildTcp(v6, 443, 50509, 1, 1, 0x12, 116, [], swapAddr: true);
+            Check($"{tag} Ters sira: SYN-ACK yakalanir (Windows sunucu tespiti)", Eval(tt, ttSyn, false, v6));
 
             var off = new PacketProcessor(new NativeDpiConfig { VoiceFake = false }, DnsProfile.Off).BuildFilter();
             Check($"{tag} ses kapali: Discord ses yakalanmaz", !Eval(off, disc, true, v6));
