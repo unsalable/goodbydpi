@@ -12,7 +12,7 @@
 ; Asagidaki [Run] adimi eski surumlerden guncelleyenler icin gerekli - kaldirmayin.
 
 #define AppName "GoodbyeDPI UI"
-#define AppVersion "2.3.0"
+#define AppVersion "2.3.1"
 #define AppPublisher "GoodbyeDPI UI"
 #define AppExe "GoodbyeDPI-UI.exe"
 #define AppMutexName "GoodbyeDPI-UI.SingleInstance.v1"

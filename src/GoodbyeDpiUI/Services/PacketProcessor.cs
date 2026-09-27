@@ -99,6 +99,12 @@ internal sealed class PacketProcessor
     /// <summary>Buyuk ClientHello'nun ikinci paketi de SNI ortasindan bolunecek mi?</summary>
     private bool TracksContinuation => _cfg.SplitTls && _cfg.SplitSni;
 
+    /// <summary>Ters sirada bolmeye sira ortusmesi ekleniyor mu (sunucunun isletim sistemi onemli)?</summary>
+    private bool UsesDisorderOverlap => _cfg.SplitTls && _cfg.ReverseSplit && _cfg.SeqOverlap > 0;
+
+    /// <summary>Sunucunun SYN-ACK TTL'i kaydedilmeli mi (otomatik TTL ya da ters sira ortusmesi icin)?</summary>
+    private bool TracksServerTtl => (UsesTtlFake && _cfg.AutoTtl) || UsesDisorderOverlap;
+
     // ================================================================ filtre
 
     private const string NoLocalV4 =
@@ -167,7 +173,7 @@ internal sealed class PacketProcessor
         if (remote.Count > 0)
             clauses.Add("(outbound and " + NoLocal + " and (" + string.Join(" or ", remote) + "))");
 
-        if (UsesTtlFake && _cfg.AutoTtl)
+        if (TracksServerTtl)
             clauses.Add("(inbound and tcp and tcp.Syn and tcp.Ack and (tcp.SrcPort == 443 or tcp.SrcPort == 80))");
 
         if (_resolverV4 is not null)
@@ -299,7 +305,7 @@ internal sealed class PacketProcessor
 
         if (_points.Count > 0)
         {
-            AddSegments(p, ip, output);
+            AddSegments(p, ip, output, nowMs);
             return PacketVerdict.Replace;
         }
 
@@ -443,11 +449,26 @@ internal sealed class PacketProcessor
 
     private void RecordServerTtl(in IpPacket ip, long nowMs)
     {
-        if (!UsesTtlFake || !_cfg.AutoTtl) return;
+        if (!TracksServerTtl) return;
 
         if (_ttl.Count >= TableLimit) Prune(_ttl, nowMs, r => r.Tick);
         _ttl[FlowKey.Inbound(ip)] = new TtlRecord((byte)ip.Ttl, nowMs);
     }
+
+    /// <summary>
+    /// Sunucu ortusen TCP verisinde ILK geleni mi tutuyor? Linux/BSD/macOS (baslangic TTL 64)
+    /// son geleni tutar; Windows (128) ve Solaris / ag cihazlari (255) ilk geleni tutar.
+    /// zapret: "disorder with seqovl will not work" on Windows servers. Ters sirada sahte
+    /// baytli parca once gittigi icin bu sunucular ClientHello'yu bozuk alip baglantiyi
+    /// sifirliyordu (orn. login.live.com / Microsoft ve Xbox girisi). SYN-ACK gorulmediyse
+    /// eski davranis korunur.
+    /// </summary>
+    private bool ServerKeepsFirstData(in IpPacket ip, long nowMs) =>
+        _ttl.TryGetValue(FlowKey.Outbound(ip), out var rec) && nowMs - rec.Tick < EntryLifetimeMs &&
+        IsFirstWinsInitialTtl(rec.Ttl);
+
+    /// <summary>Gozlenen TTL 64'un ustundeyse sunucunun baslangic TTL'i 128 ya da 255'tir.</summary>
+    internal static bool IsFirstWinsInitialTtl(int observedTtl) => observedTtl > 64;
 
     // ------------------------------------------------------- TCP bolme
 
@@ -473,7 +494,7 @@ internal sealed class PacketProcessor
         _points.Sort();
     }
 
-    private void AddSegments(byte[] p, in IpPacket ip, List<OutPacket> output)
+    private void AddSegments(byte[] p, in IpPacket ip, List<OutPacket> output, long nowMs)
     {
         var count = _points.Count + 1;
         var segments = new OutPacket[count];
@@ -481,12 +502,19 @@ internal sealed class PacketProcessor
         // Sira ortusmesi (zapret seqovl): duz bolmede ilk parcaya, ters sirada ikinci
         // parcaya (sondan bir onceki gonderilen). Ters sirada ilk bolme konumundan kucuk
         // olmali; yoksa sunucu ilk parcayi alinca sahte baytlari ezemez ve iptal edilir.
+        // Ilk geleni tutan (Windows) sunucuda ters sira ortusmesi istegi bozar: yalnizca
+        // ters sira bolme yapilir. Duz bolmedeki ortusme pencere disinda kaldigindan
+        // her sunucuda atilir, ona dokunulmaz.
         var overlap = _cfg.SeqOverlap;
         var overlapIndex = -1;
         if (overlap > 0)
         {
             if (!_cfg.ReverseSplit) overlapIndex = 0;
-            else if (count >= 2 && overlap < _points[0]) overlapIndex = 1;
+            else if (count >= 2 && overlap < _points[0])
+            {
+                if (ServerKeepsFirstData(ip, nowMs)) Stats.OverlapSkipped++;
+                else overlapIndex = 1;
+            }
         }
 
         var start = 0;
@@ -753,6 +781,7 @@ internal sealed class PacketProcessor
         public long HellosWithoutSni;
         public long HelloContinuations;
         public long ContinuationSplits;
+        public long OverlapSkipped;
         public long HttpRequests;
         public long FakesSent;
         public long QuicDropped;
@@ -763,7 +792,8 @@ internal sealed class PacketProcessor
         public long DnsAnswered;
 
         public override string ToString() =>
-            $"ClientHello {ClientHellos} (SNI'siz {HellosWithoutSni}, devam {HelloContinuations}, devamda bolme {ContinuationSplits}), " +
+            $"ClientHello {ClientHellos} (SNI'siz {HellosWithoutSni}, devam {HelloContinuations}, devamda bolme {ContinuationSplits}, " +
+            $"Windows sunucuda ortusmesiz {OverlapSkipped}), " +
             $"HTTP {HttpRequests}, sahte {FakesSent}, QUIC dusen {QuicDropped}, " +
             $"Discord ses {VoiceDiscoveries} / STUN {StunMessages} (sahte UDP {VoiceFakesSent}), " +
             $"DNS yonlenen {DnsRedirected} / donen {DnsAnswered}";

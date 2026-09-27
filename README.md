@@ -14,6 +14,8 @@ Tek düğme, sistem tepsisi, açık/koyu tema, Windows açılışında otomatik 
   - İsteği 2. bayttan ve site adının (SNI) ortasından TCP parçalarına bölme, ters sırada ve
     sıra örtüşmesiyle (zapret `seqovl`) gönderme. Chromium'un iki TCP paketine yayılan
     ML-KEM (Kyber) ClientHello'sunda site adı ikinci paketteyse o paket de bölünür.
+    Örtüşen veride ilk geleni tutan Windows sunucularında (SYN-ACK TTL'i 64'ün üstünde; ör.
+    Microsoft / Xbox girişi) ters sıra örtüşmesiz yapılır; yoksa bu sunucular bağlantıyı sıfırlar.
   - **Discord ses / aramalar:** Discord ses sunucusuna giden IP Discovery paketinden ve
     WebRTC/STUN mesajlarından önce sahte UDP paketleri gönderir. Türk ISS'leri sesi bu ilk
     paketlerden tanıyıp engelliyor ("sesli kanala giriliyor ama bağlanmıyor" sorunu).
