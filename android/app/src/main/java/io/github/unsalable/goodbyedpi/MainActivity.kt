@@ -1,6 +1,7 @@
 package io.github.unsalable.goodbyedpi
 
 import android.Manifest
+import android.content.Intent
 import android.annotation.SuppressLint
 import android.os.Bundle
 import android.util.Log
@@ -14,6 +15,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import io.github.unsalable.goodbyedpi.ui.GoodbyeDpiApp
 import io.github.unsalable.goodbyedpi.ui.MainViewModel
+import io.github.unsalable.goodbyedpi.service.ServiceController
 import io.github.unsalable.goodbyedpi.ui.UiEvent
 import kotlinx.coroutines.launch
 
@@ -49,6 +51,22 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent { GoodbyeDpiApp(vm) }
+
+        // Yeniden kurulumda (dondurme vb.) ayni istegi ikinci kez isleme.
+        if (savedInstanceState == null) handleConnectExtra(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleConnectExtra(intent)
+    }
+
+    /** Karo, izin eksikken "baglan" istegiyle acar; izin ekrani ViewModel olayi olarak gelir. */
+    private fun handleConnectExtra(intent: Intent?) {
+        if (intent?.getBooleanExtra(ServiceController.EXTRA_CONNECT, false) != true) return
+        intent.removeExtra(ServiceController.EXTRA_CONNECT)
+        vm.onConnectRequested()
     }
 
     // Bildirim izni olayi yalnizca Android 13+'ta uretiliyor (MainViewModel.askNotificationsOnce).

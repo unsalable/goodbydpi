@@ -107,6 +107,13 @@ class MainViewModel(
         runCatching { UpdateManager.onAppOpen(context) }
             .onFailure { Log.w(TAG, "Guncelleme denetimi baslatilamadi", it) }
 
+        // Surec disaridan olduruldugunde (LMK, kill -9) sistem VPN servisini geri getirmiyor;
+        // son istek "acik" ise uygulama acilir acilmaz baglantiyi geri kur.
+        val recovered = runCatching { ServiceController.recoverIfNeeded(context) }
+            .onFailure { Log.w(TAG, "Baglanti geri getirilemedi", it) }
+            .getOrDefault(false)
+        if (recovered) return
+
         // Izin daha once verilmediyse sessizce gecilir: acilista kullanicinin karsisina
         // bir izin ekrani cikarmak "otomatik" degil, dayatma olurdu.
         val s = repo.current
@@ -127,6 +134,17 @@ class MainViewModel(
             EngineState.Starting, is EngineState.Running -> ServiceController.stop(context)
             // Kapanirken ikinci dokunus yok sayilir; durum Stopped'a dusunce tekrar acilabilir.
             EngineState.Stopping -> Unit
+        }
+    }
+
+    /**
+     * Hizli ayar karosu VPN izni eksikken aktiviteyi ServiceController.EXTRA_CONNECT ile acar:
+     * kullanici baglanmak istiyor, izni isteyip baglan. Zaten bagliysa bir sey yapma.
+     */
+    fun onConnectRequested() {
+        when (engineState.value) {
+            EngineState.Stopped, is EngineState.Failed -> connect()
+            else -> Unit
         }
     }
 

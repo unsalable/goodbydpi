@@ -23,9 +23,8 @@ REV_ID := d9dca26
 include $(GDPI_JNI_DIR)/hev-socks5-tunnel/Android.mk
 LOCAL_PATH := $(GDPI_JNI_DIR)
 
-# byedpi ayri bir ajan/dizin tarafindan saglanir; dosya henuz yoksa hev
-# tek basina derlenebilsin diye kosullu dahil ediyoruz.
-ifneq ($(wildcard $(GDPI_JNI_DIR)/byedpi-jni/Android.mk),)
-    include $(GDPI_JNI_DIR)/byedpi-jni/Android.mk
-    LOCAL_PATH := $(GDPI_JNI_DIR)
-endif
+# byedpi (libbyedpi.so). Kosulsuz dahil: AGP ndk-build yapilandirmasini .cxx altinda
+# onbellege aliyor ve wildcard ile eklenen bir dosyayi fark etmiyordu (byedpi sonradan
+# eklenince APK'ya girmemisti).
+include $(GDPI_JNI_DIR)/byedpi-jni/Android.mk
+LOCAL_PATH := $(GDPI_JNI_DIR)
