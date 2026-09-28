@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Android 12+: kurulum kaydinin sahibi bizsek kendi guncellememiz onay sormadan gecer
+         (PackageInstaller USER_ACTION_NOT_REQUIRED bu izin olmadan yok sayiliyor). -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Yedekleme kapali: ayarlar cihaza ozel (VPN izni, pil istisnasi) ve kucuk; baska
@@ -76,5 +79,18 @@
                 android:name="android.service.quicksettings.TOGGLEABLE_TILE"
                 android:value="true" />
         </service>
+
+        <!-- Guncelleyici: PackageInstaller oturum sonucu (yalnizca sistem doldurur) ve kendi
+             guncellememizden sonra "guncellendi" bildirimi. Ikisi de disa kapali. -->
+        <receiver
+            android:name=".update.InstallStatusReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".update.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
