@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">GoodbyeDPI</string>
+    <string name="tile_label" translatable="false">GoodbyeDPI</string>
+
+    <string name="channel_status_name">Bağlantı durumu</string>
+    <string name="channel_status_description">Bağlantı açıkken görünen kalıcı bildirim.</string>
+    <string name="channel_alerts_name">Uyarılar</string>
+    <string name="channel_alerts_description">Bağlantı hataları ve güncelleme bildirimleri.</string>
+
+    <string name="conn_state_off">Kapalı</string>
+    <string name="conn_state_connecting">Bağlanıyor…</string>
+    <string name="conn_state_connected">Bağlı</string>
+    <string name="conn_state_failed">Bağlantı kurulamadı</string>
+    <string name="action_stop">Durdur</string>
+    <string name="action_connect">Bağlan</string>
+</resources>

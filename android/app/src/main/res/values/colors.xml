@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Pencere zemini Compose temasiyla ayni: acilista beyaz/siyah parlama olmasin. -->
+    <color name="window_background">#FFFFFF</color>
+    <color name="brand_indigo">#6366F1</color>
+    <color name="brand_violet">#8B5CF6</color>
+</resources>
