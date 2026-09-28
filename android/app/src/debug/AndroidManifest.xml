@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- YALNIZCA HATA AYIKLAMA DERLEMESI: guncelleyiciyi ve baglanti testini adb'den surmek icin.
+     Surum APK'sina hicbiri girmez. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Yerel test sunucusu (emulatorden 10.0.2.2) duz http; yalnizca o adreslere izin var. -->
+    <application android:networkSecurityConfig="@xml/gdpi_debug_network">
+
+        <!-- DUMP izni yalnizca shell ve sistemde: adb tetikleyebilir, baska uygulamalar tetikleyemez. -->
+        <receiver
+            android:name=".update.DebugUpdateReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+    </application>
+</manifest>
