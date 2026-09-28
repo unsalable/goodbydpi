@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""
+GoodbyeDPI Android - byedpi duman testi (host'tan calisir).
+
+Yaptiklari:
+  1. android/tools/native/Android.mk'yi x86_64 icin ndk-build ile derler (--no-build ile atlanir)
+     ve ikilileri emulatordeki /data/local/tmp/gdpi-smoke dizinine iter.
+  2. BYEDPI_NOTES.md'deki her hazir yontemin TCP grubunu ciadpi ile 18080-18091 portlarinda
+     calistirir, adb forward ile host'taki curl'u --socks5-hostname uzerinden gecirir.
+  3. Kablo (tcpdump) kontrolleri: sahte paketin TTL'i / icerigi, disorder'in TTL 1 parcasi,
+     tlsrec'in iki TLS kaydi, sahte TTL'in --ttl verilmezse 8 oldugu.
+  4. DPI benzetimi (iptables string eslesmesi, yalnizca shell uid'i 2000): --auto / --timeout /
+     --cache-ttl anlamlarini gercek bir DROP / RST karsisinda dogrular.
+  5. Cihazda udp_socks_test (ASan'li ciadpi'ye karsi) ve restart_test (+ ASan) calistirir.
+  6. --apk verilirse JniSmoke.java'yi (javac + d8) APK'nin kendi NativeBridge'ine karsi
+     app_process ile calistirir: release APK'da R8'in adlari korudugunu da dogrular.
+  7. PASS/FAIL tablosu basar, surecleri / yonlendirmeleri / iptables kurallarini temizler.
+
+Emulator notu (SPEC 7): emulatorun slirp NAT'i TCP'yi host'ta yeniden baslatir, TTL'e bakmaz ve
+her segmenti hemen onaylar. Sahte (fake) paket bu yuzden sunucuya ulasir ve baglanti bozulur;
+disorder'in TTL 1 parcasi da hemen onaylanir (duz bolmeye doner). Tablo "arguman ayristirildi +
+proxy ayakta" ile "istek basarili" sutunlarini ayirir; sahte yontemlerde istek hatasi beklenir
+(EXPECTED), bunlarin dogrulugu kablo kontrolleriyle gosterilir.
+
+Kullanim:  py -3 android/tools/native/smoke.py [--no-build] [--serial emulator-5554] [--quick] [--apk X.apk]
+Yalnizca 18080-18099 portlarini kullanir.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ANDROID = HERE.parents[1]
+DEV_DIR = "/data/local/tmp/gdpi-smoke"
+NDK_VERSION = "29.0.14206865"
+
+BASE = ["-i", "127.0.0.1", "-c", "2048", "-b", "16384", "-x", "1"]
+FAKE_SNI = ["--fake-sni", "www.w3.org"]
+ZEROS = ":\\x00\\x00\\x00\\x00"  # argv'de ters bolu + x + 00: byedpi parse_cform 4 sifir bayta cevirir
+
+# BYEDPI_NOTES.md "Final mapping" tablosuyla ayni olmali (fragmentHttp acik: tls,http).
+PRESETS = [
+    # id, TCP grubu, sahte paket var mi (emulatorde istek hatasi beklenir)
+    ("default",    ["--proto=tls,http", "--disorder", "2", "--split", "0+hm", "--fake", "-1", "--ttl", "5"] + FAKE_SNI, True),
+    ("fixedttl",   ["--proto=tls,http", "--fake", "-1", "--ttl", "5"] + FAKE_SNI, True),
+    ("disorder",   ["--proto=tls,http", "--disorder", "2"], False),
+    ("ttl4",       ["--proto=tls,http", "--fake", "-1", "--ttl", "4"] + FAKE_SNI, True),
+    ("ttl3",       ["--proto=tls,http", "--fake", "-1", "--ttl", "3"] + FAKE_SNI, True),
+    ("md5sig",     ["--proto=tls,http", "--fake", "-1", "--md5sig", "--ttl", "5"] + FAKE_SNI, True),
+    ("md5ttl3",    ["--proto=tls,http", "--fake", "-1", "--md5sig", "--ttl", "3"] + FAKE_SNI, True),
+    ("fakesplit5", ["--proto=tls,http", "--fake", "2", "--fake", "-1", "--ttl", "5"] + FAKE_SNI, True),
+    ("zerofake",   ["--proto=tls,http", "--fake", "-1", "--ttl", "5", "--fake-data", ZEROS], True),
+    ("split2",     ["--proto=tls,http", "--split", "2"], False),
+    ("split",      ["--proto=tls,http", "--split", "2", "--split", "0+hm"], False),
+    ("tlsrec",     ["--proto=tls,http", "--tlsrec", "3+s"], False),
+]
+
+# Onerilen tam dizilim (default + Discord ses + otomatik yedek + DNS + QUIC engeli).
+VOICE = []
+for rng in ("50000-65535", "3478-3481", "19294-19344"):
+    VOICE += ["--proto=udp", "--pf=" + rng, "--udp-fake", "6", "--ttl", "64", "--auto=none"]
+FULL_LAYOUT = (
+    ["--redirect", "198.18.0.53:53=77.88.8.8:1253",
+     "--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253",
+     "--drop-udp", "443"]
+    + VOICE
+    + PRESETS[0][1]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--disorder", "2", "--cache-ttl", "3600"]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--split", "2", "--split", "0+hm", "--cache-ttl", "3600"]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--tlsrec", "3+s", "--cache-ttl", "3600"]
+    + ["--timeout", "4:0:0:1"]
+)
+
+URLS = ["https://example.com/", "https://www.google.com/", "http://example.com/"]
+
+UDP_TEST_ARGS = [
+    "--redirect", "198.18.0.53:53=77.88.8.8:1253",
+    "--redirect", "[fd00:6764:7069::53]:53=127.0.0.1:18096",
+    "--drop-udp", "443", "--drop-udp", "18095",
+    "--proto=udp", "--pf=17900-18200", "--udp-fake", "2", "--auto=none",
+    "--proto=tls", "--split", "1",
+]
+
+
+# ------------------------------------------------------------------ yardimcilar
+
+def sdk_dir():
+    for k in ("ANDROID_SDK_ROOT", "ANDROID_HOME"):
+        if os.environ.get(k):
+            return Path(os.environ[k])
+    lp = ANDROID / "local.properties"
+    if lp.exists():
+        for line in lp.read_text(encoding="utf-8").splitlines():
+            if line.startswith("sdk.dir="):
+                return Path(line.split("=", 1)[1].replace("\\:", ":").replace("\\\\", "\\"))
+    return Path(os.path.expanduser("~")) / "AppData/Local/Android/Sdk"
+
+
+class Adb:
+    def __init__(self, serial):
+        exe = "adb.exe" if os.name == "nt" else "adb"
+        if not sdk_dir().is_dir():
+            # Microsoft Store'un "python" takma adi AppData\Local'i sanallastirir, SDK'yi goremez
+            raise SystemExit(f"Android SDK not visible at {sdk_dir()}; on Windows run with 'py -3' "
+                             "instead of the WindowsApps python alias")
+        self.exe = str(sdk_dir() / "platform-tools" / exe)
+        self.serial = serial
+        self.root = self.sh("id -u").strip() == "0"
+
+    def run(self, *args, check=True, timeout=120):
+        p = subprocess.run([self.exe, "-s", self.serial, *args], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        if check and p.returncode != 0:
+            raise RuntimeError(f"adb {' '.join(args)} failed: {p.stderr.strip()}")
+        return p.stdout
+
+    def sh(self, cmd, check=False, timeout=120):
+        return self.run("shell", cmd, check=check, timeout=timeout)
+
+    def push(self, local, remote):
+        self.run("push", str(local), remote)
+
+    def as_shell(self, cmd):
+        """Komutu ayricaliksiz shell uid'i (2000) ile calistir: uygulama sureci gibi."""
+        return f"su shell {cmd}" if self.root else cmd
+
+
+def write_script(adb, name, body):
+    """Kabuk alintilamasi Windows->adb->sh zincirinde bozulmasin diye betik dosyasi it."""
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh", newline="\n") as f:
+        f.write("#!/system/bin/sh\n" + body + "\n")
+        tmp = f.name
+    try:
+        adb.push(tmp, f"{DEV_DIR}/{name}")
+    finally:
+        os.unlink(tmp)
+    return f"{DEV_DIR}/{name}"
+
+
+def shq(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def is_listening(adb, port):
+    hexp = f":{port:04X} "
+    out = adb.sh("cat /proc/net/tcp /proc/net/tcp6")
+    return any(hexp in l and l.split()[3] == "0A" for l in out.splitlines()[1:] if len(l.split()) > 3)
+
+
+class Proxy:
+    """Cihazda arka planda ciadpi; pid dosyasi ve log ile."""
+
+    def __init__(self, adb, name, port, args, binary="ciadpi", env=""):
+        self.adb, self.name, self.port = adb, name, port
+        self.log = f"{DEV_DIR}/{name}.log"
+        self.pidf = f"{DEV_DIR}/{name}.pid"
+        cmd = " ".join(shq(a) for a in [f"./{binary}", "-p", str(port)] + args)
+        script = write_script(adb, f"run_{name}.sh",
+                              f"cd {DEV_DIR} || exit 1\n{env}{cmd} > {self.log} 2>&1 &\necho $! > {self.pidf}")
+        adb.sh(f"rm -f {self.pidf} {self.log}; " + adb.as_shell(f"sh {script}"))
+        self.up = False
+        for _ in range(40):
+            if is_listening(adb, port):
+                self.up = True
+                break
+            if not self.alive():
+                break
+            time.sleep(0.05)
+        adb.run("forward", f"tcp:{port}", f"tcp:{port}")
+
+    def alive(self):
+        pid = self.adb.sh(f"cat {self.pidf} 2>/dev/null").strip()
+        return bool(pid) and self.adb.sh(f"kill -0 {pid} 2>/dev/null && echo y").strip() == "y"
+
+    def logtext(self):
+        return self.adb.sh(f"cat {self.log}")
+
+    def stop(self):
+        pid = self.adb.sh(f"cat {self.pidf} 2>/dev/null").strip()
+        if pid:
+            self.adb.sh(f"kill {pid} 2>/dev/null; sleep 0.2; kill -9 {pid} 2>/dev/null")
+        self.adb.run("forward", "--remove", f"tcp:{self.port}", check=False)
+
+
+def curl(port, url, timeout=10):
+    exe = shutil.which("curl") or "curl"
+    t0 = time.time()
+    p = subprocess.run([exe, "-sS", "-m", str(timeout), "-o", os.devnull, "-w", "%{http_code}",
+                        "--socks5-hostname", f"127.0.0.1:{port}", url],
+                       capture_output=True, text=True, timeout=timeout + 15)
+    code = p.stdout.strip() or "000"
+    return code, time.time() - t0, p.stderr.strip()
+
+
+def ok_code(code):
+    return code[:1] in ("2", "3")
+
+
+# ------------------------------------------------------------------ kablo (tcpdump)
+
+class Capture:
+    def __init__(self, adb, name):
+        self.adb, self.file = adb, f"{DEV_DIR}/{name}.pcap"
+        script = write_script(adb, f"cap_{name}.sh",
+                              f"tcpdump -i any -U -nn -s 0 -w {self.file} 'tcp port 443' > /dev/null 2>&1 &\n"
+                              f"echo $! > {self.file}.pid")
+        adb.sh(f"rm -f {self.file}; sh {script}")
+        time.sleep(0.8)
+
+    def packets(self, dst_ip):
+        """Hedefe giden, veri tasiyan paketler: (ttl, seq_bas, payload bytes)."""
+        pid = self.adb.sh(f"cat {self.file}.pid").strip()
+        self.adb.sh(f"kill -INT {pid}; sleep 0.5")
+        txt = self.adb.sh(f"tcpdump -nn -v -x -r {self.file} 2>/dev/null", timeout=60)
+        self.adb.sh(f"rm -f {self.file} {self.file}.pid")
+        pkts, cur = [], None
+        for line in txt.splitlines():
+            if not line.startswith((" ", "\t")):
+                if cur:
+                    pkts.append(cur)
+                m = re.search(r"\bttl (\d+)", line)
+                cur = {"ttl": int(m.group(1)) if m else -1, "hdr": line, "hex": ""}
+            elif cur is not None and re.match(r"\s+0x[0-9a-f]{4}:", line):
+                cur["hex"] += "".join(line.split(":", 1)[1].split())
+            elif cur is not None:
+                cur["hdr"] += " " + line.strip()
+        if cur:
+            pkts.append(cur)
+        out = []
+        for p in pkts:
+            raw = bytes.fromhex(p["hex"]) if p["hex"] else b""
+            if len(raw) < 40 or raw[0] >> 4 != 4:
+                continue
+            ihl = (raw[0] & 15) * 4
+            dst = ".".join(str(b) for b in raw[16:20])
+            if dst != dst_ip:
+                continue
+            doff = (raw[ihl + 12] >> 4) * 4
+            seq = int.from_bytes(raw[ihl + 4:ihl + 8], "big")
+            payload = raw[ihl + doff:]
+            if payload:
+                out.append((p["ttl"], seq, payload))
+        return out
+
+
+def server_ip(log):
+    m = re.search(r"new conn: .*addr=(\d+\.\d+\.\d+\.\d+):443", log)
+    return m.group(1) if m else None
+
+
+# ------------------------------------------------------------------ calistirma
+
+def build(out):
+    ndk = sdk_dir() / "ndk" / NDK_VERSION / ("ndk-build.cmd" if os.name == "nt" else "ndk-build")
+    cmd = [str(ndk), "NDK_PROJECT_PATH=null", f"APP_BUILD_SCRIPT={HERE / 'Android.mk'}",
+           f"NDK_OUT={out / 'obj'}", f"NDK_LIBS_OUT={out / 'libs'}", "APP_ABI=x86_64",
+           "APP_PLATFORM=android-24", f"-j{os.cpu_count() or 4}"]
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    warnings = [l for l in (p.stdout + p.stderr).splitlines() if "warning:" in l or "error:" in l]
+    if p.returncode != 0:
+        print(p.stdout[-3000:], p.stderr[-3000:])
+        raise SystemExit("ndk-build failed")
+    return warnings
+
+
+def jni_smoke(adb, apk, out, row):
+    """JniSmoke.java'yi derleyip APK'nin (release'de R8'li) NativeBridge'ine karsi calistirir."""
+    jh = os.environ.get("JAVA_HOME")
+    javac = str(Path(jh) / "bin" / "javac") if jh else (shutil.which("javac") or "javac")
+    bts = sorted((sdk_dir() / "build-tools").iterdir())
+    d8 = str(bts[-1] / ("d8.bat" if os.name == "nt" else "d8"))
+    cls, dex = out / "jni" / "cls", out / "jni" / "dex"
+    cls.mkdir(parents=True, exist_ok=True)
+    dex.mkdir(parents=True, exist_ok=True)
+    subprocess.run([javac, "--release", "8", "-Xlint:-options", "-d", str(cls), str(HERE / "JniSmoke.java")],
+                   check=True)
+    classes = [str(p) for p in cls.rglob("*.class")]
+    subprocess.run([d8, "--min-api", "24", "--output", str(dex)] + classes, check=True, shell=os.name == "nt")
+    adb.push(dex / "classes.dex", f"{DEV_DIR}/jnismoke.dex")
+    adb.push(apk, f"{DEV_DIR}/app.apk")
+    script = write_script(adb, "run_jni.sh", "\n".join([
+        f"cd {DEV_DIR} || exit 1",
+        "rm -rf jnilib && mkdir -p jnilib && unzip -o -q app.apk 'lib/x86_64/*' -d jnilib && chmod -R 755 jnilib",
+        (("su shell " if adb.root else "") +
+         f"sh -c 'CLASSPATH={DEV_DIR}/app.apk:{DEV_DIR}/jnismoke.dex app_process "
+         f"-Djava.library.path={DEV_DIR}/jnilib/lib/x86_64 / gdpitest.JniSmoke 18098' 2>&1"),
+        "rm -rf jnilib app.apk jnismoke.dex",
+    ]))
+    txt = adb.sh(f"sh {script}", timeout=180)
+    for line in txt.splitlines():
+        m = re.match(r"(PASS|FAIL) ([^:\s]+)(?:: (.*))?", line)
+        if m:
+            row("jni", m.group(2), m.group(1), (m.group(3) or "")[:90])
+    if "RESULT jni_smoke" not in txt:
+        row("jni", "jni_smoke result", "FAIL", txt.strip()[-200:])
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--serial", default="emulator-5554")
+    ap.add_argument("--no-build", action="store_true")
+    ap.add_argument("--out", default=os.environ.get("GDPI_SMOKE_OUT", r"C:\t\gdpi-smoke" if os.name == "nt" else "/tmp/gdpi-smoke"))
+    ap.add_argument("--quick", action="store_true", help="restart_test 10 tur, kablo/DPI testleri yok")
+    ap.add_argument("--apk", help="x86_64 icerikli uygulama APK'si: NativeBridge JNI testini de calistir")
+    a = ap.parse_args()
+
+    out = Path(a.out)
+    rows = []  # (grup, ad, sonuc, ayrinti)
+
+    def row(group, name, status, detail=""):
+        rows.append((group, name, status, detail))
+        print(f"  [{status:8}] {group:6} {name:34} {detail}", flush=True)
+
+    if not a.no_build:
+        w = build(out)
+        row("build", "ndk-build x86_64 tools", "PASS" if not w else "WARN", f"{len(w)} warnings")
+
+    adb = Adb(a.serial)
+    adb.sh(f"mkdir -p {DEV_DIR}")
+    libs = out / "libs" / "x86_64"
+    for f in sorted(libs.iterdir()):
+        adb.push(f, f"{DEV_DIR}/{f.name}")
+    adb.sh(f"chmod 755 {DEV_DIR}/*")
+    print(f"device {a.serial} root={adb.root}", flush=True)
+
+    procs = []
+    iptables_used = False
+    try:
+        # ---------------------------------------------------------- hazir yontemler
+        for i, (pid_, group, fake) in enumerate(PRESETS):
+            port = 18080 + i
+            px = Proxy(adb, pid_, port, BASE + group)
+            procs.append(px)
+            log = px.logtext()
+            parsed = px.up and "invalid value" not in log and "unknown option" not in log
+            codes = []
+            for url in URLS:
+                code, dt, err = curl(port, url, timeout=8)
+                codes.append(f"{code}/{dt:.1f}s")
+            okc = sum(ok_code(c.split("/")[0]) for c in codes)
+            row("preset", f"{pid_} argv+up", "PASS" if parsed else "FAIL", " ".join(group))
+            if okc == len(URLS):
+                st = "PASS"
+            elif fake:
+                st = "EXPECTED"  # emulator slirp: sahte segment sunucuya ulasiyor
+            else:
+                st = "FAIL"
+            row("preset", f"{pid_} requests", st, " ".join(codes))
+            px.stop()
+
+        # ---------------------------------------------------------- tam dizilim
+        px = Proxy(adb, "full", 18092, BASE + FULL_LAYOUT)
+        procs.append(px)
+        row("layout", "full layout argv+up", "PASS" if px.up and "invalid" not in px.logtext() else "FAIL",
+            f"{len(FULL_LAYOUT)} tokens")
+        for u in URLS:
+            c, t, _ = curl(18092, u, timeout=20)
+            # HTTP'de sahte istek (emulatorde sunucuya ulasir) 400 alir; bu bir tetikleyici
+            # degil (torst/ssl_err yalnizca TLS/RST), bu yuzden HTTP emulatorde EXPECTED olabilir.
+            st = "PASS" if ok_code(c) else ("EXPECTED" if u.startswith("http:") else "FAIL")
+            row("layout", "full layout " + u.split("/")[2] + (" (http)" if u.startswith("http:") else ""),
+                st, f"{c}/{t:.1f}s")
+        log = px.logtext()
+        saves = re.findall(r"save: ip=\S+, id=(\d+)", log)
+        row("layout", "full layout fallback used", "PASS" if saves else "FAIL",
+            f"fake primary broken by slirp -> saved groups {saves}")
+        px.stop()
+
+        if adb.root and not a.quick:
+            # ------------------------------------------------------ kablo kontrolleri
+            def wire(name, group, check, url="https://example.com/"):
+                slug = re.sub(r"[^a-z0-9]+", "_", name.lower())
+                px = Proxy(adb, "wire_" + slug, 18093, BASE + group)
+                procs.append(px)
+                cap = Capture(adb, slug)
+                curl(18093, url, timeout=6)
+                time.sleep(0.3)
+                ip = server_ip(px.logtext())
+                pk = cap.packets(ip) if ip else []
+                px.stop()
+                ok, detail = check(pk)
+                row("wire", name, "PASS" if ok else "FAIL", detail)
+
+            def first_ttls(pk, n=4):
+                return " ".join(f"ttl{t}/{len(p)}B" for t, _, p in pk[:n])
+
+            wire("default fake+disorder", PRESETS[0][1], lambda pk: (
+                any(t == 1 and len(p) == 2 for t, _, p in pk)
+                and any(t == 5 and b"www.w3.org" in p for t, _, p in pk),
+                "disorder ttl1/2B + fake ttl5 w/ SNI www.w3.org: " + first_ttls(pk)))
+            wire("zerofake zeros", PRESETS[8][1], lambda pk: (
+                any(t == 5 and len(p) > 100 and not any(p) for t, _, p in pk),
+                "fake ttl5 all-zero: " + first_ttls(pk)))
+            wire("fakesplit5 two fakes", PRESETS[7][1], lambda pk: (
+                len([1 for t, _, p in pk if t == 5]) >= 2 and pk[0][0] == 5 and len(pk[0][2]) == 2
+                and pk[1][0] == 5 and pk[1][2][:3] == b"\x16\x03\x01",
+                "fake 2B then fake restarting at record header: " + first_ttls(pk)))
+            wire("fake default ttl 8", ["--proto=tls", "--fake", "-1"], lambda pk: (
+                any(t == 8 for t, _, _ in pk), "no --ttl -> " + first_ttls(pk)))
+            wire("md5sig degrades to ttl", PRESETS[5][1], lambda pk: (
+                any(t == 5 for t, _, _ in pk), first_ttls(pk)))
+
+            def tlsrec_ok(pk):
+                if not pk:
+                    return False, "no packets"
+                p = pk[0][2]
+                l1 = int.from_bytes(p[3:5], "big")
+                ok = p[:3] == b"\x16\x03\x01" and p[5 + l1:5 + l1 + 3] == b"\x16\x03\x01"
+                return ok, f"record1 len={l1}, record2 header at {5 + l1}: {p[5 + l1:5 + l1 + 5].hex()}"
+            wire("tlsrec two records", PRESETS[11][1], tlsrec_ok)
+            wire("split2 first seg 2B", PRESETS[9][1], lambda pk: (
+                bool(pk) and len(pk[0][2]) == 2 and pk[0][0] == 64, first_ttls(pk)))
+
+            # ------------------------------------------------------ DPI benzetimi
+            iptables_used = True
+
+            def dpi(kind):
+                # REJECT tcp-reset kuralin kendisinde -p tcp ister (yoksa EINVAL)
+                act = "DROP" if kind == "drop" else "REJECT --reject-with tcp-reset"
+                for ipt in ("iptables", "ip6tables"):
+                    act6 = act
+                    adb.sh(f"{ipt} -w -N gdpi_smoke 2>/dev/null; {ipt} -w -F gdpi_smoke; "
+                           f"{ipt} -w -C OUTPUT -m owner --uid-owner 2000 -p tcp --dport 443 -j gdpi_smoke 2>/dev/null || "
+                           f"{ipt} -w -I OUTPUT -m owner --uid-owner 2000 -p tcp --dport 443 -j gdpi_smoke; "
+                           f"{ipt} -w -A gdpi_smoke -p tcp -m string --string example.com --algo bm -j {act6}")
+
+            def sim(name, kind, group, expect_ok, curls=1, sleep_between=0.0, check_times=None,
+                    want_saves=None):
+                dpi(kind)
+                px = Proxy(adb, "sim", 18094, BASE + group)
+                procs.append(px)
+                res = []
+                for k in range(curls):
+                    if k and sleep_between:
+                        time.sleep(sleep_between)
+                    res.append(curl(18094, "https://example.com/", timeout=15 if expect_ok else 6))
+                log = px.logtext()
+                px.stop()
+                oks = [ok_code(c) for c, _, _ in res]
+                good = all(o == expect_ok for o in oks)
+                if good and check_times:
+                    good = check_times([t for _, t, _ in res])
+                saves = re.findall(r"save: ip=\S+, id=(\d+)", log)
+                # Yedek grup gercekten devreye girdi mi (DPI kurali gercekten vurdu mu)?
+                if good and want_saves is not None:
+                    good = saves == want_saves if isinstance(want_saves, list) else bool(saves)
+                row("dpi-sim", name, "PASS" if good else "FAIL",
+                    " ".join(f"{c}/{t:.1f}s" for c, t, _ in res) + (f" | save->group {saves}" if saves else ""))
+
+            sim("drop: no desync is blocked", "drop", ["--proto=tls"], False)
+            sim("drop: --split 0+hm passes", "drop", ["--proto=tls", "--split", "0+hm"], True)
+            sim("drop: --tlsrec 3+s passes", "drop", ["--proto=tls", "--tlsrec", "3+s"], True)
+            # ayni senaryo, zamanlama: 1. yavas (zaman asimi), 2. hizli (onbellek), 7 sn sonra 3. yine yavas
+            dpi("drop")
+            px = Proxy(adb, "simt", 18094, BASE + ["--proto=tls", "--auto=torst,ssl_err", "--proto=tls",
+                                                   "--split", "0+hm", "--cache-ttl", "5", "--timeout", "3:0:0:1"])
+            procs.append(px)
+            r1 = curl(18094, "https://example.com/", 15)
+            r2 = curl(18094, "https://example.com/", 15)
+            time.sleep(7)
+            r3 = curl(18094, "https://example.com/", 15)
+            px.stop()
+            good = all(ok_code(r[0]) for r in (r1, r2, r3)) and r1[1] >= 2.5 and r2[1] < 1.5 and r3[1] >= 2.5
+            row("dpi-sim", "timeout 3s / cache hit / cache-ttl 5s", "PASS" if good else "FAIL",
+                f"1st {r1[0]}/{r1[1]:.1f}s 2nd {r2[0]}/{r2[1]:.1f}s after7s {r3[0]}/{r3[1]:.1f}s")
+            sim("rst: torst->fallback", "rst",
+                ["--proto=tls", "--auto=torst", "--proto=tls", "--split", "0+hm"], True,
+                check_times=lambda ts: ts[0] < 2.0, want_saves=["1"])
+            sim("rst: chain skips failing alt", "rst",
+                ["--proto=tls", "--auto=torst", "--proto=tls", "--disorder", "2",
+                 "--auto=torst", "--proto=tls", "--split", "0+hm"], True, want_saves=["1", "2"])
+            sim("rst: static group ends chain", "rst",
+                ["--proto=tls", "--auto=none", "--proto=tls", "--split", "0+hm"], False)
+            sim("rst: full layout recovers", "rst", FULL_LAYOUT, True, want_saves=True)
+
+        # ---------------------------------------------------------- UDP / redirect / drop
+        px = Proxy(adb, "udp", 18090, BASE + UDP_TEST_ARGS, binary="ciadpi_asan",
+                   env=f"LD_LIBRARY_PATH={DEV_DIR} ASAN_OPTIONS=abort_on_error=0:halt_on_error=1 ")
+        procs.append(px)
+        txt = adb.sh(f"cd {DEV_DIR} && " + adb.as_shell("./udp_socks_test 18090 18096 18095"), timeout=180)
+        for line in txt.splitlines():
+            m = re.match(r"(PASS|FAIL) ([^:\s]+)(?:: (.*))?", line)
+            if m:
+                row("udp", m.group(2), m.group(1), m.group(3) or "")
+        alive = px.alive()
+        asan = "AddressSanitizer" in px.logtext()
+        row("udp", "ciadpi_asan alive, no ASan report", "PASS" if alive and not asan else "FAIL",
+            "ASan report found" if asan else "")
+        px.stop()
+
+        # ---------------------------------------------------------- JNI (istege bagli)
+        if a.apk:
+            jni_smoke(adb, Path(a.apk), out, row)
+
+        # ---------------------------------------------------------- restart_test
+        iters = "10" if a.quick else "50"
+        for binary, env in (("restart_test", ""), ("restart_test_asan", f"LD_LIBRARY_PATH={DEV_DIR} ")):
+            txt = adb.sh(f"cd {DEV_DIR} && {env}" + adb.as_shell(f"./{binary} {iters} 18099 18097 18098 2>&1"),
+                         timeout=600)
+            m = re.search(r"RESULT restart_test: (\w+) \((\d+) passed, (\d+) failed\)", txt)
+            base = re.search(r"baseline: (.*)", txt)
+            last = re.search(r"after races: (.*)", txt)
+            fails = [l for l in txt.splitlines() if l.startswith("FAIL")]
+            asan = "AddressSanitizer" in txt
+            st = m.group(1) if m else "FAIL"
+            if binary.endswith("asan"):
+                # ASan'in karantinasi/golge bellegi RSS/mmap olcumunu anlamsiz kilar; fd ve hata raporu esas
+                fails = [l for l in fails if "rss grew" not in l and "mmap leak" not in l]
+                st = "PASS" if m and not fails and not asan else "FAIL"
+            row("restart", binary, st,
+                (f"{m.group(2)} checks" if m else "no result") + f"; baseline {base.group(1) if base else '?'}"
+                + f"; end {last.group(1) if last else '?'}" + ("; " + fails[0] if fails else "")
+                + ("; ASan report!" if asan else ""))
+    finally:
+        for px in procs:
+            try:
+                px.stop()
+            except Exception:
+                pass
+        if iptables_used:
+            for ipt in ("iptables", "ip6tables"):
+                adb.sh(f"{ipt} -w -D OUTPUT -m owner --uid-owner 2000 -p tcp --dport 443 -j gdpi_smoke 2>/dev/null; "
+                       f"{ipt} -w -F gdpi_smoke 2>/dev/null; {ipt} -w -X gdpi_smoke 2>/dev/null")
+        adb.sh(f"rm -f {DEV_DIR}/*.pcap {DEV_DIR}/*.pid {DEV_DIR}/run_*.sh {DEV_DIR}/cap_*.sh")
+
+    print()
+    print(f"{'group':7} {'check':36} {'result':9} detail")
+    print("-" * 110)
+    for g, n, s, d in rows:
+        print(f"{g:7} {n:36} {s:9} {d}")
+    bad = [r for r in rows if r[2] == "FAIL"]
+    print("-" * 110)
+    print(f"{len(rows)} checks, {len(bad)} FAIL, "
+          f"{sum(r[2] == 'EXPECTED' for r in rows)} EXPECTED (fake on emulator)")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
