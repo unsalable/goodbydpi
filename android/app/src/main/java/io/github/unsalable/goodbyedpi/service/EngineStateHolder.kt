@@ -1,11 +1,23 @@
 package io.github.unsalable.goodbyedpi.service
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
-// SOZLESME (wave 2): imzalar sabit. Govdeyi "runtime" ajani doldurur; UI yalnizca
-// bu dosyadaki public/internal olmayan uyeleri kullanir.
+// SOZLESME (wave 2): imzalar sabit. UI yalnizca bu dosyadaki public uyeleri kullanir.
 
 /** Servis, karo, bildirim ve arayuzun ortak gordugu motor durumu. */
 sealed interface EngineState {
@@ -42,13 +54,43 @@ data class TrafficStats(
 }
 
 object EngineStateHolder {
+    /** Saniyede bir: arayuz hizi farktan hesapliyor, daha sik okumak pil harcar. */
+    private const val SAMPLE_INTERVAL_MS = 1000L
+
+    /**
+     * Son dinleyici gittikten sonra ornekleme bu kadar daha surer: ekran dondurme ya da
+     * yapilandirma degisiminde akis bosuna durup yeniden baslamasin.
+     */
+    private const val STOP_TIMEOUT_MS = 1500L
+
     private val _state = MutableStateFlow<EngineState>(EngineState.Stopped)
     val state: StateFlow<EngineState> = _state.asStateFlow()
 
-    // STUB: runtime ajani bunu yalnizca biri dinlerken (arayuz gorunurken) saniyede bir
-    // ornekleyen bir akisa cevirir.
-    private val _traffic = MutableStateFlow(TrafficStats.ZERO)
-    val traffic: StateFlow<TrafficStats> = _traffic.asStateFlow()
+    // Surec omru boyunca yasayan kendi kapsamimiz (GlobalScope degil). Yerel sayac okumasi ana
+    // is parcaciginda yapilmasin diye Default.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Servis motoru kurunca baglar, kapanirken birakir; null = sayac yok. */
+    @Volatile
+    internal var statsSource: (() -> TrafficStats)? = null
+
+    /**
+     * Yalnizca biri dinlerken (arayuz gorunurken) ve motor calisirken saniyede bir ornekler;
+     * dinleyen yoksa ya da motor kapaliysa hic uyanmaz.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val traffic: StateFlow<TrafficStats> = _state
+        .map { it is EngineState.Running }
+        .distinctUntilChanged()
+        .flatMapLatest { running -> if (running) ticker() else flowOf(TrafficStats.ZERO) }
+        .stateIn(scope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), TrafficStats.ZERO)
+
+    private fun ticker(): Flow<TrafficStats> = flow {
+        while (true) {
+            emit(runCatching { statsSource?.invoke() }.getOrNull() ?: TrafficStats.ZERO)
+            delay(SAMPLE_INTERVAL_MS)
+        }
+    }
 
     internal fun set(state: EngineState) {
         _state.value = state
