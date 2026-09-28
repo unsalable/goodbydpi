@@ -1,0 +1,347 @@
+package io.github.unsalable.goodbyedpi.ui
+
+import android.Manifest
+import android.app.Application
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.VpnService
+import android.os.Build
+import android.util.Log
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import io.github.unsalable.goodbyedpi.data.SettingsRepository
+import io.github.unsalable.goodbyedpi.diag.ConnectionTester
+import io.github.unsalable.goodbyedpi.diag.SiteResult
+import io.github.unsalable.goodbyedpi.engine.ByeDpiArgs
+import io.github.unsalable.goodbyedpi.engine.EngineConfig
+import io.github.unsalable.goodbyedpi.model.AppSettings
+import io.github.unsalable.goodbyedpi.model.CustomDnsEntry
+import io.github.unsalable.goodbyedpi.model.CustomIds
+import io.github.unsalable.goodbyedpi.model.CustomMethodProfile
+import io.github.unsalable.goodbyedpi.model.DnsProfile
+import io.github.unsalable.goodbyedpi.model.DpiConfig
+import io.github.unsalable.goodbyedpi.model.IspProfile
+import io.github.unsalable.goodbyedpi.model.ThemeMode
+import io.github.unsalable.goodbyedpi.model.ispProfile
+import io.github.unsalable.goodbyedpi.model.selectedDns
+import io.github.unsalable.goodbyedpi.model.selectedMethod
+import io.github.unsalable.goodbyedpi.service.EngineState
+import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.ServiceController
+import io.github.unsalable.goodbyedpi.service.TrafficStats
+import io.github.unsalable.goodbyedpi.update.UpdateManager
+import io.github.unsalable.goodbyedpi.update.UpdateState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Ana ekran ve Ayarlar'in tek durum sahibi (masaustu MainViewModel'in karsiligi).
+ *
+ * Ayarlarin tamami SettingsRepository'de; burada yalnizca onun arayuze donusmus hali ve
+ * kullanici eylemleri var. Tum yazmalar repository.update {} ile gider: calisan servis
+ * ayarlari kendisi izleyip yeniden basliyor, arayuzun ayrica restart istemesi gerekmiyor.
+ *
+ * Kaynaklar yapicidan verilir ki testler kendi (temiz) ayar dosyalariyla calisabilsin.
+ */
+class MainViewModel(
+    app: Application,
+    private val repo: SettingsRepository,
+    private val engineState: StateFlow<EngineState> = EngineStateHolder.state,
+    /** Yalnizca kucuk trafik bileseni toplar; bkz. TrafficPanel. */
+    val traffic: StateFlow<TrafficStats> = EngineStateHolder.traffic,
+    val updateState: StateFlow<UpdateState> = UpdateManager.state,
+    val justUpdatedTo: StateFlow<String?> = UpdateManager.justUpdatedTo,
+) : AndroidViewModel(app) {
+
+    private val context: Context get() = getApplication()
+
+    // Eagerly: ilk karede dogru deger olsun, secici listeleri bos baslayip "ziplamasin".
+    val settings: StateFlow<SettingsUi> = repo.settings
+        .map(SettingsUi::from)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsUi.from(repo.current))
+
+    val connection: StateFlow<ConnectionUi> = combine(engineState, repo.settings, ConnectionUi::from)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ConnectionUi.from(engineState.value, repo.current))
+
+    private val _connTest = MutableStateFlow(ConnTestUi.Idle)
+    val connTest: StateFlow<ConnTestUi> = _connTest.asStateFlow()
+
+    // Aktivitenin yapacagi isler (izin ekranlari). Tamponlu: aktivite o an durmus olsa bile
+    // (ekran donerken) istek kaybolmaz, tekrar basladiginda islenir.
+    private val _events = Channel<UiEvent>(Channel.BUFFERED)
+    val events: Flow<UiEvent> = _events.receiveAsFlow()
+
+    // Alt cubukta gosterilecek kisa mesajlar ("VPN izni verilmedi" gibi).
+    private val _messages = Channel<String>(Channel.BUFFERED)
+    val messages: Flow<String> = _messages.receiveAsFlow()
+
+    private var opened = false
+
+    // ------------------------------------------------------------------ acilis
+
+    /**
+     * Uygulama her acildiginda bir kez (ekran donmesi sayilmaz; ViewModel ayakta kalir).
+     * Guncelleme denetimi ve "Otomatik baglan".
+     */
+    fun onAppOpen() {
+        if (opened) return
+        opened = true
+
+        runCatching { UpdateManager.onAppOpen(context) }
+            .onFailure { Log.w(TAG, "Guncelleme denetimi baslatilamadi", it) }
+
+        // Izin daha once verilmediyse sessizce gecilir: acilista kullanicinin karsisina
+        // bir izin ekrani cikarmak "otomatik" degil, dayatma olurdu.
+        val s = repo.current
+        if (s.autoConnect && engineState.value == EngineState.Stopped && hasVpnConsent()) {
+            runCatching { ServiceController.start(context) }
+                .onFailure { Log.w(TAG, "Otomatik baglanti baslatilamadi", it) }
+        }
+    }
+
+    private fun hasVpnConsent(): Boolean =
+        runCatching { VpnService.prepare(context) == null }.getOrDefault(false)
+
+    // ------------------------------------------------------------ guc dugmesi
+
+    fun onPowerClick() {
+        when (engineState.value) {
+            EngineState.Stopped, is EngineState.Failed -> connect()
+            EngineState.Starting, is EngineState.Running -> ServiceController.stop(context)
+            // Kapanirken ikinci dokunus yok sayilir; durum Stopped'a dusunce tekrar acilabilir.
+            EngineState.Stopping -> Unit
+        }
+    }
+
+    private fun connect() {
+        askNotificationsOnce()
+        val consent = try {
+            ServiceController.start(context)
+        } catch (e: Exception) {
+            Log.w(TAG, "Servis baslatilamadi", e)
+            _messages.trySend("Bağlantı başlatılamadı.")
+            return
+        }
+        if (consent != null) _events.trySend(UiEvent.RequestVpnConsent(consent))
+    }
+
+    /** VPN izin ekranindan donus. */
+    fun onVpnConsentResult(granted: Boolean) {
+        if (!granted) {
+            _messages.trySend("VPN izni verilmedi.")
+            return
+        }
+        // Izin simdi var; ikinci cagri servisi baslatir (tekrar Intent donerse sistem izni
+        // hala vermemis demektir, dongu kurmayalim).
+        val again = runCatching { ServiceController.start(context) }.getOrNull()
+        if (again != null) _messages.trySend("VPN izni alınamadı.")
+    }
+
+    /**
+     * Android 13+ bildirim izni: ilk baglanmada bir kez sorulur. Reddedilirse bir daha
+     * sorulmaz; on plan servisi bildirimsiz de calisir, yalnizca durum bildirimi gorunmez.
+     */
+    private fun askNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) return
+
+        val prefs = context.getSharedPreferences(UI_PREFS, Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_NOTIF_ASKED, false)) return
+        prefs.edit { putBoolean(KEY_NOTIF_ASKED, true) }
+        _events.trySend(UiEvent.RequestNotificationPermission)
+    }
+
+    // ------------------------------------------------------------------ tema
+
+    fun setTheme(mode: ThemeMode) = edit { it.copy(themeMode = mode) }
+
+    /** Ust cubuktaki dugme: o an gorunenin tersine gecer (Sistem secimi Ayarlar'da). */
+    fun toggleTheme(currentlyDark: Boolean) = setTheme(if (currentlyDark) ThemeMode.LIGHT else ThemeMode.DARK)
+
+    // ------------------------------------------------------------- secimler
+
+    /**
+     * Saglayici secilince onun onerdigi yontem ve DNS birlikte uygulanir (masaustu ile ayni);
+     * kullanicinin kendi girdigi ozel DNS'e dokunulmaz.
+     */
+    fun selectIsp(id: String) = edit { s ->
+        val isp = IspProfile.fromId(id)
+        if (isp.id == s.isp) return@edit s
+        s.copy(
+            isp = isp.id,
+            method = isp.recommendedId,
+            dns = if (isp.dnsId != null && !CustomIds.isCustom(s.dns)) isp.dnsId else s.dns,
+        )
+    }
+
+    fun selectMethod(id: String) = edit { it.copy(method = id) }
+
+    fun selectDns(id: String) = edit { it.copy(dns = id) }
+
+    // -------------------------------------------------------- ozel profiller
+
+    /**
+     * Secili yontemi kopyalayarak yeni bir ozel profil olusturur ve ona gecer. Ozel bir
+     * profildeysek bu "cogalt" demek; hazir yontemden turetilen profil "(ozel)" ekiyle
+     * adlanir ki listede asliyla karismasin.
+     */
+    fun addCustomProfile() = edit { s ->
+        val source = s.selectedMethod()
+        val name = if (CustomIds.isCustom(source.id)) source.name else "${source.name} (özel)"
+        val entry = CustomMethodProfile.createNew(s.customProfiles, source.build().sanitized(), name)
+        s.copy(customProfiles = s.customProfiles + entry, method = entry.id)
+    }
+
+    /** Silinen profil seciliydi: saglayicinin onerdigi yonteme don. */
+    fun deleteCustomProfile(id: String) = edit { s ->
+        s.copy(
+            customProfiles = s.customProfiles.filterNot { it.id.equals(id, ignoreCase = true) },
+            method = if (s.method.equals(id, ignoreCase = true)) s.ispProfile().recommendedId else s.method,
+        )
+    }
+
+    /** Bos ad yazilirken kaydedilmez: kullanici eski adi silip yenisini yaziyor olabilir. */
+    fun renameCustomProfile(id: String, name: String) {
+        if (name.isBlank()) return
+        editProfile(id) { it.copy(name = name.trim()) }
+    }
+
+    fun updateCustomConfig(id: String, transform: (DpiConfig) -> DpiConfig) =
+        editProfile(id) { it.copy(config = transform(it.config)) }
+
+    /** "Onerilene don": profil, secili saglayicinin onerdigi yontemin degerlerine doner. */
+    fun resetCustomToRecommended(id: String) = edit { s ->
+        val cfg = s.ispProfile().recommended.build()
+        s.copy(customProfiles = s.customProfiles.map { if (it.id == id) it.copy(config = cfg) else it })
+    }
+
+    private fun editProfile(id: String, transform: (CustomMethodProfile) -> CustomMethodProfile) = edit { s ->
+        s.copy(customProfiles = s.customProfiles.map { if (it.id == id) transform(it) else it })
+    }
+
+    // ----------------------------------------------------------- ozel DNS
+
+    /** Yeni DNS girisi; ozel bir giristeysek onu kopyalar. */
+    fun addCustomDns() = edit { s ->
+        val current = s.customDns.firstOrNull { it.id.equals(s.dns, ignoreCase = true) }
+        val entry = CustomDnsEntry.createNew(s.customDns, current)
+        s.copy(customDns = s.customDns + entry, dns = entry.id)
+    }
+
+    fun deleteCustomDns(id: String) = edit { s ->
+        s.copy(
+            customDns = s.customDns.filterNot { it.id.equals(id, ignoreCase = true) },
+            dns = if (s.dns.equals(id, ignoreCase = true)) {
+                s.ispProfile().dnsId ?: DnsProfile.CLOUDFLARE_ID
+            } else {
+                s.dns
+            },
+        )
+    }
+
+    fun renameCustomDns(id: String, name: String) {
+        if (name.isBlank()) return
+        editDns(id) { it.copy(name = name.trim()) }
+    }
+
+    /** Yalnizca gecerli degerler kaydedilir; gecersiz yazim ekranda uyari olarak kalir. */
+    fun updateCustomDns(id: String, v4: String, v4Port: Int, v6: String, v6Port: Int) =
+        editDns(id) { it.copy(v4 = v4.trim(), v4Port = v4Port, v6 = v6.trim(), v6Port = v6Port) }
+
+    private fun editDns(id: String, transform: (CustomDnsEntry) -> CustomDnsEntry) = edit { s ->
+        s.copy(customDns = s.customDns.map { if (it.id == id) transform(it) else it })
+    }
+
+    // -------------------------------------------------------------- genel
+
+    fun updateSettings(transform: (AppSettings) -> AppSettings) = edit(transform)
+
+    private fun edit(transform: (AppSettings) -> AppSettings) {
+        // Main.immediate: ardarda gelen dokunuslar sirasiyla kilide girer, biri digerini ezmez.
+        viewModelScope.launch {
+            try {
+                repo.update(transform)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Ayar kaydedilemedi", e)
+            }
+        }
+    }
+
+    // ------------------------------------------------------- baglanti testi
+
+    fun runConnectionTest() {
+        if (_connTest.value.running) return
+        val port = connection.value.socksPort
+        _connTest.value = _connTest.value.copy(running = true)
+        viewModelScope.launch {
+            val results = try {
+                withContext(Dispatchers.IO) { ConnectionTester.run(port) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Baglanti testi calismadi", e)
+                ConnectionTester.DEFAULT_HOSTS.map { SiteResult(it, false, null, "Test çalıştırılamadı") }
+            }
+            _connTest.value = ConnTestUi(running = false, results = results, viaProxy = port != null)
+        }
+    }
+
+    // ----------------------------------------------------------- guncelleme
+
+    fun startUpdate() = UpdateManager.startUpdate(context)
+    fun dismissUpdate() = UpdateManager.dismiss()
+    fun checkForUpdates() = UpdateManager.checkNow(context)
+    fun consumeJustUpdated() = UpdateManager.consumeJustUpdated()
+
+    // ------------------------------------------------------------- tani
+
+    /** Motorun su anki ayarlarla calistiracagi tam komut satiri (Hakkinda > Tanilama). */
+    fun diagnostics(): String = try {
+        val s = repo.current
+        buildString {
+            appendLine(ByeDpiArgs.describe(EngineConfig.from(s)))
+            appendLine()
+            appendLine("Yöntem: ${s.selectedMethod().name}")
+            appendLine("DNS: ${s.selectedDns().name}")
+            append("Sağlayıcı: ${s.ispProfile().name}")
+        }
+    } catch (e: Exception) {
+        "Komut satırı oluşturulamadı: ${e.message}"
+    }
+
+    companion object {
+        private const val TAG = "MainViewModel"
+
+        /** Ayar dosyasina girmeyen, yalnizca arayuze ait kucuk bayraklar. */
+        internal const val UI_PREFS = "ui"
+        internal const val KEY_NOTIF_ASKED = "notifAsked"
+
+        val Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[APPLICATION_KEY])
+                MainViewModel(app, SettingsRepository.get(app))
+            }
+        }
+    }
+}
