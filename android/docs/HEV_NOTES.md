@@ -199,8 +199,16 @@ internal object TProxy {
   then half-closes gets no response through the tunnel. Observed with `nc`; normal HTTP/TLS clients
   do not half-close. This is a byedpi limitation to note for the byedpi agent, not a hev bug.
 * **Never set `socks5.mark`.** `SO_MARK` needs `CAP_NET_ADMIN`. `hev-socks5-session.c:hev_socks5_session_bind`
-  would fail on every session. Also leave `tcp-fastopen` and `pipeline` unset: there is no benefit
-  on loopback. Leave `username` and `password` unset too.
+  would fail on every session. Leave `tcp-fastopen` unset (no benefit on loopback) and `username` /
+  `password` unset too.
+* **Never set `socks5.pipeline`.** It is not merely useless: byedpi reads the greeting with one
+  `recv()` and rejects anything longer than the method list (`byedpi proxy.c:auth_socks5`), so a
+  pipelined handshake gets an empty reply and every session fails (verified by the e2e run against
+  the live byedpi).
+* **Handshake latency (patch P5).** Upstream sent the greeting with `MSG_MORE` in the standard
+  handshake too, and then waited for the reply, so the kernel corked it for ~200 ms (the probe
+  timer): every new TCP session and every UDP flow (each DNS query) waited that long. P5 passes
+  `MSG_MORE` only when pipelining. Measured with `tools/native/tun_latency.sh` (section 9, item 5).
 
 ## 5. YAML schema at 2.18.0 (`src/hev-config.c`)
 
@@ -402,3 +410,20 @@ android {
 
 The harness (`Main.java`) and the CLI script (`run.sh`) live in the hev agent's scratchpad; they are
 not committed. They can be moved under `android/tools/native/` by whoever owns that directory.
+
+5. **Tun session latency (P5), `tools/native/tun_latency.sh`, emulator-5554 (root).**
+   * Setup: `hev-socks5-tunnel-bin` (tun `tunlat`, 198.18.0.1) → `ciadpi -N --redirect
+     198.18.0.99:18086=127.0.0.1:18086 --deny-net 198.18.0.0/15` on 18085; only uid 2999 is routed into
+     the tun (table 4243). `tun_latency serve 18086` echoes UDP and answers TCP on the device, so the
+     emulator's slirp NAT (hundreds of ms of jitter per trip) is out of the measurement. Each attempt
+     is a new socket, i.e. a new hev session and SOCKS5 handshake. 20 attempts, medians:
+
+     | | direct (no tun) | UDP via tun | TCP connect + first byte via tun | denied 198.18.0.98 |
+     |---|---:|---:|---:|---:|
+     | hev without P5 | 1.0 / 1.4 ms | 207.0 ms | 208.2 ms | reset after 205 ms |
+     | hev with P5 | 0.5 / 1.1 ms | 3.2 ms | 3.4 ms | reset after 2 ms |
+
+   * tcpdump on `lo` port 18085: SYN → first greeting byte 206–209 ms without P5, 0.7–1.4 ms with it.
+   * Build the CLI with the top-level `jni/Android.mk` plus `GDPI_NATIVE_TOOLS=1 APP_ABI=x86_64`, and
+     `ciadpi`/`tun_latency` with `tools/native/Android.mk`; push all three and the script to
+     `/data/local/tmp/gdpi-ndpi`.

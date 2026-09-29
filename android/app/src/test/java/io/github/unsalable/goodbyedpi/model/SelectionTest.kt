@@ -15,7 +15,7 @@ class SelectionTest {
     @Test
     fun methodChoicesIspThenCustom() {
         assertEquals(
-            listOf("disorder", "ttl4", "ttl3", "default", "custom", "custom:ev"),
+            listOf("ttl4", "disorder", "ttl3", "default", "custom", "custom:ev"),
             base.methodChoices().map { it.id },
         )
         assertEquals("Ev", base.methodChoices().last().name)
@@ -30,7 +30,7 @@ class SelectionTest {
         assertEquals(64, s.selectedConfig().ttl)
         assertEquals(FakePayload.ZEROS, s.selectedConfig().fakePayload)
         // Ozel profilde yedekler saglayicinin tum yontemleri.
-        assertEquals(listOf("disorder", "ttl4", "ttl3", "default"), s.fallbackMethods().map { it.id })
+        assertEquals(listOf("ttl4", "disorder", "ttl3", "default"), s.fallbackMethods().map { it.id })
     }
 
     @Test
@@ -39,7 +39,7 @@ class SelectionTest {
         assertSame(MethodPreset.Default, s.selectedMethod())
         assertEquals(DpiConfig(), s.selectedConfig())
         assertSame(DnsProfile.Cloudflare, s.selectedDns())
-        assertEquals(listOf("disorder", "ttl4", "ttl3"), s.fallbackMethods().map { it.id })
+        assertEquals(listOf("ttl4", "disorder", "ttl3"), s.fallbackMethods().map { it.id })
     }
 
     @Test
@@ -50,7 +50,7 @@ class SelectionTest {
         // Saglayici listesinde olmayan yontem de gecerli; yedekler tum ISS listesi.
         val other = base.copy(method = "tlsrec")
         assertSame(MethodPreset.TlsRec, other.selectedMethod())
-        assertEquals(listOf("disorder", "ttl4", "ttl3", "default"), other.fallbackMethods().map { it.id })
+        assertEquals(listOf("ttl4", "disorder", "ttl3", "default"), other.fallbackMethods().map { it.id })
         assertSame(MethodPreset.Default, base.copy(method = "checksum").selectedMethod())
     }
 

@@ -156,6 +156,47 @@ same process where the new config has `log-file: null`: `*_logger_init` returns 
 the old number. `hev_logger_log` would then write log lines into whatever file or socket now holds
 that number. The patch adds one line, `fd = -1;`, in each file.
 
+### P5 — `src/core/src/hev-socks5-client.c`: no `MSG_MORE` in the standard handshake
+
+`hev_socks5_client_write_auth_methods` (and `write_auth_creds`) sent with `MSG_WAITALL | MSG_MORE`.
+In the standard (non-pipelined) handshake the client then blocks reading the method reply, so the
+kernel corks the 3-byte greeting until the zero-window probe timer fires (TCP_RTO_MIN, 200 ms). Every
+new TCP session and every UDP flow (each DNS query is its own association) paid about 200 ms before
+byedpi even saw the greeting. `MSG_MORE` is now passed only by the pipelined handshake, where the
+request really follows. Measured on emulator-5554 with `tools/native/tun_latency.sh` (hev CLI + tun,
+target on the device itself via `--redirect`, 20 new sessions each):
+
+| | UDP round trip (median) | TCP connect + first byte (median) | loopback SYN → greeting |
+|---|---:|---:|---:|
+| before | 207.0 ms | 208.2 ms | 206–209 ms (tcpdump on lo) |
+| after | 3.2 ms | 3.4 ms | 0.7–1.4 ms |
+
+```diff
+-hev_socks5_client_write_auth_methods (HevSocks5Client *self)
++hev_socks5_client_write_auth_methods (HevSocks5Client *self, int more)
+-                                   MSG_WAITALL | MSG_MORE, task_io_yielder,
+-                                   self);
++                                   MSG_WAITALL | more, task_io_yielder, self);
+-hev_socks5_client_write_auth_creds (HevSocks5Client *self)
++hev_socks5_client_write_auth_creds (HevSocks5Client *self, int more)
+-                                      MSG_WAITALL | MSG_MORE, task_io_yielder,
++                                      MSG_WAITALL | more, task_io_yielder,
+@@ handshake_standard
+-    res = hev_socks5_client_write_auth_methods (self);
++    res = hev_socks5_client_write_auth_methods (self, 0); /* gdpi */
+-        res = hev_socks5_client_write_auth_creds (self);
++        res = hev_socks5_client_write_auth_creds (self, 0); /* gdpi */
+@@ handshake_pipeline
+-    res = hev_socks5_client_write_auth_methods (self);
++    res = hev_socks5_client_write_auth_methods (self, MSG_MORE); /* gdpi */
+-    res = hev_socks5_client_write_auth_creds (self);
++    res = hev_socks5_client_write_auth_creds (self, MSG_MORE); /* gdpi */
+```
+
+`socks5.pipeline: true` is not an alternative: byedpi reads the greeting with a single `recv()` and
+rejects anything longer than the method list (`proxy.c:auth_socks5`), so a pipelined handshake gets
+an empty reply (verified by the e2e run).
+
 ## Verification
 
 The results are recorded in `android/docs/HEV_NOTES.md` under "Verification". In summary: all 4 ABIs
@@ -189,7 +230,8 @@ The following are Windows-only or packaging files, and nothing in the ndk-build 
   `android/tools/native/Android.mk` for the test CLI.
 
 Kept unmodified: `LICENSE` (copied to `licenses/LICENSE-byedpi.txt` and `app/src/main/assets/licenses/`),
-`README.md`, `conev.c`, `kavl.h`, `mpool.h`, `packets.c`, `packets.h`, `extend.h`, `desync.h`.
+`README.md`, `kavl.h`, `mpool.h`, `packets.c`, `packets.h`, `extend.h`, `desync.h` (`conev.c`/`conev.h`
+are patched since B6/B8).
 
 ## Build integration (our files, no upstream build files)
 
@@ -261,14 +303,58 @@ upstream whitespace is preserved.
 | `main.c:add_group` | `dp->bit = (uint64_t)1 << id`; more than 64 groups → parse error | `1 << id` on `int` broke the masks from the 32nd group on (UB) |
 | `mpool.c:load_cache` | `fscanf("%jd")` into an `intmax_t` temporary | wrote 8 bytes into a 4-byte `time_t` on 32-bit ABIs, a stack overflow with `--cache-file` |
 
+### B5 — `--deny-net CIDR` (virtual tun networks)
+
+| file | hunk |
+|---|---|
+| `params.h` | `struct deny_net { family, addr[16], bits }`; `params.deny_nets`, `params.deny_net_n` |
+| `main.c` | long-only option `deny-net` (val `OPT_DENY_NET` = 0x12), `parse_deny_net()` (`inet_pton` v4 or v6 without brackets, `/0..32` or `/0..128`, repeatable), help text, freed in `clear_params` |
+| `proxy.c` | `deny_dst()` (prefix match after v4-mapped un-mapping). `redirect_tcp()` now returns -1 when the destination is not a `--redirect` FROM and lies in a denied net: SOCKS5 CONNECT gets reply `02` (not allowed) at once, SOCKS4/HTTP CONNECT get their error reply. `on_udp_tunnel`: such a datagram is dropped like `--drop-udp` (the association stays unbound) |
+
+Why: the tun's own blocks (198.18.0.0/15, fd00:6764:7069::/48) are only meaningful for the virtual
+DNS address. Android's Private DNS (opportunistic DoT) probes `198.18.0.53:853`; byedpi used to open a
+real connection to it on the underlying network (a SYN to the ISP, a session hanging until the
+connect timeout). Contract C2: every other virtual destination fails fast.
+
+### B6 — robustness of the library's event loop
+
+| file | fix | why |
+|---|---|---|
+| `proxy.c:on_accept` (`BYEDPI_LIB`) | `EINTR/ECONNABORTED/EPROTO/EPERM` → next accept; `EMFILE/ENFILE/ENOBUFS/ENOMEM` → log (every 64th), `mod_etype(listener, 0)`, `set_timer(100 ms)`, return 0; the timer (`POLLTIMEOUT`) re-enables `POLLIN`. Other errors keep upstream's `brk` | upstream ended the whole proxy on any accept error, so a transient fd or memory shortage became a device-wide outage plus an engine rebuild. conev is level-triggered: without disarming, the queued connection would spin the loop at 100% CPU |
+| `proxy.c:listen_socket` (`BYEDPI_LIB`) | backlog 1024 instead of 10 (the kernel caps it at `net.core.somaxconn`) | every TCP flow and every UDP association of the phone arrives on this one listener; a burst overflowed the 10-entry queue and cost a 1 s SYN/ACK retransmission |
+| `conev.c`, `conev.h` | `time_ms()` returns `int64_t` computed in integers; `struct eval.tv_ms` is `int64_t`; `next_event_tv` computes the wait in 64 bit and clamps it to `INT_MAX` | on 32-bit ABIs `long` is 32 bit: after 2^31 ms (~24.8 days awake) the double→long conversion was UB and the timer clock froze (await_int and partial-TLS timers only fired in a fully idle interval) |
+| `error.h` (`BYEDPI_LIB`) | `uniperror()` is an inline function and `LOG()` saves/restores `errno` around the liblog call; `desync.c:set_md5sig` also saves `errno` around its log line | callers read `errno` after logging (`tcp_send_hook` → `handle_err`, `send_fake`'s ENOPROTOOPT check). Pre-Android-11 liblog does not preserve it, so log pressure (EAGAIN from logd) misclassified errors: `--md5sig` closed the connection, a reset did not trigger `torst` |
+
+### B7 — fallback trigger semantics (`extend.c`)
+
+| hunk | change | why |
+|---|---|---|
+| `setup_conn` | `TCP_USER_TIMEOUT` (`--timeout`) is armed only while the server has not sent a byte (`remote->recv_count == 0`, `to_count >= 0`) **and** the group is directly followed by a group whose detect mask has `torst` (`dp->next->detect & DETECT_TORST`) | upstream armed it on the client's first data unconditionally. For server-first protocols (SMTP/IMAP/POP3/FTP) the one-shot removal ran on the banner first, the client's data then re-armed 4 s for the life of the connection, and a 4 s mobile stall while uploading aborted it with ETIMEDOUT. In groups without an auto successor (catch-all, last fallback) the timeout could only kill. Assumes the fallbacks follow the primary directly, which is how `ByeDpiArgs` lays them out |
+| `on_torst` | triggers only while `remote->round_count <= 1`; later resets/timeouts just close (SO_LINGER RST as before) | upstream moved a working IP:port to the next fallback for `--cache-ttl` on any mid-life RST/ETIMEDOUT/EHOSTUNREACH (radio loss, LB reset); a second one ended the chain with "unreach". A DPI reset arrives in the first server round, like `on_fin`'s `round_count <= 1` |
+| `check_tls_hs_alert` (new), `on_fin`, `struct eval.tls_fake` | for a TLS ClientHello in a group with a fake part (`tls_fake`): (a) the client closes after the server's first flight without starting its second round, or (b) the first record of either side's second round is a plaintext TLS alert (`15 03`) → `DETECT_TLS_ERR` without replay (the cache entry makes the next connection start with the fallback) | a fixed-TTL fake reaches a server that is closer than the TTL; the server answers the fake ClientHello, the real bytes are never used. TLS 1.3 is caught by `neq_tls_sid`, TLS 1.2 was not: the ServerHello looks valid, `--timeout`'s B=1 clears `mark` on the first response so `on_fin` never fired, and the site stayed broken with no fallback. TLS 1.3 second-round alerts are encrypted (`0x17`), so they do not match |
+
+### B8 — coherent split fakes (`desync.c`, `conev.c`, `conev.h`)
+
+Consecutive `--fake` parts (e.g. `--fake 2 --fake -1`) are now slices of **one** fake request: the
+second and later parts of a run set `pkt.off = lp - run_start`, so the fake continues where the
+previous fake part ended (desktop `BuildFake(seqOffset)`, zapret2 `multisplit blob=fake pos=2`).
+Upstream restarted every fake part at byte 0, so a reassembling DPI saw `16 03 16 03 01 …`. A single
+fake part (all other presets, including `default`) is unchanged. `--fake-offset` keeps its upstream
+meaning. `struct eval` gets `restore_fake_base`: `send_fake` stores the mapping base, `restore_state`,
+`del_event` and the leak check in `desync()` `munmap` the base instead of the (possibly offset)
+`restore_fake` pointer. That also removes the old `--fake-offset` unaligned-`munmap` leak.
+
 ### Decided not to patch
 
 - **TCP half-close** (`recv()==0` → full close in `extend.c:tcp_recv_hook`/`on_fin`). Supporting
   it would need per-direction EOF state through `on_tunnel`, `on_fin` (which also drives `ssl_err`
   detection) and the replay logic. That is not a minimal change, and a mistake would leak half-open
   fds in a long-lived process. Browsers, OkHttp and TLS clients do not half-close. See BYEDPI_NOTES §10.
-- `--fake-offset` with a non-page-aligned offset `munmap`s an unaligned address, which leaks. It is
-  not used by the app, so this is documented only.
+- ~~`--fake-offset` unaligned `munmap`~~: fixed by B8 (`restore_fake_base`).
+- **seqovl** (desktop "Ters sıra" = disorder + 1 garbage byte with SEQ-1): impossible through a
+  kernel TCP socket (the kernel owns sequence numbers and cannot put different content on the same
+  range). The closest effect, "the DPI sees a first copy the server never gets", is what the
+  TTL-limited `--fake` gives; see BYEDPI_NOTES §7.4 for the resulting ISP ordering.
 - The UDP association sends to its first destination only (upstream design). hev uses one
   association per flow.
 
@@ -281,3 +367,7 @@ The details and the real results are in `android/docs/BYEDPI_NOTES.md` §9. In s
 - `smoke.py` on emulator-5554 covers presets, wire (tcpdump), the DPI simulation (iptables string
   DROP/RST), UDP/redirect/drop/malformed (ASan), `restart_test` (+ ASan) and the JNI test against
   the R8 release APK.
+- Wave 3 additions (B5–B8, P5): `udp_socks_test` deny-net/`-N` cases, `restart_test` R8 (EMFILE)
+  and deny-net checks, smoke rows `fake reached tls1.2 server (abort|alert)`, `timeout with stall
+  (client-first|server-first)`, `mid-life RST keeps primary`, `fakesplit5 coherent fake`, and
+  `tun_latency.sh` for P5. Results in BYEDPI_NOTES §9.

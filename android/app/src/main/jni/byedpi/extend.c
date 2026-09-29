@@ -409,7 +409,14 @@ int on_trigger(int type, struct poolhd *pool, struct eval *val, bool client_aliv
 
 static int on_torst(struct poolhd *pool, struct eval *val)
 {
-    if (on_trigger(DETECT_TORST, pool, val, 1) == 0) {
+    /* gdpi: yalnizca sunucunun ilk cevap turunda. Upstream calisan bir
+     * baglantinin ortasindaki RST/ETIMEDOUT/EHOSTUNREACH'te de (mobil hat
+     * kopmasi, yuk dengeleyici RST'si) IP:port'u bir saatligine sonraki yedege
+     * kaydediyordu; ikinci kopmada zincir biterdi ("unreach"). DPI RST'si ilk
+     * turda gelir (ServerHello/sertifika sonrasi gelse bile sunucu henuz 2.
+     * turu baslatmamistir), on_fin'deki round_count <= 1 kosulunun aynisi. */
+    if (val->round_count <= 1
+            && on_trigger(DETECT_TORST, pool, val, 1) == 0) {
         return 0;
     }
     struct linger l = { .l_onoff = 1 };
@@ -428,8 +435,19 @@ static int on_fin(struct poolhd *pool, struct eval *val)
     if (is_client) {
         val = val->pair;
     }
-    if (!val || !(val->pair->mark && val->round_count <= 1)) {
+    /* gdpi: sahte paket sunucuya ulastiysa (TTL'den yakin sunucu) sunucu sahte
+     * ClientHello'ya cevap verir; istemci o cevabi reddedip ikinci turunu hic
+     * yollamadan kapatir. --timeout'un B=1'i mark'i ilk cevapta sildigi icin
+     * upstream bunu gormez ve site yedege gecmeden kirik kalirdi (bkz.
+     * check_tls_hs_alert). Yalnizca sahte parcali TLS gruplarinda ve istemci
+     * 2. turu baslatmadan: normal bir el sikisma sonrasi kapanis tetiklemez. */
+    bool fake_abort = is_client && val && val->pair->tls_fake
+        && val->pair->round_count <= 1 && val->round_count == 1;
+    if (!val || !((val->pair->mark || fake_abort) && val->round_count <= 1)) {
         return -1;
+    }
+    if (fake_abort) {
+        LOG(LOG_S, "client closed after first server flight (fake), fd=%d\n", val->fd);
     }
     if (on_trigger(DETECT_TLS_ERR, pool, val, !is_client) == 0) {
         return 0;
@@ -640,6 +658,56 @@ int connect_hook(struct poolhd *pool, struct eval *val,
 }
 
 
+/* gdpi: grupta sahte (fake) parca var mi */
+static bool dp_has_fake(const struct desync_params *dp)
+{
+    for (int i = 0; i < dp->parts_n; i++) {
+        if (dp->parts[i].m == DESYNC_FAKE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+/* gdpi: sahte paketin sunucuya ulastigi TLS 1.2 el sikismasini yakala.
+ * Sabit TTL'li sahte, TTL'den yakin (<= ttl-1 atlama) bir sunucuya varir;
+ * sunucu sahte ClientHello'ya cevap verir, gercek baytlar zaten onaylandigi
+ * icin hic islenmez. TLS 1.3'te bunu on_response (neq_tls_sid) yakalar;
+ * TLS 1.2'de ServerHello gecerli gorunur ve el sikisma ikinci turda bir
+ * uyari (alert, icerik turu 0x15) ile coker: ya istemci sertifikayi reddeder
+ * ya da sunucu Finished dokumunu tutmadigi icin reddeder. --timeout'un B=1'i
+ * mark'i ilk cevapta sildigi icin on_fin de tetiklenmez; sonuc: site hic
+ * yedege gecmeden kirik kalirdi. Burada her iki taraftan ikinci turun ilk
+ * kaydi duz metin TLS uyarisiysa ssl_err olarak islenir: tekrar oynatma
+ * mumkun degil (ilk istek serbest), ama sonraki baglanti yedekle baslar.
+ * Yalnizca sahte parcali gruplarda: baska gruplarda sahte sunucuya gitmez.
+ * TLS 1.3'te ikinci turdaki uyarilar sifreli (0x17), buraya dusmez. */
+static void check_tls_hs_alert(struct poolhd *pool,
+        struct eval *val, const char *buff, ssize_t n)
+{
+    struct eval *client = val->flag == FLAG_CONN ? val->pair : val;
+    if (!client || !client->tls_fake || !client->pair) {
+        return;
+    }
+    struct eval *remote = client->pair;
+    if (val->round_count != 2 || remote->round_count > 2
+            || client->round_count > 2) {
+        if (val->round_count > 2) client->tls_fake = 0;
+        return;
+    }
+    if (n < 2 || buff[0] != 0x15 || buff[1] != 0x03) {
+        return;
+    }
+    client->tls_fake = 0;
+    LOG(LOG_S, "tls alert in handshake round 2 (%s), fd=%d\n",
+        val == client ? "client" : "server", remote->fd);
+    /* Donus degeri onemsiz: istemci kapanmak uzere, tekrar oynatma yok;
+     * amac yalnizca onbellege sonraki grubu yazmak. Uyari yine iletilir. */
+    on_trigger(DETECT_TLS_ERR, pool, remote, 0);
+}
+
+
 static int setup_conn(struct eval *client, const char *buffer, ssize_t n)
 {
     struct desync_params *dp = find_dp(client, buffer, n, &client->pair->addr);
@@ -650,9 +718,19 @@ static int setup_conn(struct eval *client, const char *buffer, ssize_t n)
     save_hostname(client, buffer, n);
     client->mark = is_tls_chello(buffer, n);
     client->dp = dp;
+    client->tls_fake = client->mark && dp_has_fake(dp); /* gdpi */
     
-    if (params.timeout 
-            && set_timeout(client->pair->fd, params.timeout)) {
+    /* gdpi: TCP_USER_TIMEOUT yalnizca (1) sunucu henuz tek bayt yollamamisken
+     * ve (2) grubun ardinda torst ile tetiklenen bir yedek varken. Upstream
+     * kosulsuz kuruyordu; sunucu once konusan protokollerde (SMTP, IMAP,
+     * POP3, FTP) kaldirma tek seferlik oldugu icin 4 sn tum baglanti boyunca
+     * kaliyor, mobil bir takilmada yukleme ETIMEDOUT ile kesiliyordu. Yedeksiz
+     * grupta (catch-all, son yedek) zaman asimi yalnizca baglantiyi oldururdu.
+     * Varsayim: yedekler birincilin hemen ardinda (ByeDpiArgs boyle dizer). */
+    struct eval *remote = client->pair;
+    if (params.timeout && remote->to_count >= 0 && !remote->recv_count
+            && dp->next && (dp->next->detect & DETECT_TORST)
+            && set_timeout(remote->fd, params.timeout)) {
         return -1;
     }
     if (pre_desync(client->pair->fd, client->dp)) {
@@ -747,6 +825,7 @@ ssize_t tcp_recv_hook(struct poolhd *pool,
             val->pair->round_sent = 0;
             val->pair->part_sent = 0;
         }
+        check_tls_hs_alert(pool, val, buff->data, n); /* gdpi */
     }
     if (val->flag == FLAG_CONN && !val->round_sent) {
         int *nr = val->pair->dp->rounds;

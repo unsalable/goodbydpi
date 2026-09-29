@@ -143,6 +143,13 @@ struct redirect_rule {
     union sockaddr_u to;
 };
 
+/* gdpi: --deny-net CIDR; ag bayt sirasinda adres, onek uzunlugu bit */
+struct deny_net {
+    int family;
+    uint8_t addr[16];
+    int bits;
+};
+
 struct params {
     int dp_n;
     struct desync_params *dp;
@@ -183,6 +190,9 @@ struct params {
     int redirect_n;
     uint16_t (*drop_udp)[2];
     int drop_udp_n;
+    /* gdpi: --deny-net */
+    struct deny_net *deny_nets;
+    int deny_net_n;
 };
 
 extern struct params params;

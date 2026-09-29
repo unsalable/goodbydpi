@@ -8,15 +8,30 @@ import io.github.unsalable.goodbyedpi.model.DpiConfig
 import io.github.unsalable.goodbyedpi.model.FakePayload
 import io.github.unsalable.goodbyedpi.model.IspProfile
 import io.github.unsalable.goodbyedpi.model.MethodPreset
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 
 class ByeDpiArgsTest {
-    private val base = listOf("-i", "127.0.0.1", "-p", "10808", "-c", "2048", "-b", "16384")
+    private val base = listOf("-i", "127.0.0.1", "-p", "10808", "-c", "2048", "-b", "16384", "-N")
+    private val deny = listOf("--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48")
     private val sni = listOf("--fake-sni", "www.w3.org")
+    private val realMd5 = ByeDpiArgs.md5SigSupport
+
+    // Varsayilan: MD5'i destekleyen cekirdek (BYEDPI_NOTES 7.2 tablosu --md5sig'i gosterir).
+    @Before
+    fun md5Supported() {
+        ByeDpiArgs.md5SigSupport = { true }
+    }
+
+    @After
+    fun restoreMd5() {
+        ByeDpiArgs.md5SigSupport = realMd5
+    }
 
     private fun cfg(
         primary: DpiConfig,
@@ -27,7 +42,7 @@ class ByeDpiArgsTest {
 
     /** Yalnizca TCP grubu: QUIC/ses kapali, DNS yok, yedek yok. */
     private fun group(p: DpiConfig): List<String> =
-        ByeDpiArgs.build(cfg(p.copy(blockQuic = false, voiceFake = false))).drop(base.size)
+        ByeDpiArgs.build(cfg(p.copy(blockQuic = false, voiceFake = false))).drop(base.size + deny.size)
 
     // BYEDPI_NOTES 7.2 tablosu, birebir (fragmentHttp acik).
     private val expectedPresetGroups = mapOf(
@@ -76,6 +91,41 @@ class ByeDpiArgsTest {
     }
 
     @Test
+    fun noDomainAndVirtualNetsDeniedAlways() {
+        // Sozlesme C2: hev hep IP gonderir; ad cozumleme kapali, sanal aglar (FROM disinda) reddedilir.
+        for (dns in listOf(DnsProfile.Off, DnsProfile.Yandex)) for (v6 in listOf(true, false)) {
+            val a = ByeDpiArgs.build(cfg(DpiConfig(), dns = dns, ipv6 = v6))
+            assertEquals(1, a.count { it == "-N" })
+            assertTrue(a.containsSeq(deny))
+            // Genel secenekler: ilk --proto'dan once gelir (grup secenegi sayilmasin diye degil,
+            // okunurluk icin; byedpi icin sira onemsiz).
+            assertTrue(a.indexOf("--deny-net") < a.indexOfFirst { it.startsWith("--proto=") })
+        }
+        // Yonlendirilen sanal cozucu adresi reddedilen agin icinde: FROM eslesmesi reddi yener.
+        val r = ByeDpiArgs.build(cfg(DpiConfig(), dns = DnsProfile.Yandex))
+        assertTrue(r.containsSeq(listOf("--redirect", "198.18.0.53:53=77.88.8.8:1253")))
+    }
+
+    @Test
+    fun md5DroppedWhenKernelLacksIt() {
+        ByeDpiArgs.md5SigSupport = { false }
+        // GKI: byedpi zaten yalnizca TTL kullanir; argv de oyle ve kopyalar birlesir.
+        assertEquals(expectedPresetGroups.getValue("fixedttl"), group(MethodPreset.Md5Sig.build().sanitized()))
+        assertEquals(expectedPresetGroups.getValue("ttl3"), group(MethodPreset.Md5Ttl3.build().sanitized()))
+        val so = IspProfile.Superonline.methods.map { it.build().sanitized() }
+        val a = ByeDpiArgs.build(cfg(so.first(), so.drop(1)))
+        assertFalse("--md5sig" in a)
+        // ttl3 birincil; md5ttl3 (== ttl3) atlanir, md5sig (TTL 5) ve disorder kalir.
+        assertEquals(2, a.count { it.startsWith("--auto=torst") })
+
+        // Bilinmiyor (null): eskisi gibi --md5sig verilir, byedpi gerekirse TTL'e duser.
+        ByeDpiArgs.md5SigSupport = { null }
+        assertTrue("--md5sig" in group(MethodPreset.Md5Sig.build().sanitized()))
+        ByeDpiArgs.md5SigSupport = { true }
+        assertEquals(3, ByeDpiArgs.build(cfg(so.first(), so.drop(1))).count { it.startsWith("--auto=torst") })
+    }
+
+    @Test
     fun blockQuicAddsDropUdp() {
         val on = ByeDpiArgs.build(cfg(DpiConfig(voiceFake = false, blockQuic = true)))
         val off = ByeDpiArgs.build(cfg(DpiConfig(voiceFake = false, blockQuic = false)))
@@ -86,7 +136,7 @@ class ByeDpiArgsTest {
     @Test
     fun voiceFakeGroupsComeBeforePrimary() {
         val c = DpiConfig(blockQuic = false, voiceFake = true, voiceFakeRepeats = 9)
-        val a = ByeDpiArgs.build(cfg(c)).drop(base.size)
+        val a = ByeDpiArgs.build(cfg(c)).drop(base.size + deny.size)
         val voice = ByeDpiArgs.VOICE_PORT_RANGES.flatMap {
             listOf("--proto=udp", "--pf=$it", "--udp-fake", "9", "--ttl", "64", "--auto=none")
         }
@@ -114,6 +164,7 @@ class ByeDpiArgsTest {
         val expected = base +
             listOf("--redirect", "198.18.0.53:53=77.88.8.8:1253") +
             listOf("--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253") +
+            deny +
             listOf("--drop-udp", "443") +
             ByeDpiArgs.VOICE_PORT_RANGES.flatMap {
                 listOf("--proto=udp", "--pf=$it", "--udp-fake", "6", "--ttl", "64", "--auto=none")
@@ -269,7 +320,8 @@ class ByeDpiArgsTest {
     fun describeQuotesOnlyForDisplay() {
         val c = cfg(DpiConfig(splitTls = false, fakePayload = FakePayload.ZEROS, voiceFake = false, blockQuic = false))
         assertEquals(
-            "ciadpi -i 127.0.0.1 -p 10808 -c 2048 -b 16384 --proto=tls,http --fake -1 --ttl 5 --fake-data :\\x00\\x00\\x00\\x00",
+            "ciadpi -i 127.0.0.1 -p 10808 -c 2048 -b 16384 -N --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48 " +
+                "--proto=tls,http --fake -1 --ttl 5 --fake-data :\\x00\\x00\\x00\\x00",
             ByeDpiArgs.describe(c),
         )
     }
@@ -292,7 +344,7 @@ class ByeDpiArgsTest {
         assertTrue(a.size <= 1024)
         // Her deger alan secenegin bir degeri var.
         val needsValue = setOf(
-            "-i", "-p", "-c", "-b", "--redirect", "--drop-udp", "--udp-fake", "--ttl", "--split", "--disorder",
+            "-i", "-p", "-c", "-b", "--redirect", "--deny-net", "--drop-udp", "--udp-fake", "--ttl", "--split", "--disorder",
             "--fake", "--fake-sni", "--fake-data", "--tlsrec", "--cache-ttl", "--timeout",
         )
         a.forEachIndexed { i, t ->

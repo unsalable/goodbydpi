@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -373,6 +374,7 @@ static void args_full(struct run *r)
 {
     run_init(r, "-i", "127.0.0.1", "-p", port_s, "-c", "256", "-b", "16384",
         "--redirect", udp_redir_s, "--redirect", tcp_redir_s,
+        "--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48", "-N",
         "--drop-udp", "443", "--drop-udp", "50000-50010",
         "--proto=udp", "--pf=17900-18200", "--udp-fake", "1", "--ttl", "5",
         "--auto=none",
@@ -425,6 +427,10 @@ static int one_iteration(int i, int full)
         size_t n = fake_chello(ch);
         rc = tcp_roundtrip(ip4("127.0.0.1"), g_tcp_echo, ch, n);
         CHECK(rc == 0, "iter %d: tls-like echo rc=%d", i, rc);
+
+        /* --deny-net: sanal agdaki FROM olmayan hedef hemen 02 (izin yok) */
+        rc = tcp_roundtrip(ip4("198.18.1.1"), 80, ping, sizeof(ping));
+        CHECK(rc == 2, "iter %d: deny-net rc=%d", i, rc);
 
         /* UDP --redirect + etiket: 10.255.0.1:5353 -> yanki; baslik FROM olmali */
         rc = udp_roundtrip(ip4("10.255.0.1"), 5353, ip4("10.255.0.1"), 5353);
@@ -532,6 +538,10 @@ static void races(void)
         { "--pf", "0", 0 },
         { "--auto", "q", 0 },
         { "-p", 0 },
+        { "--deny-net", "198.18.0.0", 0 },
+        { "--deny-net", "198.18.0.0/33", 0 },
+        { "--deny-net", "fd00::/129", 0 },
+        { "--deny-net", "example.com/8", 0 },
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); i++) {
         run_init(&r, "-i", "127.0.0.1", "-p", port_s, (char *)0);
@@ -581,6 +591,48 @@ static void races(void)
     }
     CHECK(r7_bad == 0, "R7 rapid start/stop: %d bad", r7_bad);
     CHECK(port_is_closed(), "R7 port open at end");
+
+    printf("race R8\n");
+    /* R8: fd tablosu dolunca (EMFILE) accept hatasi proxy'yi kapatmamali. Upstream burada
+     * pool->brk kuruyordu: uygulamada tum telefonun baglantisi kopar, motor bastan kurulurdu.
+     * Istemci ve byedpi ayni surecte: dusuk bir RLIMIT_NOFILE ile baglanti acmaya devam et;
+     * son baglanti kuyrukta kalir ve byedpi'nin accept'i EMFILE alir. */
+    {
+        args_min(&r);
+        run_start(&r);
+        CHECK(wait_ready(3000) == 0, "R8 not ready");
+        struct rlimit old, lim;
+        getrlimit(RLIMIT_NOFILE, &old);
+        lim = old;
+        lim.rlim_cur = count_fds() + 40;
+        setrlimit(RLIMIT_NOFILE, &lim);
+        int cs[64], cn = 0;
+        struct sockaddr_in pa = { .sin_family = AF_INET, .sin_port = htons(g_port) };
+        pa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        while (cn < 64) {
+            int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            if (s < 0) break;
+            if (connect(s, (struct sockaddr *)&pa, sizeof(pa)) < 0) {
+                close(s);
+                break;
+            }
+            cs[cn++] = s;
+            usleep(2000);
+        }
+        /* byedpi kuyruktakini kabul etmeye calisip EMFILE alsin (100 ms'de bir yeniden) */
+        usleep(400000);
+        int alive = !__atomic_load_n(&r.done, __ATOMIC_SEQ_CST);
+        for (int i = 0; i < cn; i++) close(cs[i]);
+        setrlimit(RLIMIT_NOFILE, &old);
+        CHECK(cn > 0 && cn < 64, "R8 fd table never filled (cn=%d)", cn);
+        CHECK(alive, "R8 proxy exited on EMFILE (ret=%d)", r.ret);
+        /* Dinleyici en gec ACCEPT_RETRY_MS sonra geri gelir */
+        usleep(300000);
+        int rc8 = tcp_roundtrip(ip4("127.0.0.1"), g_tcp_echo, "after-emfile", 12);
+        CHECK(rc8 == 0, "R8 no service after fds were freed rc=%d", rc8);
+        byedpi_lib_stop();
+        CHECK(run_join(&r, 3000) == 0 && r.ret == BYEDPI_OK, "R8 ret %d", r.ret);
+    }
 
     /* Son: normal calisma hala mumkun */
     one_iteration(-1, 1);

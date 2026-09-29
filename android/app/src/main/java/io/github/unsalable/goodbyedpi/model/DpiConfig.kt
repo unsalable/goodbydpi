@@ -35,7 +35,11 @@ data class DpiConfig(
     val fakeTtl: Boolean = true,
     /** Sahte paketin IP TTL degeri. */
     val ttl: Int = DEFAULT_TTL,
-    /** Sahte pakete TCP MD5 imzasi eklensin; MD5 anahtari olmayan sunucu paketi atar. */
+    /**
+     * Sahte pakete TCP MD5 imzasi eklensin; MD5 anahtari olmayan sunucu paketi atar. Cogu
+     * Android cekirdeginde (GKI) TCP_MD5SIG yok: o zaman motor sahteyi yalnizca [ttl] ile yollar
+     * (ByeDpiArgs.md5SigSupport), bu secenek etkisiz kalir.
+     */
     val fakeMd5Sig: Boolean = false,
     val fakePayload: FakePayload = FakePayload.TLS,
     /** Sahte TLS isteginde gorunen engelsiz ad. */

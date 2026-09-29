@@ -37,9 +37,19 @@
         __android_log_print(ANDROID_LOG_ERROR, "proxy", \
             "%s: %s\n", str, strerror(errno))
     #elif defined(BYEDPI_LIB) /* gdpi */
-    #define uniperror(str) \
-        __android_log_print(ANDROID_LOG_ERROR, BYEDPI_LOG_TAG, \
-            "%s: %s\n", str, strerror(errno))
+    /* gdpi: errno korunur. Cagiranlarin cogu hatayi logladiktan SONRA errno'ya
+     * bakiyor (tcp_send_hook -> handle_err, send_fake'in ENOPROTOOPT dali).
+     * Android 11 oncesi liblog errno'yu geri yuklemiyor: logd'ye yazim EAGAIN
+     * verirse (log baskisi) hata yanlis siniflanir; orn. --md5sig baglantiyi
+     * kapatir ya da torst yedegi hic tetiklenmez. */
+    static inline void gdpi_uniperror(const char *str)
+    {
+        int e = errno;
+        __android_log_print(ANDROID_LOG_ERROR, BYEDPI_LOG_TAG,
+            "%s: %s\n", str, strerror(e));
+        errno = e;
+    }
+    #define uniperror(str) gdpi_uniperror(str)
     #else
     #define uniperror(str) \
         perror(str)
@@ -81,12 +91,14 @@ static int unie(int e)
     #define LOG_L 2
     static void LOG(int s, const char *str, ...) {
         if (params.debug >= s) {
+            int e = errno; /* gdpi: uniperror ile ayni neden */
             va_list args;
             va_start(args, str);
             __android_log_vprint(s < 0 ? ANDROID_LOG_ERROR :
                 (s == LOG_S ? ANDROID_LOG_DEBUG : ANDROID_LOG_VERBOSE),
                 BYEDPI_LOG_TAG, str, args);
             va_end(args);
+            errno = e;
         }
     }
     #define LOG_ENABLED (params.debug >= LOG_S)

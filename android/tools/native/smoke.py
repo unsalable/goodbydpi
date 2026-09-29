@@ -30,9 +30,13 @@ import argparse
 import os
 import re
 import shutil
+import socket
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -41,7 +45,9 @@ ANDROID = HERE.parents[1]
 DEV_DIR = "/data/local/tmp/gdpi-smoke"
 NDK_VERSION = "29.0.14206865"
 
-BASE = ["-i", "127.0.0.1", "-c", "2048", "-b", "16384", "-x", "1"]
+# -N: ByeDpiArgs gibi alan adi cozumleme kapali; curl adi host'ta cozer (--socks5, -4).
+BASE = ["-i", "127.0.0.1", "-c", "2048", "-b", "16384", "-N", "-x", "1"]
+DENY = ["--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48"]
 FAKE_SNI = ["--fake-sni", "www.w3.org"]
 ZEROS = ":\\x00\\x00\\x00\\x00"  # argv'de ters bolu + x + 00: byedpi parse_cform 4 sifir bayta cevirir
 
@@ -68,8 +74,9 @@ for rng in ("50000-65535", "3478-3481", "19294-19344"):
     VOICE += ["--proto=udp", "--pf=" + rng, "--udp-fake", "6", "--ttl", "64", "--auto=none"]
 FULL_LAYOUT = (
     ["--redirect", "198.18.0.53:53=77.88.8.8:1253",
-     "--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253",
-     "--drop-udp", "443"]
+     "--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253"]
+    + DENY
+    + ["--drop-udp", "443"]
     + VOICE
     + PRESETS[0][1]
     + ["--auto=torst,ssl_err", "--proto=tls,http", "--disorder", "2", "--cache-ttl", "3600"]
@@ -84,6 +91,7 @@ UDP_TEST_ARGS = [
     "--redirect", "198.18.0.53:53=77.88.8.8:1253",
     "--redirect", "[fd00:6764:7069::53]:53=127.0.0.1:18096",
     "--drop-udp", "443", "--drop-udp", "18095",
+] + DENY + [
     "--proto=udp", "--pf=17900-18200", "--udp-fake", "2", "--auto=none",
     "--proto=tls", "--split", "1",
 ]
@@ -189,11 +197,12 @@ class Proxy:
         self.adb.run("forward", "--remove", f"tcp:{self.port}", check=False)
 
 
-def curl(port, url, timeout=10):
+def curl(port, url, timeout=10, extra=()):
     exe = shutil.which("curl") or "curl"
     t0 = time.time()
-    p = subprocess.run([exe, "-sS", "-m", str(timeout), "-o", os.devnull, "-w", "%{http_code}",
-                        "--socks5-hostname", f"127.0.0.1:{port}", url],
+    # --socks5 (hostname degil): proxy -N ile calisiyor, uygulamadaki gibi IP alir.
+    p = subprocess.run([exe, "-sS", "-4", "-m", str(timeout), "-o", os.devnull, "-w", "%{http_code}",
+                        "--socks5", f"127.0.0.1:{port}", *extra, url],
                        capture_output=True, text=True, timeout=timeout + 15)
     code = p.stdout.strip() or "000"
     return code, time.time() - t0, p.stderr.strip()
@@ -302,6 +311,122 @@ def jni_smoke(adb, apk, out, row):
         row("jni", "jni_smoke result", "FAIL", txt.strip()[-200:])
 
 
+# ------------------------------------------------------------------ host sunuculari + SOCKS istemci
+# Emulator host'un 127.0.0.1'ine 10.0.2.2 olarak ulasir (slirp host'ta yeniden baglar).
+
+# Host'ta dinlenir; adb forward'larin (18080-18095) kullanmadigi portlar.
+HOST_ECHO_PORT = 18097    # duz yankilayici (istemci once konusur)
+HOST_TLS_PORT = 18098     # sahte ClientHello'ya TLS 1.2 ServerHello ile cevap veren sunucu
+HOST_BANNER_PORT = 18099  # once konusan (SMTP benzeri) + yankilayan sunucu
+
+# TLS 1.2 ServerHello: supported_versions (0x2b) YOK, bu yuzden byedpi'nin neq_tls_sid'i
+# bir sey yakalamaz; is_tls_shello dogru oldugu icin on_response da tetiklenmez (DPI-4).
+TLS12_SHELLO = (bytes.fromhex("160303003102") + bytes.fromhex("00002d0303") + bytes(32)
+                + bytes.fromhex("00c02f000005ff01000100"))
+TLS_ALERT = bytes.fromhex("15030300020230")  # fatal, unknown_ca
+
+
+class HostServers:
+    def __init__(self):
+        self.socks = []
+        for port, handler in ((HOST_ECHO_PORT, self._echo), (HOST_TLS_PORT, self._tls),
+                              (HOST_BANNER_PORT, self._banner)):
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            s.listen(16)
+            self.socks.append(s)
+            threading.Thread(target=self._loop, args=(s, handler), daemon=True).start()
+
+    @staticmethod
+    def _loop(s, handler):
+        while True:
+            try:
+                c, _ = s.accept()
+            except OSError:
+                return
+            threading.Thread(target=handler, args=(c,), daemon=True).start()
+
+    @staticmethod
+    def _tls(c):
+        # Ne gelirse gelsin (emulatorde sahte ClientHello sunucuya ulasir) ServerHello yolla,
+        # sonra istemcinin kapatmasini bekle.
+        try:
+            c.settimeout(10)
+            if c.recv(4096):
+                c.sendall(TLS12_SHELLO)
+                while c.recv(4096):
+                    pass
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    @staticmethod
+    def _echo(c):
+        HostServers._banner(c, b"")
+
+    @staticmethod
+    def _banner(c, banner=b"220 gdpi smoke\r\n"):
+        try:
+            c.settimeout(30)
+            if banner:
+                c.sendall(banner)
+            while True:
+                d = c.recv(4096)
+                if not d:
+                    break
+                c.sendall(d)
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def close(self):
+        for s in self.socks:
+            s.close()
+
+
+def socks_connect(port, ip, dport, timeout=8):
+    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    s.sendall(b"\x05\x01\x00")
+    if s.recv(2) != b"\x05\x00":
+        raise OSError("socks greeting")
+    s.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(ip) + struct.pack(">H", dport))
+    r = b""
+    while len(r) < 10:
+        d = s.recv(10 - len(r))
+        if not d:
+            raise OSError("socks reply")
+        r += d
+    if r[1] != 0:
+        raise OSError(f"socks reply {r[1]}")
+    return s
+
+
+def client_hello():
+    """Gercek bir ClientHello (TLS 1.3 yetenekli, SNI'li); ag kullanmadan bellekte uretilir."""
+    ctx = ssl.create_default_context()
+    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+    obj = ctx.wrap_bio(inc, out, server_hostname="gdpi-smoke.example")
+    try:
+        obj.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return out.read()
+
+
+def recv_until_closed(s, wait):
+    """wait sn icinde karsi taraf kapatti mi? (True = kapatti / sifirladi)"""
+    s.settimeout(wait)
+    try:
+        return s.recv(4096) == b""
+    except socket.timeout:
+        return False
+    except OSError:
+        return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--serial", default="emulator-5554")
@@ -332,6 +457,7 @@ def main():
 
     procs = []
     iptables_used = False
+    hosts = HostServers()
     try:
         # ---------------------------------------------------------- hazir yontemler
         for i, (pid_, group, fake) in enumerate(PRESETS):
@@ -373,6 +499,46 @@ def main():
             f"fake primary broken by slirp -> saved groups {saves}")
         px.stop()
 
+        # ---------------------------------------------------------- sahte yakin sunucuya ulasti (DPI-4)
+        # Emulatorde sahte her zaman sunucuya ulasir: TTL'den yakin bir sunucunun birebir
+        # benzetimi. Host'taki sunucu sahteye TLS 1.2 ServerHello ile cevap verir; istemci
+        # (a) ikinci turu yollamadan kapatir ya da (b) ikinci turda bir TLS uyarisi yollar.
+        # Iki durumda da sonraki baglanti yedek grupla (1) baslamali.
+        fake_near = ["--proto=tls", "--fake", "-1", "--ttl", "5", "--fake-sni", "www.w3.org",
+                     "--auto=torst,ssl_err", "--proto=tls", "--split", "1", "--cache-ttl", "60",
+                     "--timeout", "4:0:0:1"]
+        ch = client_hello()
+        for case, marker in (("abort", "client closed after first server flight"),
+                             ("alert", "tls alert in handshake round 2 (client)")):
+            px = Proxy(adb, "near_" + case, 18095, BASE + fake_near)
+            procs.append(px)
+            detail = ""
+            try:
+                s = socks_connect(18095, "10.0.2.2", HOST_TLS_PORT)
+                s.sendall(ch)
+                s.settimeout(5)
+                got = s.recv(4096)
+                if case == "alert":
+                    s.sendall(TLS_ALERT)
+                s.close()
+                time.sleep(0.5)
+                s = socks_connect(18095, "10.0.2.2", HOST_TLS_PORT)
+                s.sendall(ch)
+                s.settimeout(5)
+                s.recv(4096)
+                s.close()
+                time.sleep(0.3)
+                detail = f"server flight {len(got)}B"
+            except OSError as e:
+                detail = f"client error {e}"
+            log = px.logtext()
+            px.stop()
+            saves = re.findall(r"save: ip=\S+, id=(\d+)", log)
+            groups = re.findall(r"desync TCP: group=(\d+)", log)
+            ok = marker in log and saves == ["1"] and groups[-1:] == ["1"]
+            row("dpi-sim", f"fake reached tls1.2 server ({case})", "PASS" if ok else "FAIL",
+                f"{detail}; saves {saves}; groups {groups}")
+
         if adb.root and not a.quick:
             # ------------------------------------------------------ kablo kontrolleri
             def wire(name, group, check, url="https://example.com/"):
@@ -398,10 +564,14 @@ def main():
             wire("zerofake zeros", PRESETS[8][1], lambda pk: (
                 any(t == 5 and len(p) > 100 and not any(p) for t, _, p in pk),
                 "fake ttl5 all-zero: " + first_ttls(pk)))
-            wire("fakesplit5 two fakes", PRESETS[7][1], lambda pk: (
-                len([1 for t, _, p in pk if t == 5]) >= 2 and pk[0][0] == 5 and len(pk[0][2]) == 2
-                and pk[1][0] == 5 and pk[1][2][:3] == b"\x16\x03\x01",
-                "fake 2B then fake restarting at record header: " + first_ttls(pk)))
+            # Yamali: ikinci sahte parca sahteyi kaldigi yerden (2. bayt) surdurur; iki parca
+            # birlesince tek, tutarli bir sahte ClientHello (www.w3.org) olur.
+            wire("fakesplit5 coherent fake", PRESETS[7][1], lambda pk: (
+                len(pk) >= 2 and pk[0][0] == 5 and len(pk[0][2]) == 2 and pk[1][0] == 5
+                and (pk[0][2] + pk[1][2])[:3] == b"\x16\x03\x01"
+                and pk[1][2][:3] != b"\x16\x03\x01" and b"www.w3.org" in pk[1][2],
+                "fake 2B + fake continuing at byte 2: " + first_ttls(pk)
+                + (f" (2nd starts {pk[1][2][:3].hex()})" if len(pk) > 1 else "")))
             wire("fake default ttl 8", ["--proto=tls", "--fake", "-1"], lambda pk: (
                 any(t == 8 for t, _, _ in pk), "no --ttl -> " + first_ttls(pk)))
             wire("md5sig degrades to ttl", PRESETS[5][1], lambda pk: (
@@ -480,6 +650,76 @@ def main():
                 ["--proto=tls", "--auto=none", "--proto=tls", "--split", "0+hm"], False)
             sim("rst: full layout recovers", "rst", FULL_LAYOUT, True, want_saves=True)
 
+            # ------------------------------------------------------ uzun omurlu baglantilar
+            def host_rule(port, action, add):
+                op = "-I" if add else "-D"
+                adb.sh(f"iptables -w {op} OUTPUT -m owner --uid-owner 2000 -p tcp -d 10.0.2.2 "
+                       f"--dport {port} -j {action}")
+
+            # DPI-2: --timeout'un TCP_USER_TIMEOUT'u sunucu once konustuysa kurulmamali. Istemci
+            # verisi yollanirken hat takilir (DROP): istemci-once kontrolde 2 sn sonra torst
+            # ("save:") beklenir, sunucu-once (SMTP benzeri) baglanti ise ayakta kalmali.
+            life = ["--split", "1", "--auto=torst", "--split", "2", "--cache-ttl", "60", "--timeout", "2:0:0:1"]
+            for case, port in (("client-first", HOST_ECHO_PORT), ("server-first", HOST_BANNER_PORT)):
+                px = Proxy(adb, "life_" + case, 18094, BASE + life)
+                procs.append(px)
+                closed, detail = None, ""
+                try:
+                    s = socks_connect(18094, "10.0.2.2", port)
+                    if port == HOST_BANNER_PORT:
+                        s.settimeout(5)
+                        detail = s.recv(64).decode(errors="replace").strip()
+                    host_rule(port, "DROP", True)
+                    s.sendall(b"stalled upload\r\n")
+                    closed = recv_until_closed(s, 3.5)
+                    s.close()
+                except OSError as e:
+                    detail = f"client error {e}"
+                finally:
+                    host_rule(port, "DROP", False)
+                log = px.logtext()
+                px.stop()
+                fired = "save:" in log
+                ok = fired if case == "client-first" else (closed is False and not fired)
+                row("life", f"timeout with stall ({case})", "PASS" if ok else "FAIL",
+                    f"{detail} torst={'yes' if fired else 'no'} closed={closed}")
+
+            # DPI-5: yanit alinmis (2. tur) bir baglantinin ortasindaki RST onbellege yedek
+            # yazmamali; sonraki baglanti yine birincil grupla (0) baslar.
+            px = Proxy(adb, "life_rst", 18094, BASE + ["--split", "1", "--auto=torst", "--split", "2",
+                                                       "--cache-ttl", "60"])
+            procs.append(px)
+            detail = ""
+            try:
+                s = socks_connect(18094, "10.0.2.2", HOST_ECHO_PORT)
+                s.settimeout(5)
+                for m in (b"a", b"b"):
+                    s.sendall(m)
+                    s.recv(16)
+                host_rule(HOST_ECHO_PORT, "REJECT --reject-with tcp-reset", True)
+                s.sendall(b"c")
+                detail = f"closed={recv_until_closed(s, 3)}"
+                s.close()
+            except OSError as e:
+                detail = f"client error {e}"
+            finally:
+                host_rule(HOST_ECHO_PORT, "REJECT --reject-with tcp-reset", False)
+            try:
+                s = socks_connect(18094, "10.0.2.2", HOST_ECHO_PORT)
+                s.settimeout(5)
+                s.sendall(b"d")
+                s.recv(16)
+                s.close()
+                time.sleep(0.3)
+            except OSError as e:
+                detail += f" second conn error {e}"
+            log = px.logtext()
+            px.stop()
+            groups = re.findall(r"desync TCP: group=(\d+)", log)
+            ok = "save:" not in log and groups and set(groups) == {"0"}
+            row("life", "mid-life RST keeps primary", "PASS" if ok else "FAIL",
+                f"{detail}; groups {groups}; save={'save:' in log}")
+
         # ---------------------------------------------------------- UDP / redirect / drop
         px = Proxy(adb, "udp", 18090, BASE + UDP_TEST_ARGS, binary="ciadpi_asan",
                    env=f"LD_LIBRARY_PATH={DEV_DIR} ASAN_OPTIONS=abort_on_error=0:halt_on_error=1 ")
@@ -519,6 +759,7 @@ def main():
                 + f"; end {last.group(1) if last else '?'}" + ("; " + fails[0] if fails else "")
                 + ("; ASan report!" if asan else ""))
     finally:
+        hosts.close()
         for px in procs:
             try:
                 px.stop()

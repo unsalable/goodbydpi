@@ -34,6 +34,7 @@
 /* gdpi: yalnizca uzun adla kullanilan secenekler; kisa harfleri upstream'e birakir */
 #define OPT_REDIRECT 0x10
 #define OPT_DROP_UDP 0x11
+#define OPT_DENY_NET 0x12
 
 ASSERT(sizeof(struct in_addr) == 4)
 ASSERT(sizeof(struct in6_addr) == 16)
@@ -131,6 +132,7 @@ static const char help_text[] = {
     // gdpi
     "    --redirect <ip:port=ip:port>  Connect to TO instead of FROM (TCP, UDP)\n"
     "    --drop-udp <port[-portr]>     Silently drop client UDP to these ports\n"
+    "    --deny-net <ip/bits>          Refuse TCP/UDP to this net unless --redirect FROM\n"
 };
 
 
@@ -202,6 +204,7 @@ const struct option options[] = {
     {"cache-merge",   1, 0, '/'},
     {"redirect",      1, 0, OPT_REDIRECT}, // gdpi
     {"drop-udp",      1, 0, OPT_DROP_UDP}, // gdpi
+    {"deny-net",      1, 0, OPT_DENY_NET}, // gdpi
     {0}
 };
     
@@ -665,6 +668,47 @@ static int parse_drop_udp(const char *str)
 }
 
 
+/* gdpi: --deny-net ADDR/BITS (IPv4 ya da IPv6, koseli parantezsiz). Sanal tun
+ * aglari icin: bu aglara giden ve bir --redirect FROM'u olmayan istekler gercek
+ * aga cikmadan reddedilir (proxy.c:deny_dst). */
+static int parse_deny_net(const char *str)
+{
+    const char *sl = strchr(str, '/');
+    if (!sl || sl == str || !sl[1] || sl - str > 63) {
+        return -1;
+    }
+    char ip[64];
+    memcpy(ip, str, sl - str);
+    ip[sl - str] = 0;
+
+    char *end = 0;
+    long bits = strtol(sl + 1, &end, 10);
+    if (*end || bits < 0) {
+        return -1;
+    }
+    struct deny_net n = { 0 };
+    if (inet_pton(AF_INET, ip, n.addr) == 1) {
+        n.family = AF_INET;
+        if (bits > 32) return -1;
+    }
+    else if (inet_pton(AF_INET6, ip, n.addr) == 1) {
+        n.family = AF_INET6;
+        if (bits > 128) return -1;
+    }
+    else {
+        return -1;
+    }
+    n.bits = bits;
+    struct deny_net *r = add((void *)&params.deny_nets,
+        &params.deny_net_n, sizeof(*r));
+    if (!r) {
+        return -1;
+    }
+    *r = n;
+    return 0;
+}
+
+
 static struct desync_params *add_group(struct desync_params *prev)
 {
     struct desync_params *dp = calloc(1, sizeof(*prev));
@@ -747,6 +791,9 @@ void clear_params(char *line, char **argv)
     free(params.drop_udp);
     params.drop_udp = 0;
     params.drop_udp_n = 0;
+    free(params.deny_nets);
+    params.deny_nets = 0;
+    params.deny_net_n = 0;
     
     struct desync_params *dp = params.dp;
     while (dp) {
@@ -1342,6 +1389,11 @@ int parse_args(int argc, char **argv)
 
         case OPT_DROP_UDP: // gdpi
             if (parse_drop_udp(optarg))
+                invalid = 1;
+            break;
+
+        case OPT_DENY_NET: // gdpi
+            if (parse_deny_net(optarg))
                 invalid = 1;
             break;
 

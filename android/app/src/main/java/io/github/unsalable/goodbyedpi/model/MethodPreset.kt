@@ -45,12 +45,19 @@ data class MethodPreset(
             "Sahte paket TTL 5 ile gider, istek bölünmez (GoodbyeDPI-Turkey \"--set-ttl 5\" karşılığı).",
         ) { DpiConfig(splitTls = false, splitSni = false) }
 
-        /** Masaustunde seqovl=1 de vardi; root olmadan sira ortusmesi yapilamiyor. */
+        /**
+         * Masaustunde seqovl=1 de vardi: ikinci parcanin onune 1 cop bayt eklenip SEQ bir geri
+         * cekiliyordu, segmentleri birlestiren DPI bozuk bir ClientHello goruyordu. Cekirdek TCP
+         * soketiyle ayni sira araligina farkli icerik yazilamaz (SEQ'i cekirdek belirler), bu
+         * yuzden ortusme yok; en yakin karsilik "ilk kopyayi DPI gorur, sunucu gormez" etkisini
+         * saglayan sahte paket yontemleri. Bu nedenle ISS listelerinde onerilen degil, yedek.
+         */
         @JvmField
         val Disorder = MethodPreset(
             "disorder",
             "Ters sıra",
-            "Sahte paket yok: istek 2. bayttan bölünür, ilk parça geç ulaşacak şekilde gönderilir (byedpi disorder).",
+            "Sahte paket yok: istek 2. bayttan bölünür, ilk parça geç ulaşacak şekilde gönderilir (byedpi disorder). " +
+                "Masaüstündeki sıra örtüşmesi (seqovl) Android'de yapılamadığı için masaüstündeki \"Ters sıra\"dan zayıf olabilir.",
         ) {
             DpiConfig(
                 fakePacket = false,
@@ -79,21 +86,24 @@ data class MethodPreset(
         val Md5Sig = MethodPreset(
             "md5sig",
             "MD5 imzası",
-            "Sahte paket TCP MD5 imzasıyla gider; sunucu atar, DPI işler (zapret fake md5sig).",
+            "Sahte paket TCP MD5 imzası ve TTL 5 ile gider (zapret fake md5sig). Çekirdek MD5'i desteklemiyorsa " +
+                "(yeni Android sürümlerinin çoğu) yalnızca TTL 5 kullanılır; o zaman Sabit TTL ile aynıdır.",
         ) { DpiConfig(fakeTtl = false, fakeMd5Sig = true, splitTls = false, splitSni = false) }
 
         @JvmField
         val Md5Ttl3 = MethodPreset(
             "md5ttl3",
             "MD5 + TTL 3",
-            "Sahte paket hem MD5 imzası hem TTL 3 ile gider (zapret fake md5sig ttl=3).",
+            "Sahte paket hem MD5 imzası hem TTL 3 ile gider (zapret fake md5sig ttl=3). Çekirdek MD5'i " +
+                "desteklemiyorsa Sahte TTL 3 ile aynıdır.",
         ) { DpiConfig(ttl = 3, fakeMd5Sig = true, splitTls = false, splitSni = false) }
 
         @JvmField
         val SplitFake5 = MethodPreset(
             "fakesplit5",
             "Bölünmüş sahte",
-            "Sahte istek iki parça halinde TTL 5 ile gider, gerçek istek değişmez (zapret2 multisplit ip_ttl=5 benzeri).",
+            "Sahte istek 2. bayttan iki parça halinde TTL 5 ile gider, ikinci parça sahteyi kaldığı yerden sürdürür; " +
+                "gerçek istek değişmez (zapret2 multisplit blob=fake pos=2 ip_ttl=5).",
         ) { DpiConfig(ttl = 5, splitFake = true, splitTls = false, splitSni = false) }
 
         @JvmField

@@ -26,8 +26,13 @@
 
 #define task_io_yielder hev_socks5_task_io_yielder
 
+/* gdpi: MSG_MORE yalnizca pipeline modunda. Standart el sikismada istemci
+ * selamlamayi yollayip hemen sunucunun cevabini bekliyor; MSG_MORE ile
+ * cekirdek 3 baytlik segmenti tikaliyor (cork) ve ancak ~200 ms sonra
+ * yolluyordu: her yeni TCP oturumu ve her UDP akisi (her DNS sorgusu) bu
+ * kadar gecikiyordu (tcpdump: SYN'den selamlamaya +204 ms). */
 static int
-hev_socks5_client_write_auth_methods (HevSocks5Client *self)
+hev_socks5_client_write_auth_methods (HevSocks5Client *self, int more)
 {
     HevSocks5Auth auth;
     int res;
@@ -42,8 +47,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
         auth.methods[0] = HEV_SOCKS5_AUTH_METHOD_USER;
 
     res = hev_task_io_socket_send (HEV_SOCKS5 (self)->fd, &auth, 3,
-                                   MSG_WAITALL | MSG_MORE, task_io_yielder,
-                                   self);
+                                   MSG_WAITALL | more, task_io_yielder, self);
     if (res <= 0) {
         LOG_I ("%p socks5 client write auth methods", self);
         return -1;
@@ -53,7 +57,7 @@ hev_socks5_client_write_auth_methods (HevSocks5Client *self)
 }
 
 static int
-hev_socks5_client_write_auth_creds (HevSocks5Client *self)
+hev_socks5_client_write_auth_creds (HevSocks5Client *self, int more)
 {
     struct msghdr mh = { 0 };
     struct iovec iov[4];
@@ -80,7 +84,7 @@ hev_socks5_client_write_auth_creds (HevSocks5Client *self)
     mh.msg_iov = iov;
     mh.msg_iovlen = 4;
     res = hev_task_io_socket_sendmsg (HEV_SOCKS5 (self)->fd, &mh,
-                                      MSG_WAITALL | MSG_MORE, task_io_yielder,
+                                      MSG_WAITALL | more, task_io_yielder,
                                       self);
     if (res <= 0) {
         LOG_I ("%p socks5 client write auth creds", self);
@@ -329,7 +333,7 @@ hev_socks5_client_handshake_standard (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client handshake standard", self);
 
-    res = hev_socks5_client_write_auth_methods (self);
+    res = hev_socks5_client_write_auth_methods (self, 0); /* gdpi */
     if (res < 0)
         return -1;
 
@@ -338,7 +342,7 @@ hev_socks5_client_handshake_standard (HevSocks5Client *self)
         return -1;
 
     if (res == HEV_SOCKS5_AUTH_METHOD_USER) {
-        res = hev_socks5_client_write_auth_creds (self);
+        res = hev_socks5_client_write_auth_creds (self, 0); /* gdpi */
         if (res < 0)
             return -1;
 
@@ -368,11 +372,11 @@ hev_socks5_client_handshake_pipeline (HevSocks5Client *self)
 
     LOG_D ("%p socks5 client handshake pipeline", self);
 
-    res = hev_socks5_client_write_auth_methods (self);
+    res = hev_socks5_client_write_auth_methods (self, MSG_MORE); /* gdpi */
     if (res < 0)
         return -1;
 
-    res = hev_socks5_client_write_auth_creds (self);
+    res = hev_socks5_client_write_auth_creds (self, MSG_MORE); /* gdpi */
     if (res < 0)
         return -1;
 

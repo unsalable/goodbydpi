@@ -102,8 +102,10 @@ void del_event(struct poolhd *pool, struct eval *val)
     }
     #ifndef _WIN32
     if (val->restore_fake) {
-        munmap(val->restore_fake, val->restore_fake_len);
+        /* gdpi: ofsetli isaretci degil, eslemenin tabani */
+        munmap(val->restore_fake_base, val->restore_fake_len);
         val->restore_fake = 0;
+        val->restore_fake_base = 0;
     }
     #endif
     if (val->host) {
@@ -232,16 +234,20 @@ int mod_etype(struct poolhd *pool, struct eval *val, int type)
 }
 #endif
 
-static long time_ms(void)
+/* gdpi: tamsayi ve 64 bit. Upstream double hesaplayip long'a ceviriyordu; 32 bit
+ * ABI'lerde (armeabi-v7a, x86) 2^31 ms (~24.8 gun uyanik kalma) sonra donusum
+ * tanimsizdi ve deger sabit kaliyordu: zamanlayicilar (await_int, --timeout'un
+ * kismi-TLS sayaci) yalnizca hic olay gelmeyen bir aralikta tetiklenirdi. */
+static int64_t time_ms(void)
 {
     #ifndef _WIN32
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec * 1e3 + (t.tv_nsec / 1e6);
+    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
     #else
     FILETIME st;
     GetSystemTimeAsFileTime(&st);
-    return (((((uint64_t)st.dwHighDateTime) << 32) | st.dwLowDateTime) / 1e4);
+    return (int64_t)(((((uint64_t)st.dwHighDateTime) << 32) | st.dwLowDateTime) / 10000);
     #endif
 }
 
@@ -303,7 +309,9 @@ struct eval *next_event_tv(struct poolhd *pool, int *offs, int *type)
     }
     struct eval *val = 0;
     
-    int ms = pool->tv_start->tv_ms - time_ms();
+    /* gdpi: fark 64 bitte hesaplanip epoll_wait'in int'ine sikistirilir */
+    int64_t d = pool->tv_start->tv_ms - time_ms();
+    int ms = d > INT_MAX ? INT_MAX : (int)d;
     if (ms > 0) {
         val = next_event(pool, offs, type, ms);
     }

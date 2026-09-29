@@ -84,7 +84,7 @@ class UiLogicTest {
     fun settingsUi_methodListFollowsIsp() {
         val tt = SettingsUi.from(AppSettings(isp = "turktelekom").migrate())
         val ids = tt.methods.items.map { it.id }
-        assertEquals(listOf("disorder", "ttl4", "ttl3", "default", CustomMethodProfile().id), ids)
+        assertEquals(listOf("ttl4", "disorder", "ttl3", "default", CustomMethodProfile().id), ids)
     }
 
     @Test

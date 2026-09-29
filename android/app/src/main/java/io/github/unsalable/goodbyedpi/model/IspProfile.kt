@@ -5,6 +5,13 @@ package io.github.unsalable.goodbyedpi.model
  * birinde calisan yontem digerinde calismayabilir; burada her saglayici icin bilinen
  * calisan yontemler oneri sirasiyla tutulur (ilki onerilen).
  *
+ * Siralama (Android): masaustunde onerilen "Ters sira" orada seqovl ile calisiyor; Android'de
+ * ortusme yapilamadigi icin ayni ada sahip yontem farkli ve Turk hatlarinda denenmedi. Canli
+ * testte sahte paketli her yontem calisti, ortusmesiz duz bolme calismadi. Bu yuzden her
+ * listede ilk sahte paketli yontem (SplitWire'in o ISS icin sectigi, byedpi'de birebir
+ * karsiligi olan) one alindi, Ters sira ilk yedek: sahte TTL DPI'ya yetmezse (fazla uzak) ya
+ * da sunucuya ulasirsa (fazla yakin) otomatik yedek bir sonraki baglantida onu dener.
+ *
  * Kaynak: SplitWire-Turkey (cagritaskn) zapret / zapret2 Turkiye ISS hazir ayarlari ve
  * GoodbyeDPI-Turkey. Turk ISS'lerinin hepsi 53. porttaki DNS'i kaciriyor; bu yuzden hazir
  * ayarlar standart disi portlu Yandex DNS'i secer.
@@ -45,8 +52,8 @@ data class IspProfile(
         val TurkTelekom = IspProfile(
             "turktelekom",
             "Türk Telekom",
-            "Önerilen: Ters sıra (sahte paket yok). Olmazsa Sahte TTL 4 / 3. Discord sesi için UDP desteği açık, DNS: Yandex.",
-            listOf("disorder", "ttl4", "ttl3", "default"),
+            "Önerilen: Sahte TTL 4. Olmazsa Ters sıra / Sahte TTL 3 / Varsayılan. Discord sesi için UDP desteği açık, DNS: Yandex.",
+            listOf("ttl4", "disorder", "ttl3", "default"),
             DnsProfile.YANDEX_ID,
         )
 
@@ -54,8 +61,8 @@ data class IspProfile(
         val Superonline = IspProfile(
             "superonline",
             "Superonline",
-            "Önerilen: Ters sıra. Olmazsa MD5 imzası / MD5 + TTL 3 / Sahte TTL 3. DNS: Yandex.",
-            listOf("disorder", "md5sig", "md5ttl3", "ttl3"),
+            "Önerilen: Sahte TTL 3. Olmazsa MD5 imzası (çoğu telefonda TTL 5'li sahte) / Ters sıra / MD5 + TTL 3. DNS: Yandex.",
+            listOf("ttl3", "md5sig", "disorder", "md5ttl3"),
             DnsProfile.YANDEX_ID,
         )
 
@@ -81,8 +88,8 @@ data class IspProfile(
         val Kablonet = IspProfile(
             "kablonet",
             "Kablonet",
-            "Türksat Kablonet. Önerilen: Ters sıra. Olmazsa Sahte TTL 4 / Varsayılan. DNS: Yandex.",
-            listOf("disorder", "ttl4", "default"),
+            "Türksat Kablonet. Önerilen: Sahte TTL 4. Olmazsa Ters sıra / Varsayılan. DNS: Yandex.",
+            listOf("ttl4", "disorder", "default"),
             DnsProfile.YANDEX_ID,
         )
 
@@ -99,8 +106,8 @@ data class IspProfile(
         val TurkcellMobil = IspProfile(
             "turkcellmobil",
             "Turkcell Mobil",
-            "Turkcell mobil hat / hotspot. Önerilen: Ters sıra. Olmazsa Varsayılan / Sahte TTL 3. DNS: Yandex.",
-            listOf("disorder", "default", "ttl3"),
+            "Turkcell mobil hat / hotspot. Önerilen: Varsayılan (TTL 5). Olmazsa Ters sıra / Sahte TTL 3. DNS: Yandex.",
+            listOf("default", "disorder", "ttl3"),
             DnsProfile.YANDEX_ID,
         )
 
@@ -108,8 +115,8 @@ data class IspProfile(
         val VodafoneMobil = IspProfile(
             "vodafonemobil",
             "Vodafone Mobil",
-            "Vodafone mobil hat / hotspot. Önerilen: Ters sıra. Olmazsa Düz bölme / Bölünmüş sahte. DNS: Yandex.",
-            listOf("disorder", "split2", "fakesplit5"),
+            "Vodafone mobil hat / hotspot. Önerilen: Bölünmüş sahte (TTL 5). Olmazsa Ters sıra / Düz bölme. DNS: Yandex.",
+            listOf("fakesplit5", "disorder", "split2"),
             DnsProfile.YANDEX_ID,
         )
 

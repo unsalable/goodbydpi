@@ -138,8 +138,41 @@ static const struct redirect_rule *redirect_find(const union sockaddr_u *dst)
 }
 
 
-/* TCP CONNECT: hedef FROM ise TO'ya baglan; SOCKS cevabi zaten adres tasimiyor */
-static void redirect_tcp(union sockaddr_u *dst)
+/* gdpi: --deny-net. Sanal tun aglari (198.18.0.0/15, fd00:6764:7069::/48) yalnizca
+ * --redirect FROM adresleri icin anlamli. Digerleri (orn. Android'in Ozel DNS'inin
+ * sanal cozucuye 853'ten yoklamasi) gercek aga SYN olarak sizip baglanti zaman
+ * asimina kadar asili kaliyordu; burada hemen reddedilir. */
+static bool deny_dst(const union sockaddr_u *dst)
+{
+    if (!params.deny_net_n) {
+        return 0;
+    }
+    union sockaddr_u d = *dst;
+    addr_unmap(&d);
+    const uint8_t *a = d.sa.sa_family == AF_INET ?
+        (const uint8_t *)&d.in.sin_addr : (const uint8_t *)&d.in6.sin6_addr;
+
+    for (int i = 0; i < params.deny_net_n; i++) {
+        const struct deny_net *n = &params.deny_nets[i];
+        if (n->family != d.sa.sa_family) {
+            continue;
+        }
+        int full = n->bits / 8, rest = n->bits % 8;
+        if (memcmp(a, n->addr, full)) {
+            continue;
+        }
+        if (rest && ((a[full] ^ n->addr[full]) & (0xff << (8 - rest)) & 0xff)) {
+            continue;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+
+/* TCP CONNECT: hedef FROM ise TO'ya baglan; SOCKS cevabi zaten adres tasimiyor.
+ * gdpi: FROM olmayan ve --deny-net icinde kalan hedefte -1 (reddet). */
+static int redirect_tcp(union sockaddr_u *dst)
 {
     const struct redirect_rule *r = redirect_find(dst);
     if (r) {
@@ -148,7 +181,16 @@ static void redirect_tcp(union sockaddr_u *dst)
             LOG(LOG_S, "redirect tcp: -> %s:%d\n", ADDR_STR, ntohs(r->to.in.sin_port));
         }
         *dst = r->to;
+        return 0;
     }
+    if (deny_dst(dst)) {
+        if (LOG_ENABLED) {
+            INIT_ADDR_STR((*dst));
+            LOG(LOG_S, "deny tcp: %s:%d\n", ADDR_STR, ntohs(dst->in.sin_port));
+        }
+        return -1;
+    }
+    return 0;
 }
 
 
@@ -678,10 +720,25 @@ static inline int transp_conn(struct poolhd *pool, struct eval *val)
 }
 #endif
 
+#ifdef BYEDPI_LIB
+#define ACCEPT_RETRY_MS 100
+#endif
+
 static int on_accept(struct poolhd *pool, struct eval *val, int et)
 {
     union sockaddr_u client;
     struct eval *rval;
+
+    #ifdef BYEDPI_LIB
+    if (et == POLLTIMEOUT) {
+        /* gdpi: kaynak sikintisi sonrasi bekleme bitti; dinlemeye don */
+        if (mod_etype(pool, val, POLLIN)) {
+            uniperror("mod_etype");
+            pool->brk = 1;
+            return -1;
+        }
+    }
+    #endif
     
     while (1) {
         socklen_t len = sizeof(client);
@@ -691,9 +748,36 @@ static int on_accept(struct poolhd *pool, struct eval *val, int et)
         int c = accept(val->fd, &client.sa, &len);
         #endif
         if (c < 0) {
-            if (get_e() == EAGAIN ||
-                    get_e() == EINPROGRESS)
+            int e = get_e();
+            if (e == EAGAIN ||
+                    e == EINPROGRESS)
                 break;
+            #ifdef BYEDPI_LIB
+            /* gdpi: upstream her accept hatasinda tum proxy'yi kapatiyordu
+             * (CLI'yi servis yoneticisi yeniden baslatir). Uygulamada bu, gecici
+             * bir fd/bellek sikintisinda tum telefonun baglantisinin kopmasi ve
+             * motorun bastan kurulmasi demek. Tek baglantilik hatalar atlanir;
+             * kaynak sikintisinda dinleyici ACCEPT_RETRY_MS susturulur. conev
+             * seviye tetiklemeli: POLLIN kapatilmazsa kuyruktaki baglanti
+             * yuzunden dongu %100 CPU ile doner. -1 donulmez: loop_event
+             * dinleyiciyi kapatirdi. */
+            if (e == EINTR || e == ECONNABORTED || e == EPROTO || e == EPERM) {
+                continue;
+            }
+            if (e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM) {
+                static unsigned int fails = 0;
+                if (!(fails++ % 64)) {
+                    uniperror("accept (paused)");
+                }
+                if (mod_etype(pool, val, 0)) {
+                    uniperror("mod_etype");
+                    pool->brk = 1;
+                    return -1;
+                }
+                set_timer(pool, val, ACCEPT_RETRY_MS);
+                return 0;
+            }
+            #endif
             uniperror("accept");
             pool->brk = 1;
             return -1;
@@ -881,6 +965,12 @@ int on_udp_tunnel(struct poolhd *pool, struct eval *val, int et)
                     addr = rd->to;
                     pair->redir = rd;
                 }
+                else if (deny_dst(&addr)) {
+                    /* gdpi: --deny-net; --drop-udp gibi yalnizca bu datagram
+                     * duser, iliski baglanmaz (UDP'de hata cevabi yok) */
+                    LOG(LOG_S, "udp deny: fd=%d, port=%d\n", val->fd, ntohs(addr.in.sin_port));
+                    continue;
+                }
                 if (params.baddr.sa.sa_family == AF_INET6) {
                     map_fix(&addr, 6);
                 }
@@ -967,7 +1057,12 @@ static int handle_s5(struct poolhd *pool, struct eval *val,
         case S_CMD_CONN:
             s5e = s5_get_addr(buff->data, n, dst, SOCK_STREAM);
             if (s5e >= 0) {
-                redirect_tcp(dst); /* gdpi */
+                /* gdpi: --redirect / --deny-net; red hemen cevaplanir (0x02),
+                 * hev oturumu beklemeden kapatir */
+                if (redirect_tcp(dst)) {
+                    s5e = -S_ER_DENY;
+                    break;
+                }
                 return connect_hook(pool, val, dst, &on_connect);
             }
             break;
@@ -1048,8 +1143,11 @@ int on_request(struct poolhd *pool, struct eval *val, int et)
         return -1;
     }
     if (!error && !skip_conn) {
-        redirect_tcp(&dst); /* gdpi: SOCKS4 / HTTP CONNECT icin de */
-        error = connect_hook(pool, val, &dst, &on_connect);
+        /* gdpi: SOCKS4 / HTTP CONNECT icin de */
+        error = redirect_tcp(&dst);
+        if (!error) {
+            error = connect_hook(pool, val, &dst, &on_connect);
+        }
     }
     if (error) {
         if (resp_error(val->fd, ENOENT, val->flag) < 0)
@@ -1172,7 +1270,15 @@ int listen_socket(const union sockaddr_u *srv)
         close(srvfd);
         return -1;
     }
+    /* gdpi: kutuphanede tum telefonun oturumlari (her TCP akisi + her UDP
+     * iliskisinin kontrol baglantisi) bu tek dinleyiciden gelir; 10'luk
+     * kuyruk bir sayfa acilisindaki patlamada tasip SYN/ACK kaybina (1 sn
+     * yeniden deneme) yol aciyordu. Cekirdek net.core.somaxconn ile sinirlar. */
+    #ifdef BYEDPI_LIB
+    if (listen(srvfd, 1024)) {
+    #else
     if (listen(srvfd, 10)) {
+    #endif
         uniperror("listen");
         close(srvfd);
         return -1;

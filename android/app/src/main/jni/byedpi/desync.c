@@ -186,7 +186,11 @@ static int set_md5sig(int sfd, unsigned short key_len)
     }
     if (setsockopt(sfd, IPPROTO_TCP,
             TCP_MD5SIG, (char *)&md5, sizeof(md5)) < 0) {
+        /* gdpi: cagiran (send_fake) ENOPROTOOPT'a bakar; log cagrisi errno'yu
+         * degistirmesin (CLI'da perror, kutuphanede liblog) */
+        int e = errno;
         uniperror("setsockopt TCP_MD5SIG");
+        errno = e;
         return -1;
     }
     return 0;
@@ -210,6 +214,7 @@ static ssize_t send_fake(struct eval *val, const char *buffer,
     while (1) {
         char *p = pkt.data + pkt.off;
         val->restore_fake = p;
+        val->restore_fake_base = pkt.data; /* gdpi: munmap icin taban */
         val->restore_fake_len = pkt.size;
         
         if (setttl(val->fd, opt->ttl ? opt->ttl : DEFAULT_TTL) < 0) {
@@ -391,8 +396,10 @@ static void restore_state(struct eval *val)
     if (val->restore_fake) {
         memcpy(val->restore_fake, 
             val->restore_orig, val->restore_orig_len);
-        munmap(val->restore_fake, val->restore_fake_len);
+        /* gdpi: restore_fake ofsetli olabilir; esleme tabandan kaldirilir */
+        munmap(val->restore_fake_base, val->restore_fake_len);
         val->restore_fake = 0;
+        val->restore_fake_base = 0;
     }
     if (val->restore_md5) {
         set_md5sig(val->fd, 0);
@@ -564,6 +571,15 @@ ssize_t desync(struct poolhd *pool,
     
     int i = 0, r = 0;
     unsigned int curr_part = 0;
+    /* gdpi: ardisik sahte parcalar tek bir sahte istegin dilimleri sayilir.
+     * Upstream her sahte parcayi sahte yukun 0. baytindan baslatiyordu:
+     * "--fake 2 --fake -1" kabloya 16 03 + (yine) 16 03 01 ... yaziyordu,
+     * birlestiren bir DPI bozuk bir kayit goruyordu. Masaustu (BuildFake
+     * seqOffset) ve zapret2 multisplit blob=fake sahteyi kaldigi yerden
+     * surdurur. fake_run: ic ice sahte dizisinin istekteki baslangici;
+     * part_end: bir onceki parcanin bitisi (atlanan parcalar dahil, boylece
+     * kismi gonderimden sonra devam eden cagri da ayni ofseti bulur). */
+    long part_end = 0, fake_run = -1;
     
     for (; r > 0 || i < dp.parts_n; r--) {
         if (r <= 0) {
@@ -574,6 +590,12 @@ ssize_t desync(struct poolhd *pool,
         
         long pos = gen_offset(part.pos, part.flag, buffer, n, lp, &info);
         pos += (long )part.s * (part.r - r);
+        
+        if (part.m == DESYNC_FAKE) {
+            if (fake_run < 0) fake_run = part_end;
+        }
+        else fake_run = -1;
+        part_end = pos;
         
         if (((skip && pos < skip) 
                 || curr_part < part_skip) && !(part.flag & OFFSET_START)) {
@@ -603,6 +625,15 @@ ssize_t desync(struct poolhd *pool,
                 if (!pkt.data) {
                     return -1;
                 }
+                /* gdpi: dizinin ikinci ve sonraki parcalari sahteyi kaldigi
+                 * yerden surdurur (yukarida fake_run). --fake-offset verilmisse
+                 * upstream anlami korunur; sahte esleme disina tasmaz. */
+                if (!dp.fake_offset.m && fake_run >= 0 && lp > fake_run) {
+                    long off = lp - fake_run;
+                    if (off + (pos - lp) <= (long )pkt.size) {
+                        pkt.off = off;
+                    }
+                }
                 if (pos != lp) s = send_fake(val, 
                     buffer + lp, pos - lp, &dp, pkt);
                 #ifndef __linux
@@ -611,7 +642,7 @@ ssize_t desync(struct poolhd *pool,
                 /* gdpi: send_fake eslemeyi sahiplenmediyse (pos == lp ya da
                  * pipe hatasi) serbest birak; yoksa her boyle istekte bir mmap
                  * sizar (uzun yasayan uygulama surecinde birikir) */
-                if (val->restore_fake != pkt.data + pkt.off) {
+                if (val->restore_fake_base != pkt.data) {
                     munmap(pkt.data, pkt.size);
                 }
                 #endif

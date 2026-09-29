@@ -96,9 +96,23 @@ class PresetsTest {
         }
 
         assertEquals(listOf("default", "fixedttl", "disorder", "tlsrec", "split"), IspProfile.General.methodIds)
-        assertEquals(listOf("disorder", "ttl4", "ttl3", "default"), IspProfile.TurkTelekom.methodIds)
+        assertEquals(listOf("ttl4", "disorder", "ttl3", "default"), IspProfile.TurkTelekom.methodIds)
+        assertEquals(listOf("ttl3", "md5sig", "disorder", "md5ttl3"), IspProfile.Superonline.methodIds)
         assertEquals("zerofake", IspProfile.TelekomMobil.recommendedId)
         assertEquals("fakesplit5", IspProfile.Vodafone.recommendedId)
+        assertEquals("fakesplit5", IspProfile.VodafoneMobil.recommendedId)
+        assertEquals("default", IspProfile.TurkcellMobil.recommendedId)
+        assertEquals("ttl4", IspProfile.Kablonet.recommendedId)
+
+        // Android "Ters sira"sinda masaustundeki ortusme (seqovl) yok ve Turk hatlarinda
+        // denenmedi: her saglayicida onerilen sahte paketli bir yontem, Ters sira yedeklerde.
+        for (isp in IspProfile.all) {
+            if (isp === IspProfile.General) continue
+            assertTrue(isp.id, isp.recommended.build().fakePacket)
+            assertTrue(isp.id, "disorder" in isp.methodIds.drop(1))
+            // Aciklama gercek onerilen yontemin adini tasiyor.
+            assertTrue(isp.id, isp.description.contains("Önerilen: ${isp.recommended.name}"))
+        }
     }
 
     @Test

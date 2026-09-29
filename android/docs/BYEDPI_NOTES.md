@@ -48,7 +48,7 @@ internal object NativeBridge {
 | -1 | start failed | `bind: Address already in use` (port taken), socket/epoll failure |
 | -2 | bad arguments | unknown option, invalid value, a missing value, more than 64 groups |
 | -3 | busy | another `byedpiStart` is running in this process |
-| -4 | exited without a stop request | fatal `accept()` error such as EMFILE, `epoll_wait` failure, or `-h`/`-v` passed |
+| -4 | exited without a stop request | fatal `accept()` error (EBADF/EINVAL-class only; EMFILE/ENFILE/ENOBUFS/ENOMEM pause the listener for 100 ms instead, PATCHES B6), `epoll_wait` failure, or `-h`/`-v` passed |
 | -5 | internal | OOM, eventfd failure, or a JNI string conversion failure (a Java exception may be pending) |
 
   The reason is logged to **logcat tag `ciadpi`**, for example `E ciadpi: invalid value: -V 0` or
@@ -73,8 +73,9 @@ internal object NativeBridge {
   * To cancel a start safely, loop: `while (thread.isAlive) { NativeBridge.byedpiStop(); thread.join(50) }`.
 * **Readiness.** There is no callback. Poll a TCP connect to `127.0.0.1:<port>` every ~10–20 ms, for
   up to 3 s (SPEC §3). Typical time to listen is under 10 ms.
-* **Stop latency** is immediate. It is bounded only when the loop is inside a blocking
-  `getaddrinfo`, which happens only for SOCKS requests that carry domain names. hev always sends IPs.
+* **Stop latency** is immediate. The only blocking call in the loop was `getaddrinfo` for SOCKS
+  requests carrying domain names; `ByeDpiArgs` passes `-N`, so those get reply `08` and nothing
+  blocks. hev and the connection tester always send IP addresses.
 * **Mechanism.** The SPEC suggested `shutdown(server_fd)`. It was replaced by an eventfd that
   `byedpi_lib.c` owns (`proxy.c:start_event_loop` registers a `dup` of it). Reason: the loop closes
   `server_fd` itself. A late `shutdown()` from another thread could hit that fd *number* after the
@@ -93,7 +94,7 @@ internal object NativeBridge {
 * **Global options** can appear anywhere; the last value wins:
   * `-i/--ip`, `-p/--port`, `-c/--max-conn`, `-b/--buf-size`, `-x/--debug`
   * `-N`, `-U`, `-I`, `-g/--def-ttl`, `-T/--timeout`, `-F/--tfo`
-  * `--redirect`, `--drop-udp`, `-W`, `-Z`, `/`
+  * `--redirect`, `--drop-udp`, `--deny-net`, `-W`, `-Z`, `/`
 * **Group options** apply to the *current group*:
   * `-K/--proto`, `-V/--pf`, `-H/--hosts`, `-j/--ipset`, `-R/--round`
   * the part options `-s/--split`, `-d/--disorder`, `-o/--oob`, `-q/--disoob`, `-f/--fake`
@@ -106,9 +107,9 @@ internal object NativeBridge {
 
 | token | flag | fires when (all `extend.c`) |
 |---|---|---|
-| `torst` (`t…`) | `DETECT_TORST` | upstream `recv`/`send` fails with ECONNRESET, ECONNREFUSED, ETIMEDOUT or EHOSTUNREACH (`handle_err` → `on_torst`), including the `--timeout` expiry (ETIMEDOUT from `TCP_USER_TIMEOUT`) and the partial-TLS timer (`on_timeout`) |
+| `torst` (`t…`) | `DETECT_TORST` | upstream `recv`/`send` fails with ECONNRESET, ECONNREFUSED, ETIMEDOUT or EHOSTUNREACH (`handle_err` → `on_torst`), including the `--timeout` expiry (ETIMEDOUT from `TCP_USER_TIMEOUT`) and the partial-TLS timer (`on_timeout`). **Patched (B7)**: only while the server is in its first round (`round_count <= 1`); a reset later in a working connection just closes it and leaves the cache alone |
 | `redirect` (`r…`) | `DETECT_HTTP_LOCAT` | first HTTP response is a 30x whose `Location` points to a *different* registrable domain (`on_response` → `packets.c:is_http_redirect`) |
-| `ssl_err` (`s…`) | `DETECT_TLS_ERR` | first response to a TLS ClientHello is not a ServerHello, or its session id differs (`on_response`); or the server closes before answering (`on_fin`, only while `mark` is set, round 1) |
+| `ssl_err` (`s…`) | `DETECT_TLS_ERR` | first response to a TLS ClientHello is not a ServerHello, or its session id differs (`on_response`); or the server closes before answering (`on_fin`, only while `mark` is set, round 1). **Patched (B7)**, only in groups with a fake part: the client closes after the server's first flight without a second round, or the first record of the second round (either side) is a plaintext TLS alert; no replay, the cache entry moves the next connection to the fallback |
 | `conn` (`c…`) | `DETECT_CONNECT` | the upstream TCP connect fails (RST, ETIMEDOUT after 1 SYN retry: `proxy.c:create_conn` sets `TCP_SYNCNT=1`) (`on_connerr`) |
 | `none` (`n…`) | 0 | nothing. The new group is a **static** group, so `--auto=none` is just a group separator |
 | `p=<float>` | – | sets the *previous* group's priority. Only used with `--auto-mode s`; we don't use it |
@@ -182,21 +183,23 @@ internal object NativeBridge {
 | `--pf=LO[-HI]` / `-V` | destination port range, one per group (the last one wins). Parsed with `strtol(base 0)`, so **emit plain decimal without leading zeros** (`050000` would be octal). **Patched**: upstream compared network-order values, so real ranges were wrong on little-endian. For example 443 and 1253 "matched" 50000-65535, and 18096 did not match 17900-18200. Single ports were always right | main.c case 'V', extend.c:check_l34 | verified (`udp_fake_pf_range`) |
 | `--split POS` `-s` | cut the first request at POS; that segment is sent normally | desync.c:desync | verified (wire) |
 | `--disorder POS` `-d` | the segment before POS is sent with **TTL 1**. It dies at the first hop and the kernel retransmits it later, so the server and DPI get the tail first | desync.c:desync | verified (wire: `ttl1/2B`) |
-| `--fake POS` `-f` | the segment `[prev, POS)` is first sent with **fake bytes** and low TTL (§4). The real bytes follow as a kernel retransmission | desync.c:send_fake | verified (wire) |
+| `--fake POS` `-f` | the segment `[prev, POS)` is first sent with **fake bytes** and low TTL (§4). The real bytes follow as a kernel retransmission. **Patched (B8)**: consecutive fake parts continue one fake request instead of restarting it | desync.c:send_fake | verified (wire) |
 | `--oob POS` `-o`, `--disoob` | segment + 1 urgent byte (`--oob-data`, default `a`). **Not used**: the server may see an extra byte | desync.c:send_oob | code |
 | `--ttl N` `-t` | TTL of fakes (TCP and UDP) in this group, 1..255. **Without `--ttl`, fakes use TTL 8** (`desync.c DEFAULT_TTL`) | desync.c:send_fake/desync_udp | verified (wire `ttl8/457B`, UDP `ttl 8`) |
-| `--md5sig` `-S` | add TCP MD5 option to fake segments. **The Android GKI kernel has no `TCP_MD5SIG`** (`setsockopt: Protocol not available`, ENOPROTOOPT). Upstream then closed every connection of the group. **Patched**: logs once and continues with TTL only | desync.c:send_fake | verified (wire shows the TTL fake, connection not killed) |
+| `--md5sig` `-S` | add TCP MD5 option to fake segments. **The Android GKI kernel has no `TCP_MD5SIG`** (`setsockopt: Protocol not available`, ENOPROTOOPT). Upstream then closed every connection of the group. **Patched**: logs once and continues with TTL only. `ByeDpiArgs` probes the kernel once (`setsockopt(TCP_MD5SIG)` with a 4-byte value: ENOPROTOOPT = absent, EINVAL = present) and omits `--md5sig` when absent, so `md5sig`/`md5ttl3` dedupe against `fixedttl`/`ttl3` | desync.c:send_fake | verified (wire shows the TTL fake, connection not killed) |
 | `--fake-sni NAME` `-n` | SNI written into the TLS fake. `?` = random letter, `#` = digit, `*` = letter/digit. Repeatable (random pick). It also **resizes the fake ClientHello to the real request's length** (`change_tls_sni`), so always emit it for TLS fakes | desync.c:get_tcp_fake, packets.c:change_tls_sni | verified (wire: `www.w3.org`, record len = real len − 5) |
 | `--fake-data :STR` / `FILE` `-l` | custom fake payload for TCP fakes **and** UDP fakes of this group; only the first `-l` per group counts. `:` means inline, with C escapes (`main.c:parse_cform`): `\r \n \t \\ \f \b \v \a`, `\xHH`, `\OOO` (octal, up to 3 digits). An unknown `\c` gives `c`. **4 zero bytes = `:\x00\x00\x00\x00`** (or `:\0\0\0\0`). This is a single argv element with literal backslashes, no shell (Kotlin: `":\\x00\\x00\\x00\\x00"`) | main.c:ftob/data_from_str | verified (wire: all-zero fake) |
 | `--tlsrec POS` `-r` | split the ClientHello *TLS record* into two records (a 5-byte header is inserted). Plain POS is an offset in the record payload. `N+s` is the SNI start + N, `0+sm` the SNI middle. Only applied to TLS ClientHellos; a CH without SNI with `+s` is cancelled (logged `tlsrec cancel`) | desync.c:tamp, packets.c:part_tls | verified (wire: record1 len 129, record2 header at 134) |
 | `--udp-fake N` `-a` | before each client datagram of **round 1** (all datagrams until the first reply), send N fake datagrams (`--fake-data` or 64 zero bytes) with TTL `--ttl` (default 8), then the real one with the normal TTL | desync.c:desync_udp, extend.c:udp_hook | verified (`udp_fake_default_ttl8`: `64/ttl8,64/ttl8,15/ttl64`) |
 | `--auto=…` `-A` | see §2 | main.c, extend.c | verified |
-| `--timeout S[:P[:C[:B]]]` `-T` | **Global.** S seconds (float) → `TCP_USER_TIMEOUT` = S·1000 ms on every upstream socket when its first request is sent (`extend.c:setup_conn`). If sent data stays un-ACKed that long, the kernel aborts with ETIMEDOUT, which triggers `torst`. **B** bytes: once the server sent more than B bytes, the timeout is removed (`tcp_recv_hook`). **Always set B ≥ 1**, otherwise a mobile stall longer than S kills long-lived connections later *and* caches a fallback for that IP. P = partial-TLS-record timer seconds (0 = off); C = number of P expiries before `torst` | main.c case 'T', extend.c | verified (3 s → first request 4.7-6.2 s via fallback) |
+| `--timeout S[:P[:C[:B]]]` `-T` | **Global.** S seconds (float) → `TCP_USER_TIMEOUT` = S·1000 ms on the upstream socket when its first request is sent (`extend.c:setup_conn`). **Patched (B7)**: only if the server has not sent a byte yet and the chosen group is directly followed by a `torst` group; server-first protocols and groups without a fallback never get it. If sent data stays un-ACKed that long, the kernel aborts with ETIMEDOUT, which triggers `torst`. **B** bytes: once the server sent more than B bytes, the timeout is removed (`tcp_recv_hook`). **Always set B ≥ 1**, otherwise a mobile stall longer than S kills long-lived connections later *and* caches a fallback for that IP. P = partial-TLS-record timer seconds (0 = off); C = number of P expiries before `torst` | main.c case 'T', extend.c | verified (3 s → first request 4.7-6.2 s via fallback) |
 | `--cache-ttl SEC` `-u` | per group. On a trigger, the chosen fallback group is cached per **destination IP + port** (`extend.c:cache_add`). Later connections to that IP:port start directly at that group. An entry expires after the *cached group's* `--cache-ttl` seconds; 0 or absent means it lives until the proxy stops. **Put it on every fallback group.** **Patched**: expiry deleted a random IPv4 entry (length passed in bytes instead of bits) | extend.c:cache_get/cache_add | verified (5 s: hit 0.6 s, then after 7 s slow again) |
 | `--def-ttl N` `-g` | sets TTL on *all* outgoing sockets. **Leave unset**: `def_ttl` is then read from a socket (64) and used only to restore after fakes | main.c:init, extend.c:socket_mod | code |
 | `--redirect FROM=TO` | **ours.** Repeatable; `ip:port` or `[ipv6]:port` on both sides, and both ports are required. See §6 | main.c:parse_redirect, proxy.c | verified |
 | `--drop-udp P[-Q]` | **ours.** Repeatable, decimal, 1..65535, P ≤ Q. See §6 | main.c:parse_drop_udp, proxy.c | verified |
-| `-U` / `-N` | no UDP / no domain resolving. **Do not use** (hev needs UDP; the diagnostics may send domains) | main.c | verified (`-U`) |
+| `--deny-net ADDR/BITS` | **ours.** Repeatable; IPv4 or IPv6 (no brackets). TCP CONNECT to a denied destination that is not a `--redirect` FROM gets SOCKS reply `02` at once; a UDP datagram to it is dropped. See §6 | main.c:parse_deny_net, proxy.c:deny_dst | verified |
+| `-N` | no domain resolving: SOCKS5 ATYP 3 / SOCKS4a get an error (`08`), no blocking `getaddrinfo` in the loop. **Always pass it** (hev and the connection tester send IPs) | main.c, proxy.c:s5_get_addr | verified (`no_domain_atyp3_refused`) |
+| `-U` | no UDP. **Do not use** (hev needs UDP) | main.c | verified |
 
 **Position syntax** (`POS`, `main.c:parse_offset`, `desync.c:gen_offset`): `N[:R[:S]][+F[M]]`.
 
@@ -235,8 +238,11 @@ Consequences:
 
 * The fake is **exactly as long as the part range** (`POS − prev`), not as long as `--fake-data`.
   Bytes beyond the fake data are zeros.
-* Every fake part restarts from byte 0 of the fake payload. `--fake 2 --fake -1` puts `16 03` in the
-  first segment and then a whole fake record again (wire-verified).
+* A single fake part starts at byte 0 of the fake payload. **Consecutive** fake parts are one fake
+  request cut at the same offsets as the real one (patch B8): `--fake 2 --fake -1` sends `16 03`
+  and then the fake from byte 2 on, so the two segments reassemble to one coherent fake ClientHello
+  (wire-verified: `ttl5/2B` + `ttl5/455B` starting `01 01 c5`, SNI `www.w3.org`). Upstream restarted
+  every part at byte 0 (`16 03 16 03 01 …`).
 * Each fake costs one RTO for the real data, about 200–300 ms added to connection setup.
 * Wire capture of the `default` preset on `example.com`, as tcpdump inside the emulator shows it:
   1. `ttl1/2B`: the disorder part, `16 03`;
@@ -266,6 +272,8 @@ Timing guidance:
 
 * `--timeout 4:0:0:1` means a blocked host costs about 4 s once, then it is cached.
 * The cache is per proxy run. Every engine restart (settings change) starts it empty.
+* Only first-round failures move an IP:port to the fallback (patch B7); a reset or timeout in a
+  connection that already got its second server round just closes that connection.
 
 ## 6. `--redirect` and `--drop-udp` (our patches)
 
@@ -292,6 +300,15 @@ Timing guidance:
 * **Upstream limitation (kept):** one association = one destination. After the first datagram,
   later datagrams go to that destination whatever their header says. This is fine, because hev opens
   one association per UDP flow (HEV_NOTES §4).
+* **`--deny-net`** (patch B5):
+  * `ByeDpiArgs` always passes `--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48` (the tun's
+    own blocks). A `--redirect` FROM inside them still wins (checked first).
+  * TCP: reply `02` in a few ms (`tcp_deny_virtual_v4`: 9 ms, `…_v6`: 5 ms); hev resets the app's
+    connection at once. This is what Android's Private DNS probe of `198.18.0.53:853` now gets,
+    instead of a real SYN to the ISP. With DNS "Kapalı" there is no redirect, so `198.18.0.53:53` is
+    refused as well (the connection tester relies on that to fall back to the system resolver).
+  * UDP: the datagram is dropped silently, like `--drop-udp`; the association stays unbound
+    (`udp_deny_virtual_silent` + `udp_deny_then_dns`).
 * **`--drop-udp`**:
   * A client datagram whose *requested* destination port (before redirect) is in a range is silently
     discarded. No error is returned and the association is not torn down.
@@ -321,7 +338,7 @@ if (fakePacket) {
     if (splitFake && !splitTls) parts += ["--fake", "2"]      // fake split in two segments
     parts += ["--fake", "-1"]
     parts += ["--ttl", "$ttl"]                // ALWAYS: byedpi always lowers the fake's TTL (default 8)
-    if (fakeMd5Sig) parts += ["--md5sig"]      // GKI: no TCP_MD5SIG -> patched to TTL only
+    if (fakeMd5Sig && kernelHasMd5 != false) parts += ["--md5sig"]   // GKI: omitted (probe), TTL only
     if (fakePayload == TLS)   parts += ["--fake-sni", fakeSni]
     else                      parts += ["--fake-data", ":\\x00\\x00\\x00\\x00"]   // Kotlin literal
 }
@@ -334,8 +351,11 @@ Notes on the rules:
 * `fakeTtl=false`, `fakeMd5Sig=false` (no protection) still emits `--ttl $ttl`. This is the "engine
   falls back to TTL" rule from WAVE1.
 * `fakeTtl=false`, `fakeMd5Sig=true` emits `--md5sig --ttl $ttl`. On MD5-capable kernels this is
-  MD5 plus TTL. On GKI it is TTL only. We deliberately do *not* use `--ttl 64` for "MD5 only":
-  without kernel MD5 the fake would reach the server and break every connection.
+  MD5 plus TTL. On GKI it is TTL only, and `ByeDpiArgs.md5SigSupport` (a one-time
+  `setsockopt(TCP_MD5SIG)` probe) drops `--md5sig` from the argv so that the fallback dedupe sees
+  `md5sig == fixedttl` and `md5ttl3 == ttl3`. Unknown probe result (null) keeps `--md5sig`; the
+  native ENOPROTOOPT fallback still applies. We deliberately do *not* use `--ttl 64` for "MD5
+  only": without kernel MD5 the fake would reach the server and break every connection.
 * `splitFake` together with `splitTls` is not emitted. The fake split at 2 would sit behind the
   split at `splitPosition` and be cancelled.
 * `splitPosition` must stay ≥ 1 (`DpiConfig.SPLIT_RANGE`). With HTTP, a split position beyond the
@@ -347,12 +367,12 @@ Notes on the rules:
 |---|---|---|---|
 | `default` | `--proto=tls,http --disorder 2 --split 0+hm --fake -1 --ttl 5 --fake-sni www.w3.org` | fake → EXPECTED; wire verified | desktop: fake TTL + split@2 reversed + SNI split. Disorder = reversed split; `0+hm` = SNI/Host middle; fake covers the rest |
 | `fixedttl` | `--proto=tls,http --fake -1 --ttl 5 --fake-sni www.w3.org` | EXPECTED | GoodbyeDPI-Turkey `--set-ttl 5` |
-| `disorder` | `--proto=tls,http --disorder 2` | **200 / 200 / 200** | zapret multidisorder pos=2 (seqovl impossible without root) |
+| `disorder` | `--proto=tls,http --disorder 2` | **200 / 200 / 200** | zapret multidisorder pos=2 **without** seqovl (impossible through a kernel socket, §7.4); weaker than the desktop method of the same name |
 | `ttl4` | `--proto=tls,http --fake -1 --ttl 4 --fake-sni www.w3.org` | EXPECTED | zapret fake ttl=4 |
 | `ttl3` | `--proto=tls,http --fake -1 --ttl 3 --fake-sni www.w3.org` | EXPECTED | zapret fake ttl=3 |
-| `md5sig` | `--proto=tls,http --fake -1 --ttl 5 --md5sig --fake-sni www.w3.org` | EXPECTED; wire: TTL-only fake | zapret fake md5sig; md5 is unavailable on GKI, so it degrades to TTL 5 |
-| `md5ttl3` | `--proto=tls,http --fake -1 --ttl 3 --md5sig --fake-sni www.w3.org` | EXPECTED | zapret fake md5sig ttl=3 (TTL 3 only on GKI) |
-| `fakesplit5` | `--proto=tls,http --fake 2 --fake -1 --ttl 5 --fake-sni www.w3.org` | EXPECTED; wire: `ttl5/2B` + `ttl5/455B` | zapret2 multisplit blob=fake pos=2. Closest: two fake segments; byedpi restarts the fake payload in each |
+| `md5sig` | `--proto=tls,http --fake -1 --ttl 5 --md5sig --fake-sni www.w3.org` (GKI: without `--md5sig`) | EXPECTED; wire: TTL-only fake | zapret fake md5sig; md5 is unavailable on GKI, so it degrades to TTL 5 (= `fixedttl`) |
+| `md5ttl3` | `--proto=tls,http --fake -1 --ttl 3 --md5sig --fake-sni www.w3.org` (GKI: without `--md5sig`) | EXPECTED | zapret fake md5sig ttl=3 (= `ttl3` on GKI) |
+| `fakesplit5` | `--proto=tls,http --fake 2 --fake -1 --ttl 5 --fake-sni www.w3.org` | EXPECTED; wire: `ttl5/2B` + `ttl5/455B` continuing at fake byte 2 | zapret2 multisplit blob=fake pos=2: one coherent fake cut at 2 (patch B8) |
 | `zerofake` | `--proto=tls,http --fake -1 --ttl 5 --fake-data :\x00\x00\x00\x00` | EXPECTED; wire: all-zero `ttl5/457B` | zapret2 fake blob=0x00000000; the fake is zero-padded to the range length |
 | `split2` | `--proto=tls,http --split 2` | **200 / 200 / 200** | zapret multisplit pos=2 |
 | `split` | `--proto=tls,http --split 2 --split 0+hm` | **200 / 200 / 200** | desktop "Sadece bölme" (split@2 + SNI middle) |
@@ -364,9 +384,10 @@ The emulator results are for `https://example.com`, `https://www.google.com` and
 ### 7.3 Full argv layout (verified to parse and to recover on the emulator)
 
 ```
--i 127.0.0.1 -p <port> -c 2048 -b 16384
+-i 127.0.0.1 -p <port> -c 2048 -b 16384 -N
 [DNS active]   --redirect 198.18.0.53:53=<v4>:<port>
                [--redirect [fd00:6764:7069::53]:53=[<v6>]:<port>]     (only if the profile has v6)
+               --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48   (always)
 [blockQuic]    --drop-udp 443
 [voiceFake]    --proto=udp --pf=50000-65535 --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none
                --proto=udp --pf=3478-3481   --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none
@@ -402,7 +423,10 @@ Reasoning:
 * **`--timeout 4:0:0:1`**: 4 s is enough for the ACK of a ClientHello even on poor mobile links
   (TCP_USER_TIMEOUT only counts un-ACKed *sent* data). `:0:0:1` disables it as soon as the server
   answered, so long-lived connections are safe. Emit it only with fallback groups; without them an
-  ETIMEDOUT just kills the connection.
+  ETIMEDOUT just kills the connection. Since patch B7 byedpi itself arms it only for client-first
+  connections in a group that has a `torst` successor (the catch-all and the last fallback never get
+  it; SMTP/IMAP-style server-first connections never get it).
+* **`-N`** and **`--deny-net`**: see §3 and §6 (contract C2).
 * Group count is 3 (voice) + 1 + fallbacks + 1 (catch-all), and must stay ≤ 64.
 * Emitted as separate argv elements, with no shell quoting (the JNI passes them verbatim).
 
@@ -410,8 +434,9 @@ Literal example (the default preset, Yandex DNS, fallbacks disorder / split / tl
 exactly `FULL_LAYOUT` in `tools/native/smoke.py`:
 
 ```
--i 127.0.0.1 -p 10808 -c 2048 -b 16384
+-i 127.0.0.1 -p 10808 -c 2048 -b 16384 -N
 --redirect 198.18.0.53:53=77.88.8.8:1253 --redirect [fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253
+--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48
 --drop-udp 443
 --proto=udp --pf=50000-65535 --udp-fake 6 --ttl 64 --auto=none
 --proto=udp --pf=3478-3481 --udp-fake 6 --ttl 64 --auto=none
@@ -432,6 +457,29 @@ Results:
   `400` first, that is not a trigger, and the 400 is passed through. This is emulator-only.
 * Under the RST DPI simulation it recovers through groups 4 → 5.
 
+### 7.4 Why the ISP lists recommend a fake method first (wave 3)
+
+* The desktop "Ters sıra" is zapret multidisorder pos=2 **with seqovl=1**: the tail segment is sent
+  first with one garbage byte in front and SEQ pulled back by one, so a DPI that keeps the first copy
+  of each byte sees a corrupt ClientHello, while the server keeps the real byte. A kernel TCP socket
+  cannot do that: the kernel assigns sequence numbers and never sends two different contents for
+  the same range. byedpi's `--disorder` only delays the 2-byte head (TTL 1); the tail with the whole
+  SNI goes out in one normal segment. `--disoob` would inject an in-band byte that some servers keep.
+* The effect seqovl relies on, "the DPI sees a first copy that never reaches the server", is exactly
+  what a TTL-limited `--fake` does. Live tests on a Turkish line (desktop) showed every fake-based
+  method working and plain split without fake/seqovl failing; the Android disorder has never been
+  tried on a Turkish line.
+* So every ISP list now starts with the first fake method SplitWire chose for that ISP (a 1:1 byedpi
+  equivalent) and keeps `disorder` as the first fallback: TT `ttl4`, Superonline `ttl3` (MD5 is TTL
+  only on GKI, so `md5sig` = TTL 5 fake comes next, `md5ttl3` last for MD5-capable kernels), Vodafone
+  `fakesplit5`, TürkNet `default`, Kablonet `ttl4`, TT Mobil `zerofake`, Turkcell Mobil `default`,
+  Vodafone Mobil `fakesplit5`.
+* Failure modes are covered by the automatic fallback: a fake TTL too low for the DPI → the DPI
+  resets or drops → `torst` → next method; a server closer than the TTL → the server answers the
+  fake → `ssl_err` (TLS 1.3 by session id, TLS 1.2 by patch B7) → next method on the next connection.
+* Unverified: the efficacy of every mapping on real Turkish networks (the emulator's slirp NAT
+  re-originates TCP, and the host already runs the desktop bypass).
+
 ## 8. Restartability and leaks (verified)
 
 State that survives a run, and what happens to it (`main.c` lib prologue, `clear_params`,
@@ -445,6 +493,7 @@ State that survives a run, and what happens to it (`main.c` lib prologue, `clear
 | cache (`params.mempool`) | freed; empty on every start |
 | epoll pool, all client/upstream fds, buffers, fake mmaps, host strings | `destroy_pool` at loop exit |
 | fake mmap when a fake part is empty or the pipe fails | **patched**: upstream leaked one mapping per such request |
+| fake mmap with an offset (`restore_fake` inside the mapping, B8) | `restore_fake_base` is unmapped, never the offset pointer |
 | getopt | `optind = 1; optreset = 1` (bionic) |
 | `server_fd` | only written; stop uses the eventfd |
 | eventfd | owned by `byedpi_lib.c`, closed under the mutex when the run ends |
@@ -487,6 +536,25 @@ Measurements:
    * 7/7 wire checks, 8/8 DPI-simulation checks, 17/17 UDP/redirect/drop/malformed checks, 13/13
      JNI checks, and restart_test + ASan all pass.
    * On Windows use `py -3`: the WindowsApps `python` alias cannot see `%LOCALAPPDATA%\Android`.
+5. **Wave 3 (patches B5–B8 and hev P5), emulator-5554, 2026-09-29.**
+   * Builds: top-level `jni/` 4 ABIs 0 warnings, every LOAD `Align 0x4000`; standalone
+     `byedpi-jni` 4 ABIs 0 warnings, only export `JNI_OnLoad`; tools x86_64 0 warnings.
+   * `smoke.py` (full): 73 checks, 0 FAIL, 8 EXPECTED (one earlier run had two wire rows capture no
+     packets — a tcpdump start race; the rerun passed all). `smoke.py --quick --apk <debug apk>`:
+     68 checks, 0 FAIL, 13/13 JNI. The curl calls now use `--socks5 -4` because the proxy runs with
+     `-N`.
+   * New rows: `fakesplit5 coherent fake` (`ttl5/2B ttl5/455B`, 2nd segment starts `01 01 c5`);
+     `fake reached tls1.2 server (abort)` and `(alert)` (host server answers the fake with a TLS 1.2
+     ServerHello; saves `['1']`, the next connection uses group 1); `timeout with stall
+     (client-first)` torst fired, `(server-first)` no torst and the connection stays up;
+     `mid-life RST keeps primary` (no `save:`, groups `['0','0']`); `tcp_deny_virtual_v4/v6` reply 02 in
+     9/5 ms; `udp_deny_virtual_silent`, `udp_deny_then_dns`, `no_domain_atyp3_refused` (08).
+   * `restart_test` 589 checks PASS (fds 8 → 8), ASan build 585 checks PASS; new R8: with a low
+     `RLIMIT_NOFILE` the listener hits EMFILE, the proxy keeps running and serves again once fds are
+     freed; `--deny-net` bad values rejected with -2; deny-net reply 02 in every full iteration.
+   * Before the B7 `ssl_err` extension a fake-to-near-TLS-1.2-server case was also reproduced with Windows curl
+     (schannel `-k`) against `openssl s_server -tls1_2`: all three attempts failed with no fallback;
+     after: first attempt fails, the next two return 200 through the cached fallback.
 
 ## 10. Known limitations / decisions
 
@@ -501,8 +569,7 @@ Measurements:
   * Adding half-close would need per-direction EOF state through `on_tunnel`, `tcp_recv_hook`,
     `on_fin` (which also drives `ssl_err` detection) and the auto-reconnect replay. That is not a
     minimal patch, and a mistake there leaks half-open fds in a long-lived process. Not patched.
-* **`--fake-offset`** would leak one mmap per fake (`munmap` on a non-page-aligned address), so it
-  is not used.
+* **`--fake-offset`** is not used. Its old unaligned-`munmap` leak is gone since patch B8.
 * `-y/--cache-file` and `-P/--protect-path` work but are not needed. `-D`/`--pidfile` do not
   exist in lib mode.
 * **Unverified**: the DPI efficacy of any method on real Turkish networks, and `TCP_MD5SIG` on

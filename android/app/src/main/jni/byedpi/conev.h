@@ -68,7 +68,9 @@ struct eval {
     unsigned long long mod_iter;
     evcb_t cb;
     
-    long tv_ms;
+    /* gdpi: 32 bit ABI'lerde long 32 bit; CLOCK_MONOTONIC ~24.8 gunu gecince
+     * milisaniye degeri tasiyordu (zamanlayicilar donuyordu). 64 bit tutulur. */
+    int64_t tv_ms;
     struct eval *tv_next, *tv_prev;
     
     evcb_t after_conn_cb;
@@ -89,6 +91,8 @@ struct eval {
     uint64_t dp_mask;
     int detect;
     bool mark; //
+    /* gdpi: TLS ClientHello + sahte parcali grup; extend.c check_tls_hs_alert */
+    bool tls_fake;
     int to_count; 
     
     int tls_rec_size;
@@ -98,6 +102,10 @@ struct eval {
     bool restore_ttl;
     bool restore_md5;
     char *restore_fake;
+    /* gdpi: eslemenin kendisi. restore_fake sahte yukun ofsetli bir noktasini
+     * gosterebilir (ardisik sahte parcalar, --fake-offset); munmap her zaman
+     * sayfa hizali tabani almali, yoksa EINVAL ile sizar. */
+    char *restore_fake_base;
     size_t restore_fake_len;
     const char *restore_orig;
     size_t restore_orig_len;

@@ -1,5 +1,8 @@
 package io.github.unsalable.goodbyedpi.engine
 
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import io.github.unsalable.goodbyedpi.model.DpiConfig
 import io.github.unsalable.goodbyedpi.model.FakePayload
 
@@ -45,21 +48,47 @@ object ByeDpiArgs {
      */
     const val FALLBACK_TIMEOUT = "4:0:0:1"
 
+    /**
+     * Sanal tun aglari (VpnRoutes'un disarida biraktigi bloklari kapsar). Bu aglara giden ve
+     * bir --redirect FROM'u olmayan istekleri byedpi hemen reddeder (--deny-net, bizim
+     * yamamiz): orn. Android'in Ozel DNS'i sanal cozucuyu 853'ten yokluyor; reddedilmezse
+     * gercek aga anlamsiz bir SYN gider ve oturum zaman asimina kadar asili kalir. DNS
+     * "Kapali" iken 198.18.0.53:53 de reddedilir; baglanti testi buna gore sistem
+     * cozucusune duser.
+     */
+    val VIRTUAL_NETS = listOf("198.18.0.0/15", "fd00:6764:7069::/48")
+
+    /**
+     * Cekirdek TCP_MD5SIG destekliyor mu (true/false), bilinmiyorsa null. Android GKI
+     * cekirdeklerinde yok: byedpi (yamali) o zaman sahteyi yalnizca TTL ile yollar ve
+     * "MD5 imzasi" ile "Sabit TTL", "MD5 + TTL 3" ile "Sahte TTL 3" ayni seyi yapar. Bunu
+     * bilince --md5sig hic verilmez: yedek zincirindeki kopyalar tekillesir ve tani ekrani
+     * gercekte calisan komutu gosterir. Testler bu alani degistirir.
+     */
+    @Volatile
+    internal var md5SigSupport: () -> Boolean? = { Md5SigProbe.result }
+
     /** byedpi argv'si (program adi haric). */
     fun build(config: EngineConfig): List<String> {
         val primary = config.primary
         val args = ArrayList<String>(64)
 
         // -i her zaman: varsayilan 0.0.0.0 telefonun Wi-Fi'sinda acik bir SOCKS vekili olurdu.
+        // -N: alan adi cozumleme yok. hev her zaman IP gonderir; byedpi'nin tek is parcacikli
+        // dongusunde engelleyen bir getaddrinfo tum trafigi ve durdurmayi bekletebilirdi
+        // (loopback portunu bulan herhangi bir uygulama bile). Baglanti testi de ad degil IP
+        // gonderir.
         args += listOf(
             "-i", "127.0.0.1",
             "-p", config.socksPort.toString(),
             "-c", MAX_CONN.toString(),
             "-b", BUF_SIZE.toString(),
+            "-N",
         )
 
         config.dnsTargetV4?.let { args += listOf("--redirect", "$VIRTUAL_DNS_V4:53=$it") }
         config.dnsTargetV6?.let { args += listOf("--redirect", "[$VIRTUAL_DNS_V6]:53=$it") }
+        for (net in VIRTUAL_NETS) args += listOf("--deny-net", net)
 
         // Port 443'e UDP (QUIC/HTTP3) sessizce dusurulur; tarayicilar TCP+TLS'e doner ve
         // asagidaki TCP gruplari devreye girer.
@@ -134,7 +163,9 @@ object ByeDpiArgs {
             // kapaliyken de koruma TTL'e duser; MD5 tek basina GKI cekirdeginde yok ve sahte
             // sunucuya ulasip her baglantiyi bozardi.
             parts += listOf("--ttl", c.ttl.toString())
-            if (c.fakeMd5Sig) parts += "--md5sig"
+            // Cekirdek MD5 desteklemiyorsa (GKI) byedpi zaten yalnizca TTL kullanir; argv'yi de
+            // oyle yaz ki ayni davranan gruplar yedek zincirinde tekillessin (DPI-6).
+            if (c.fakeMd5Sig && md5SigSupport() != false) parts += "--md5sig"
             if (c.fakePayload == FakePayload.TLS) {
                 // --fake-sni sahte ClientHello'yu gercek istegin boyuna da getirir.
                 parts += listOf("--fake-sni", c.fakeSni)
@@ -149,4 +180,39 @@ object ByeDpiArgs {
     // Yalnizca gosterim: argv ogeleri JNI'ye aynen gider, kabuk yok.
     private fun quote(s: String): String =
         if (s.isEmpty() || s.any { it == ' ' || it == '\'' || it == '"' }) "'" + s.replace("'", "'\\''") + "'" else s
+}
+
+/**
+ * TCP_MD5SIG'i surecte bir kez yoklar. Cekirdegin setsockopt'u bu secenegi CONFIG_TCP_MD5SIG
+ * yoksa hic tanimaz (ENOPROTOOPT); varsa 4 baytlik bir deger struct tcp_md5sig icin kisa
+ * oldugu icin EINVAL doner. Baglanmamis bir soket yeter, ag trafigi yok. Baska her sonuc
+ * (orn. seccomp/EPERM, JVM birim testindeki sahte android.jar) "bilinmiyor" sayilir ve
+ * --md5sig eskisi gibi verilir; byedpi'nin ENOPROTOOPT yamasi o durumda da TTL'e duser.
+ */
+private object Md5SigProbe {
+    // include/uapi/linux/tcp.h
+    private const val TCP_MD5SIG = 14
+
+    val result: Boolean? by lazy { probe() }
+
+    private fun probe(): Boolean? = try {
+        val fd = Os.socket(OsConstants.AF_INET, OsConstants.SOCK_STREAM, 0)
+        try {
+            Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_MD5SIG, 0)
+            true
+        } catch (e: ErrnoException) {
+            when (e.errno) {
+                OsConstants.ENOPROTOOPT -> false
+                OsConstants.EINVAL -> true
+                else -> null
+            }
+        } finally {
+            try {
+                Os.close(fd)
+            } catch (ignored: Throwable) {
+            }
+        }
+    } catch (ignored: Throwable) {
+        null
+    }
 }

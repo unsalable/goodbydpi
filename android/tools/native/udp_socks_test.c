@@ -539,6 +539,56 @@ int main(int argc, char **argv)
         result(ok, "tcp_redirect_v6_to_v4", "code=%d", code);
     }
 
+    /* T12: --deny-net (sanal aglar) ve -N. Ozel DNS'in 853 yoklamasi gibi FROM olmayan
+     * sanal hedefler hemen reddedilmeli (0x02), gercek aga cikmamali; FROM (T1/T8/T9)
+     * yine calisir. Ad tipi (ATYP 3) istek -N ile 0x08 almali, getaddrinfo yok. */
+    {
+        struct s5addr dot = a4("198.18.0.53", 853);
+        struct s5addr other6 = a6("fd00:6764:7069::99", 80);
+        int codes[2];
+        double ms[2];
+        const struct s5addr *dsts[2] = { &dot, &other6 };
+        for (int i = 0; i < 2; i++) {
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            int s = tcp_to_proxy();
+            codes[i] = s < 0 ? -1 : socks5(s, 1, dsts[i], 0);
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            ms[i] = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+            if (s >= 0) close(s);
+        }
+        result(codes[0] == 2 && ms[0] < 500, "tcp_deny_virtual_v4",
+            "198.18.0.53:853 reply=%d in %.1f ms", codes[0], ms[0]);
+        result(codes[1] == 2 && ms[1] < 500, "tcp_deny_virtual_v6",
+            "[fd00:6764:7069::99]:80 reply=%d in %.1f ms", codes[1], ms[1]);
+
+        /* UDP: sanal hedefe datagram duser, iliski baglanmaz; ayni iliskide DNS calisir */
+        struct assoc G;
+        int go = assoc_open(&G) == 0;
+        if (go) {
+            assoc_send(&G, &dot, "dot-probe", 9);
+            struct s5addr src;
+            uint8_t r[64];
+            int n = assoc_recv(&G, &src, r, sizeof(r), 1000);
+            result(n == -1, "udp_deny_virtual_silent", n == -1 ? 0 : "got a reply");
+            result(udp_dns(&G, &vdns, &vdns, why, sizeof(why)) == 0, "udp_deny_then_dns", why);
+            assoc_close(&G);
+        }
+        else result(0, "udp_deny_virtual_silent", "assoc");
+
+        /* ATYP 3 (alan adi) */
+        int s = tcp_to_proxy();
+        uint8_t hello[3] = { 5, 1, 0 }, hr[2], rep[10] = { 0 };
+        uint8_t req[32] = { 5, 1, 0, 3, 11 };
+        memcpy(req + 5, "example.com", 11);
+        req[16] = 0;
+        req[17] = 80;
+        int got = s >= 0 && send(s, hello, 3, MSG_NOSIGNAL) == 3 && recv_all(s, hr, 2) == 0
+            && send(s, req, 18, MSG_NOSIGNAL) == 18 && recv_all(s, rep, 10) == 0;
+        if (s >= 0) close(s);
+        result(got && rep[1] == 8, "no_domain_atyp3_refused", "got=%d code=%d", got, rep[1]);
+    }
+
     /* T10: bozuk girdiler proxy'yi dusurmemeli */
     {
         /* bilinmeyen ATYP -> 08 */

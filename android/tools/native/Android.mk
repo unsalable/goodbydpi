@@ -9,7 +9,8 @@
 #   ciadpi_asan     ayni CLI, AddressSanitizer ile (udp_socks_test'in bozuk girdileri icin)
 #   restart_test    kutuphane modu (-DBYEDPI_LIB) + byedpi_lib.c; baslat/durdur/yaris/sizinti
 #   restart_test_asan  ayni test, AddressSanitizer ile
-#   udp_socks_test  cihaz ustu SOCKS5 UDP/redirect/drop istemcisi
+#   udp_socks_test  cihaz ustu SOCKS5 UDP/redirect/drop/deny-net istemcisi
+#   tun_latency     hev CLI + tun uzerinden oturum kurulum gecikmesi (tun_latency.sh, root)
 #
 # Test ikilileri assert()'leri ACIK tutar (NDEBUG yok): hata varsa burada patlasin.
 
@@ -75,6 +76,15 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 LOCAL_MODULE := udp_socks_test
 LOCAL_SRC_FILES := udp_socks_test.c
+LOCAL_CFLAGS := -std=c99 -O2 -g -Wall -Wextra -Wno-unused-parameter \
+    -Werror=implicit-function-declaration
+include $(BUILD_EXECUTABLE)
+
+# ---------------------------------------------------------------- tun_latency
+# hev CLI + tun uzerinden oturum kurulum gecikmesi (tun_latency.sh ile, root).
+include $(CLEAR_VARS)
+LOCAL_MODULE := tun_latency
+LOCAL_SRC_FILES := tun_latency.c
 LOCAL_CFLAGS := -std=c99 -O2 -g -Wall -Wextra -Wno-unused-parameter \
     -Werror=implicit-function-declaration
 include $(BUILD_EXECUTABLE)
