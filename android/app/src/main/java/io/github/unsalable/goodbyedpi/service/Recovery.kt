@@ -29,7 +29,7 @@ import kotlin.math.abs
  *    VPN izni (OP_ACTIVATE_VPN) olan uygulamanin arka plandan on plan servis baslatmasi serbest.
  * 2. App.onCreate: surec baska bir nedenle (karo, alici, is) dogdugunda da bakilir.
  * 3. [RecoveryJobService]: 15 dk'lik kalici periyodik is; ilk ikisi bir sekilde kacarsa emniyet.
- * 4. Kontrol isi ([CHECK_JOB_ID]): her arka plan kurtarmasindan sonra 30 sn-8 dk icinde tek
+ * 4. Kontrol isi ([CHECK_JOB_ID]): her arka plan kurtarmasindan sonra 30 sn-1 dk icinde tek
  *    seferlik, kalici olmayan is. Surec kurtarmadan hemen sonra yine cokerse (ayni trafik ayni
  *    yerel cokmeyi tetikliyor) ActivityManager bekcinin yeniden baslatmasini 30 dk erteliyor
  *    ve periyodik is 15-34 dk uzakta; JobScheduler bu cokme cezasina tabi degil (e2e E2E-F1:
@@ -169,12 +169,12 @@ internal object Recovery {
         val prev = readStreak(p)
         val nowElapsed = SystemClock.elapsedRealtime()
         val nowBoot = bootCount(app)
-        val exitReason = deathReasonSince(app, prev, nowElapsed, nowBoot)
-        if (!RecoveryPolicy.countsTowardGiveUp(exitReason)) {
+        val death = deathSince(app, prev, nowElapsed, nowBoot)
+        if (!RecoveryPolicy.countsTowardGiveUp(death?.reason, death?.status ?: 0)) {
             // Sayac ve son kurtarma ani degismez (araya giren bir LMK cokme dongusunu
             // sifirlamasin); tek bir emniyet kontrolu yeter.
             scheduleCheck(app, RecoveryPolicy.checkDelayMs(1))
-            Log.i(TAG, "arka plan kurtarmasi: cikis nedeni $exitReason cokme degil, ust uste sayilmaz (sayac ${prev.count})")
+            Log.i(TAG, "arka plan kurtarmasi: cikis nedeni ${death?.reason}/${death?.status} cokme degil, ust uste sayilmaz (sayac ${prev.count})")
             return true
         }
         val next = RecoveryPolicy.nextStreak(prev, nowElapsed, nowBoot)
@@ -193,18 +193,18 @@ internal object Recovery {
     }
 
     /**
-     * API 30+: bu kurtarmaya yol acan surec olumunun ApplicationExitInfo nedeni. Yalnizca son
-     * kurulumdan (arm / kullanici baslatmasi) ve onceki kurtarmadan SONRAki cikis gecerli; daha
-     * eskiyse bu kurtarmanin olumu henuz kaydedilmemis ya da hic olum yok: null (bilinmiyor,
-     * sayilir).
+     * API 30+: bu kurtarmaya yol acan surec olumunun ApplicationExitInfo kaydi (neden + sinyal).
+     * Yalnizca son kurulumdan (arm / kullanici baslatmasi) ve onceki kurtarmadan SONRAki cikis
+     * gecerli; daha eskiyse bu kurtarmanin olumu henuz kaydedilmemis ya da hic olum yok: null
+     * (bilinmiyor, sayilir).
      */
-    private fun deathReasonSince(app: Context, prev: RecoveryPolicy.Streak, nowElapsed: Long, nowBoot: Int): Int? {
+    private fun deathSince(app: Context, prev: RecoveryPolicy.Streak, nowElapsed: Long, nowBoot: Int): RecoveryPolicy.Exit? {
         val exit = lastExit(app) ?: return null
         val sameBoot = prev.boot < 0 || nowBoot < 0 || prev.boot == nowBoot
         val prevAge = nowElapsed - prev.lastElapsed
         val prevWall = if (prev.count > 0 && sameBoot && prevAge >= 0) System.currentTimeMillis() - prevAge else 0L
         val since = maxOf(prevWall, prefs(app).getLong(KEY_ARMED_AT, 0L))
-        return if (exit.timestampMs > since) exit.reason else null
+        return if (exit.timestampMs > since) exit else null
     }
 
     /**
@@ -230,7 +230,8 @@ internal object Recovery {
 
     /**
      * Kontrol isi ve periyodik is. Motor yoksa kurtarir (beginBackgroundRecovery bir sonraki
-     * kontrolu kurar). Motor ayaktaysa ve son kurtarma yeniyse izlemeyi surdurur: AMS cezasi
+     * kontrolu kurar); kurtarma reddedilirse olu surecten kalan "Bagli" bildirimini
+     * ServiceController.recoverInBackground birakir. Motor ayaktaysa ve son kurtarma yeniyse izlemeyi surdurur: AMS cezasi
      * kurtarmadan dakikalar sonraki bir cokmede de (goruldu: 78 sn) bekciyi 30 dk erteliyor.
      */
     fun runCheck(context: Context, source: String) {
@@ -366,7 +367,8 @@ internal object Recovery {
         val info: ApplicationExitInfo = runCatching {
             am.getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()
         }.getOrNull() ?: return null
-        return RecoveryPolicy.Exit(info.reason, info.timestamp, info.description)
+        // status: REASON_SIGNALED'da sureci bitiren sinyal (cokme raporu gelmemis SIGSEGV gibi).
+        return RecoveryPolicy.Exit(info.reason, info.timestamp, info.description, info.status)
     }
 }
 
@@ -378,7 +380,8 @@ internal object RecoveryPolicy {
     /** Bu kadar yakin bir olum uygulama guncellemesinin oldurmesi sayilir (API 30-31). */
     const val UPDATE_WINDOW_MS = 60_000L
 
-    data class Exit(val reason: Int, val timestampMs: Long, val description: String?)
+    /** [status]: ApplicationExitInfo.getStatus(); REASON_SIGNALED'da sureci bitiren sinyal. */
+    data class Exit(val reason: Int, val timestampMs: Long, val description: String?, val status: Int = 0)
 
     /**
      * API 30+: en son surec cikisi kullanicinin durdurmasi mi ve motor en son kurulduktan
@@ -412,13 +415,21 @@ internal object RecoveryPolicy {
     /**
      * Kontrol isinin en erken ve en gec calismasi arasindaki pay (JobInfo overrideDeadline).
      * Kisa tutulur: kisitsiz is emulatorde (ACTIVE kova, sarjda) minLatency'de degil son
-     * tarihte calisti (e2e E2E-V6-1); AMS cezasindan sonra her cokmenin kurtarmasi
-     * checkDelay + bu kadar surebilir.
+     * tarihte calisti (e2e E2E-V6-1), bir kez son tarihi de ~35 sn gecti (E2E-V7-2); AMS
+     * cezasindan sonra her cokmenin kurtarmasi checkDelay + bu kadar, biraz da fazlasi surebilir.
      */
     const val CHECK_DEADLINE_SLACK_MS = 30_000L
 
     private const val CHECK_BASE_MS = 30_000L
-    private const val CHECK_MAX_MS = 8 * 60_000L
+
+    /**
+     * Kontrol gecikmesinin tavani. Eskiden 8 dk'ydi: AMS cezasindan sonra surec (ve VPN) o kadar
+     * olu kaliyordu, olu surecin "Bagli" on plan bildirimi durum cubugunda asili duruyordu ve
+     * vazgecme bildirimi 8 dk gecikiyordu (E2E-V7-1/2). Olu sureci yalnizca bu is geri
+     * getirebiliyor. Pil gerekcesi zayif: sayilan cokme dongusu MAX_STREAK'te zaten biter,
+     * surec ayaktayken is ayni surecte milisaniyeler icinde biter.
+     */
+    private const val CHECK_MAX_MS = 60_000L
     private const val WATCH_MIN_MS = 60_000L
 
     /**
@@ -457,18 +468,40 @@ internal object RecoveryPolicy {
     )
 
     /**
-     * Bu kurtarma ust uste sayaca girer mi? null: neden bilinmiyor (API 30 alti, kayit yok ya da
-     * olum henuz kaydedilmemis) -> eski davranis, sayilir. LOW_MEMORY, SIGNALED (kill -9, OEM
-     * gorev olduruculeri), OTHER vb. disaridan gelen oldurmeler sayilmaz: kurtarma bunlarda
-     * ise yariyor, vazgecmek yalnizca DPI engellerini geri getirirdi.
+     * Surecin kendi hatasindan gelen sinyaller: SIGILL 4, SIGTRAP 5, SIGABRT 6, SIGBUS 7,
+     * SIGFPE 8, SIGSEGV 11, SIGSYS 31 (seccomp). Yerel cokmenin raporu (debuggerd/crash_dump)
+     * gelmez ya da zigotun olum haberiyle yarisi kaybederse AMS cikisi CRASH_NATIVE degil
+     * SIGNALED + sinyal numarasi olarak yazar (REC-SIGNALED-CRASH). SIGKILL 9 (kill -9, OEM
+     * olduruculeri) ve SIGTERM 15 disaridan gelir.
      */
-    fun countsTowardGiveUp(exitReason: Int?): Boolean = exitReason == null || exitReason in CRASH_LIKE
+    private val CRASH_SIGNALS = setOf(4, 5, 6, 7, 8, 11, 31)
+
+    /**
+     * Bu kurtarma ust uste sayaca girer mi? null: neden bilinmiyor (API 30 alti, kayit yok ya da
+     * olum henuz kaydedilmemis) -> eski davranis, sayilir. LOW_MEMORY, SIGKILL/SIGTERM ile
+     * SIGNALED (kill -9, OEM gorev olduruculeri), OTHER vb. disaridan gelen oldurmeler sayilmaz:
+     * kurtarma bunlarda ise yariyor, vazgecmek yalnizca DPI engellerini geri getirirdi. Cokme
+     * sinyaliyle SIGNALED ([CRASH_SIGNALS]) yerel cokmedir ve sayilir; sayilmasaydi
+     * deterministik bir dongu vazgecmeye hic ulasmaz, is sureci surekli yeniden dogururdu.
+     *
+     * @param status ApplicationExitInfo.getStatus(): SIGNALED icin sinyal numarasi
+     */
+    fun countsTowardGiveUp(exitReason: Int?, status: Int = 0): Boolean = when (exitReason) {
+        null -> true
+        REASON_SIGNALED -> status in CRASH_SIGNALS
+        else -> exitReason in CRASH_LIKE
+    }
 
     /** Motor bu kadar kesintisiz calistiysa son kurtarma tutmustur (izleme penceresi kadar). */
     fun recoveryHeld(runningMs: Long): Boolean = runningMs >= WATCH_MS
 
-    /** n'inci kurtarmadan sonraki kontrol: 30 sn, 1, 2, 4, 8 dk (ustel, 8 dk'da sabit). */
+    /**
+     * n'inci kurtarmadan sonraki kontrol: 30 sn, sonra 1 dk ([CHECK_MAX_MS]). [MAX_STREAK]'inci
+     * kurtarmadan sonra yine 30 sn: o kontrolun tek isi bir olumu gorup vazgecmek ve kullaniciyi
+     * uyarmak (E2E-V7-2: 8 dk'lik beklemede VPN kapaliydi ve uyari yoktu).
+     */
     fun checkDelayMs(count: Int): Long {
+        if (count >= MAX_STREAK) return CHECK_BASE_MS
         val shift = (count - 1).coerceIn(0, 10)
         return (CHECK_BASE_MS shl shift).coerceAtMost(CHECK_MAX_MS)
     }

@@ -228,6 +228,8 @@ class DpiEngineTest {
         val c1 = e.start(plainConfig())
         val port = c1.socksPort
         assertEquals(1, handed.size)
+        val gen1 = e.generation
+        assertTrue(gen1 > 0)
 
         // 1) Yontem degisimi: byedpi yeni argv ile ayni portta, tun ve hev yerinde.
         val disorder = plainConfig().copy(methodName = MethodPreset.Disorder.name, primary = MethodPreset.Disorder.build().copy(voiceFake = false))
@@ -241,6 +243,9 @@ class DpiEngineTest {
         assertNull(e.checkHealth())
         assertEquals(1, byedpiThreads())
         assertEquals("HTTP/1.1 200 OK", httpsGetViaSocks(port))
+        // Port ayni ama motor yeni: arayuz eski baglanti testi sonuclarini buna gore siler.
+        val gen2 = e.generation
+        assertTrue(gen2 != gen1)
 
         // 2) Yalnizca ad: hicbir sey yeniden kurulmaz, argv ayni.
         val argv = e.runningArgv
@@ -249,11 +254,13 @@ class DpiEngineTest {
         assertEquals("Yeni ad", e.runningConfig?.methodName)
         assertEquals(argv, e.runningArgv)
         assertEquals(1, handed.size)
+        assertEquals(gen2, e.generation)
 
         // 3) Tun degisimi: yeni tun, eski fd kapanir, hev yeni fd'de, byedpi ayni.
         val c4 = e.reconfigure(disorder.copy(excludeLan = false), rebuildTun = true)
         assertEquals(port, c4.socksPort)
         assertEquals(2, handed.size)
+        assertTrue(e.generation != gen2)
         try {
             handed[0].fd
             fail("eski tun fd'si acik kaldi")
@@ -266,6 +273,7 @@ class DpiEngineTest {
 
         e.stop()
         engine = null
+        assertEquals(0, e.generation)
         Thread.sleep(200)
         val fdAfter = fdCount()
         Log.i("GdpiTest", "yerinde guncelleme fd: $fdBefore -> $fdAfter")

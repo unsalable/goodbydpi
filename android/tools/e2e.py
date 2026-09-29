@@ -292,7 +292,7 @@ class E2E:
         if self.priv_mode() == "root":
             # root olarak yazilan dosya uygulamaya ait olmali (sahip + SELinux baglami).
             self.app_sh("mkdir -p files && cat > files/settings.json && o=$(stat -c %u:%g .) && "
-                        "chown $o files files/settings.json && chmod 600 files/settings.json && "
+                        "chown $o files files/settings.json && chmod 771 files && chmod 600 files/settings.json && "
                         "restorecon -R files", stdin=data, check=True)
         else:
             self.app_sh("mkdir -p files && cat > files/settings.json", stdin=data, check=True)

@@ -1,5 +1,6 @@
 package io.github.unsalable.goodbyedpi.service
 
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
@@ -33,6 +34,10 @@ object ServiceController {
     private const val RECOVERY_DEDUPE_MS = 5_000L
 
     private val recoveryDedupe = RecoveryDedupe(RECOVERY_DEDUPE_MS)
+
+    /** Son [releaseStaleService] istegi (elapsedRealtime); vazgecme + genel yol ayni anda cagirabilir. */
+    @Volatile
+    private var lastReleaseAt = 0L
 
     /**
      * Bu surec bir enstrumantasyon testi mi? Testler byedpi'yi surec icinde kendileri
@@ -78,9 +83,32 @@ object ServiceController {
      * gorunmeye devam ediyordu (Recovery.giveUp). On plan olarak: arka plandan duz startService
      * reddedilir; servis her istekte once startForeground cagiriyor.
      */
-    internal fun releaseStaleService(context: Context) {
-        if (EngineStateHolder.state.value != EngineState.Stopped) return
+    internal fun releaseStaleService(context: Context): Boolean {
+        if (EngineStateHolder.state.value != EngineState.Stopped) return false
+        val now = SystemClock.elapsedRealtime()
+        // Ayni kayit icin ikinci bir bos servis baslatmasi gereksiz (giveUp + recoverInBackground,
+        // App.onCreate + bekci ayni surec dogumunda).
+        if (lastReleaseAt != 0L && now - lastReleaseAt in 0 until RECOVERY_DEDUPE_MS) return false
+        lastReleaseAt = now
         startServiceCompat(context, DpiVpnService.ACTION_REFRESH_NOTIFICATION, foreground = true, reportFailure = false)
+        return true
+    }
+
+    /**
+     * Motor bu surecte yokken durum bildirimi hala gorunuyorsa olu bir surecten kalmistir:
+     * birakir. Arka plan kurtarmasi reddedildiginde (kurulu degil, kullanici durdurmus, VPN izni
+     * gitmis) cagrilir; aksi halde "Bagli" bildirimi VPN yokken asili kalirdi (E2E-V7-1).
+     * Bildirim yoksa hicbir sey yapmaz: her surec dogumunda bos yere servis baslatilmasin.
+     */
+    private fun releaseStaleServiceIfShown(context: Context) {
+        if (EngineStateHolder.state.value != EngineState.Stopped) return
+        val shown = runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.activeNotifications?.any { it.id == Notifications.STATUS_ID } == true
+        }.getOrDefault(false)
+        if (shown && releaseStaleService(context)) {
+            Log.i(TAG, "motor yokken durum bildirimi gorunuyor (olu surecten kalma); birakildi")
+        }
     }
 
     private fun start(context: Context, reportFailure: Boolean): Intent? {
@@ -145,8 +173,11 @@ object ServiceController {
      * Basarisiz baslatma Failed yazmaz: kullanici bir sey yapmadi, sonraki firsat (arayuz,
      * karo) yine denesin.
      */
-    internal fun recoverInBackground(context: Context, source: String): Boolean =
-        recover(context, background = true, source = source)
+    internal fun recoverInBackground(context: Context, source: String): Boolean {
+        val started = recover(context, background = true, source = source)
+        if (!started && !isInstrumentationProcess) releaseStaleServiceIfShown(context.applicationContext)
+        return started
+    }
 
     private fun recover(context: Context, background: Boolean, source: String): Boolean {
         // Arayuz/karo acildi: kullanici burada. Soguk surecte App.onCreate'in arka plan

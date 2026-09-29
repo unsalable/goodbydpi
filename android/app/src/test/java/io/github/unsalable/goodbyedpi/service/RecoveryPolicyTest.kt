@@ -106,14 +106,23 @@ class RecoveryPolicyTest {
     }
 
     @Test
-    fun checkDelayIsExponentialAndCapped() {
+    fun checkDelayIsShortAndCapped() {
+        // E2E-V7-1/2: olu surec (ve asili "Bagli" bildirimi) en fazla ~1 dk + pay beklesin.
         assertEquals(30_000L, RecoveryPolicy.checkDelayMs(1))
-        assertEquals(60_000L, RecoveryPolicy.checkDelayMs(2))
-        assertEquals(2 * min, RecoveryPolicy.checkDelayMs(3))
-        assertEquals(4 * min, RecoveryPolicy.checkDelayMs(4))
-        assertEquals(8 * min, RecoveryPolicy.checkDelayMs(5))
-        assertEquals(8 * min, RecoveryPolicy.checkDelayMs(50))
+        assertEquals(min, RecoveryPolicy.checkDelayMs(2))
+        assertEquals(min, RecoveryPolicy.checkDelayMs(3))
+        assertEquals(min, RecoveryPolicy.checkDelayMs(4))
         assertEquals(30_000L, RecoveryPolicy.checkDelayMs(0))
+    }
+
+    @Test
+    fun checkAfterLastAllowedRecoveryIsShort() {
+        // MAX_STREAK'inci kurtarmadan sonraki kontrol yalnizca olumu gorup vazgecer: 8 dk degil.
+        assertEquals(30_000L, RecoveryPolicy.checkDelayMs(RecoveryPolicy.MAX_STREAK))
+        assertEquals(30_000L, RecoveryPolicy.checkDelayMs(50))
+        // Cokme dongusunde kontrol islerinin toplam bekleyisi ~6,5 dk (eskiden ~18 dk).
+        val total = (1..RecoveryPolicy.MAX_STREAK).sumOf { RecoveryPolicy.checkDelayMs(it) + RecoveryPolicy.CHECK_DEADLINE_SLACK_MS }
+        assertTrue(total <= 7 * min)
     }
 
     @Test
@@ -121,7 +130,8 @@ class RecoveryPolicyTest {
         val s = RecoveryPolicy.Streak(1, 1_000_000L, 7)
         // Ilk kontrol motoru ayakta buldu: 78 sn sonraki bir cokme de yakalansin diye izleme surer.
         assertEquals(min, RecoveryPolicy.watchDelayMs(s, 1_030_000L, 7))
-        assertEquals(4 * min, RecoveryPolicy.watchDelayMs(s.copy(count = 4), 1_030_000L, 7))
+        assertEquals(min, RecoveryPolicy.watchDelayMs(s.copy(count = 4), 1_030_000L, 7))
+        assertEquals(min, RecoveryPolicy.watchDelayMs(s.copy(count = RecoveryPolicy.MAX_STREAK), 1_030_000L, 7))
         assertNull(RecoveryPolicy.watchDelayMs(s, 1_000_000L + RecoveryPolicy.WATCH_MS, 7))
         assertNull(RecoveryPolicy.watchDelayMs(s, 1_030_000L, 8))
         assertNull(RecoveryPolicy.watchDelayMs(none, 1_030_000L, 7))
@@ -161,6 +171,26 @@ class RecoveryPolicyTest {
     }
 
     @Test
+    fun signaledCountsOnlyForCrashSignals() {
+        val sig = RecoveryPolicy.REASON_SIGNALED
+        // REC-SIGNALED-CRASH: cokme raporu gelmeyen yerel cokme SIGNALED + sinyal olarak yazilir.
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 11)) // SIGSEGV
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 6)) // SIGABRT
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 7)) // SIGBUS
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 4)) // SIGILL
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 8)) // SIGFPE
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(sig, 31)) // SIGSYS
+        // Disaridan oldurme: kill -9, SIGTERM; sinyal bilinmiyorsa da sayilmaz.
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(sig, 9))
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(sig, 15))
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(sig, 0))
+        // Diger nedenlerde status (cikis kodu) karari degistirmez.
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_LOW_MEMORY, 11))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_CRASH_NATIVE, 0))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(null, 9))
+    }
+
+    @Test
     fun recoveryHeldAfterWatchWindow() {
         assertFalse(RecoveryPolicy.recoveryHeld(0L))
         assertFalse(RecoveryPolicy.recoveryHeld(RecoveryPolicy.WATCH_MS - 1))
@@ -169,9 +199,11 @@ class RecoveryPolicyTest {
 
     @Test
     fun deadlineSlackStaysShort() {
-        // E2E-V6-1: is pratikte son tarihte calisiyor; 5. kurtarmadan sonraki kontrol <= 8,5 dk.
+        // E2E-V6-1: is pratikte son tarihte calisiyor; hicbir kontrol 1,5 dk'dan gec kurulmaz.
         assertTrue(RecoveryPolicy.CHECK_DEADLINE_SLACK_MS <= 30_000L)
-        assertTrue(RecoveryPolicy.checkDelayMs(5) + RecoveryPolicy.CHECK_DEADLINE_SLACK_MS <= 8 * min + 30_000L)
+        for (n in 0..60) {
+            assertTrue(RecoveryPolicy.checkDelayMs(n) + RecoveryPolicy.CHECK_DEADLINE_SLACK_MS <= min + 30_000L)
+        }
     }
 
     @Test

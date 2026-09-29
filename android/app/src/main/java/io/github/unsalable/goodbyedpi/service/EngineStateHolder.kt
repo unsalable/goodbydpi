@@ -27,6 +27,8 @@ sealed interface EngineState {
     /**
      * @param sinceElapsed baglantinin kuruldugu an (SystemClock.elapsedRealtime)
      * @param socksPort byedpi'nin dinledigi yerel port; baglanti testi bunu kullanir
+     * @param generation motor kimligi (DpiEngine.generation): yerinde guncellemede port ayni
+     *   kalsa da degisir; arayuz eski motora ait baglanti testi sonuclarini buna gore siler
      */
     data class Running(
         val sinceElapsed: Long,
@@ -34,6 +36,7 @@ sealed interface EngineState {
         val dnsName: String,
         val socksPort: Int,
         val argv: List<String> = emptyList(),
+        val generation: Int = 0,
     ) : EngineState
 
     data object Stopping : EngineState

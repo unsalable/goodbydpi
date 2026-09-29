@@ -159,6 +159,20 @@ class UiLogicTest {
     }
 
     @Test
+    fun connTestKey_changesOnInPlaceEngineUpdate() {
+        // conntest-stale-after-inplace-update: DNS/yontem degisimi portu korur, motor kimligi degisir.
+        val a = EngineState.Running(0, "Ters sıra", "Cloudflare", 44455, generation = 3)
+        val dnsChanged = a.copy(dnsName = "Yandex (1253)", generation = 4)
+        assertEquals(44455 to 3, MainViewModel.connTestKey(a))
+        assertTrue(MainViewModel.connTestKey(a) != MainViewModel.connTestKey(dnsChanged))
+        // Yalnizca ad degisimi (ayni motor) sonuclari silmez.
+        assertEquals(MainViewModel.connTestKey(a), MainViewModel.connTestKey(a.copy(methodName = "Yeni ad")))
+        // Motor yok: anahtar null (durdurma ve yeniden kurulum da sifirlar).
+        assertNull(MainViewModel.connTestKey(EngineState.Stopped))
+        assertNull(MainViewModel.connTestKey(EngineState.Starting))
+    }
+
+    @Test
     fun reflowLicense_joinsHardWrappedParagraphs() {
         val mit = "MIT License\n\nCopyright (c) 2021 a\nCopyright (c) 2022 b\n\n" +
             "Permission is hereby granted, free of charge, to any person\nobtaining a copy of this software.\n"

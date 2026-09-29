@@ -8,6 +8,7 @@ import io.github.unsalable.goodbyedpi.BuildConfig
 import io.github.unsalable.goodbyedpi.service.TrafficStats
 import java.io.File
 import java.net.ServerSocket
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * byedpi + hev-socks5-tunnel ikilisinin baslatma/durdurma sirasi (SPEC 3, HEV_NOTES 7).
@@ -56,6 +57,8 @@ class DpiEngine(
         val sinceElapsed: Long,
         /** byedpi'ye gercekte verilen argv (secilen port dahil). */
         val argv: List<String>,
+        /** Bkz. [generation]. */
+        val generation: Int = GENERATIONS.incrementAndGet(),
     )
 
     @Volatile
@@ -77,6 +80,15 @@ class DpiEngine(
 
     val sinceElapsed: Long
         get() = run?.sinceElapsed ?: 0L
+
+    /**
+     * Calisan motorun kimligi: her [start] ve byedpi/tun'u yenileyen her [reconfigure] yeni bir
+     * deger verir; yalnizca ad degisimi vermez. Yerinde guncelleme portu (ve sinceElapsed'i)
+     * korudugu icin arayuz eski motorla alinmis baglanti testi sonuclarini ancak buna bakarak
+     * silebiliyor (conntest-stale-after-inplace-update). 0 = calismiyor.
+     */
+    val generation: Int
+        get() = run?.generation ?: 0
 
     val hevConfigFile: File
         get() = File(filesDir, HEV_CONFIG_NAME)
@@ -335,6 +347,9 @@ class DpiEngine(
         private const val HEV_SETTLE_MS = 250L
         private const val WRAP = 1L shl 32
         private val IS_64_BIT: Boolean = runCatching { Process.is64Bit() }.getOrDefault(true)
+
+        /** Surec genelinde artan motor kimligi: servis yeniden dogsa da tekrar etmesin. */
+        private val GENERATIONS = AtomicInteger(0)
 
         /** Geri dongu adresinde o an bos bir port. */
         fun freeLoopbackPort(): Int =

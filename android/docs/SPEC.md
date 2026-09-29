@@ -463,8 +463,11 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   byedpi's SNI split is a separate part, so the fixed position must be a real byte offset.
 * **`AppSettings` adds `lastUpdateCheck`, `pendingUpdate`, `dismissedUpdate`** — the last is
   legacy and unread; update snooze state lives in SharedPreferences `gdpi_update`.
-* **`EngineState.Running` adds `socksPort` and `argv`** — the connection test needs the port,
-  the diagnostics screen shows the argv actually running.
+* **`EngineState.Running` adds `socksPort`, `argv` and `generation`** — the connection test
+  needs the port, the diagnostics screen shows the argv actually running, and `generation`
+  (`DpiEngine.generation`, new on every start and on every in-place update that swaps byedpi or
+  the tun; not on a name-only change) tells the UI that the engine changed while the port
+  stayed the same.
 * **`ServiceController` adds `recoverIfNeeded`, `recoverInBackground` (internal),
   `EXTRA_CONNECT`, `CONNECT_ALIAS`** — process-death recovery and the tile's connect request.
 * **`SettingsRepository` adds `updateNow()` (non-suspending) and CAS updates; the service writes
@@ -490,16 +493,25 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   still retry.
 * **Crash loops: one-shot check job + give-up** — a second native crash within AMS's crash
   window makes AMS delay the keeper restart by 30-60 min. Every background recovery therefore
-  also schedules a non-persisted `RecoveryJobService` run (`CHECK_JOB_ID`, min latency 30 s,
-  1, 2, 4, then 8 min per consecutive recovery, deadline +30 s); JobScheduler is not subject to
+  also schedules a non-persisted `RecoveryJobService` run (`CHECK_JOB_ID`, min latency 30 s
+  after the 1st consecutive recovery, 1 min after the 2nd-4th, 30 s again after the 5th, whose
+  check only has to see the death and give up; deadline +30 s); JobScheduler is not subject to
   the crash penalty. An unconstrained job was seen to run at its deadline rather than its min
-  latency (emulator, ACTIVE bucket), so after the AMS penalty a crash is recovered within
-  checkDelay + 30 s (1, 1.5, 2.5, 4.5, 8.5 min for n = 1..5). If the engine is up, the check
-  keeps watching (every >= 1 min) for 10 min after the last recovery. Only crash-like deaths
+  latency (emulator, ACTIVE bucket), once even ~35 s past it, so after the AMS penalty a crash
+  is recovered within about checkDelay + 30 s (1-1.5 min) and a 6th crash is reported within
+  about 1 min. The delay used to grow to 8 min, which left the VPN down and the give-up alert
+  8 min late (E2E-V7-2); the battery argument for a long backoff is weak because a counted
+  loop ends at the give-up and a check that finds the engine up finishes in-process in
+  milliseconds. If the engine is up, the check keeps watching (every 1 min) for 10 min after
+  the last recovery. Only crash-like deaths
   count toward the give-up (API 30+ `ApplicationExitInfo` reason `CRASH`, `CRASH_NATIVE`,
-  `ANR`, `EXIT_SELF`, `INITIALIZATION_FAILURE`, `EXCESSIVE_RESOURCE_USAGE` or `UNKNOWN`; no
+  `ANR`, `EXIT_SELF`, `INITIALIZATION_FAILURE`, `EXCESSIVE_RESOURCE_USAGE` or `UNKNOWN`, and
+  `SIGNALED` whose status is a crash signal: SIGILL, SIGTRAP, SIGABRT, SIGBUS, SIGFPE, SIGSEGV,
+  SIGSYS; AMS files a native crash as `SIGNALED`/11 when the debuggerd report is missing or
+  loses the race with the zygote death notice; no
   record, API < 30 or no death newer than the last arm/recovery also counts); `LOW_MEMORY`,
-  `SIGNALED` (kill -9, OEM task killers), `OTHER` etc. are recovered without counting — the
+  `SIGNALED` with SIGKILL/SIGTERM (kill -9, OEM task killers), `OTHER` etc. are recovered
+  without counting — the
   give-up exists for a deterministic native crash loop, and LMK kills every ~10 min on a low-RAM
   phone would otherwise disable auto-reconnect within an hour. The count also resets once the
   engine has run 10 min without interruption (service health loop, and a check job that finds
@@ -511,7 +523,18 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   notification "Bağlantı koptu"
   (tap: `.ConnectRequest` + `EXTRA_CONNECT`) is posted. A user/tile/boot start
   resets the count, and so does opening the UI or the tile panel even while a background start
-  from the same cold process is already under way. The in-process dedupe of recovery requests
+  from the same cold process is already under way.
+* **Stale "Bağlı" notification after a process death (known limitation)** — the foreground
+  notification of the dead `DpiVpnService` stays in the status bar (AMS keeps the record)
+  until our process runs again; a dead process cannot remove it. Usually that is ~1 s (keeper
+  restart). After a second crash within AMS's crash window the keeper is deferred 30-150 min,
+  and the window is then bounded by the check job: about 1-1.5 min (it was up to 8.5 min,
+  E2E-V7-1). When the new process does not recover (background recovery not armed, the user
+  stopped the app, VPN consent gone), `recoverInBackground` sees the status notification in
+  `NotificationManager.getActiveNotifications()` while the engine is `Stopped` and releases the
+  record the same way as the give-up (start with `ACTION_REFRESH_NOTIFICATION`, leave
+  foreground, stop); with no such notification nothing is started. The status notification text
+  is not made neutral: while it is up it is correct except for this bounded window. The in-process dedupe of recovery requests
   (5 s) only records a start that was actually issued: a give-up in `App.onCreate` does not make
   the UI's recovery a moment later a silent no-op.
 * **User stops are honoured** — recovery first checks `ApplicationExitInfo` for
@@ -550,8 +573,10 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **"+ Yeni DNS" / "+ Yeni özel ayar" reuse the untouched placeholder** — `migrate()` keeps one
   entry per list; while that entry still has the default name and no addresses (DNS) or the
   default `DpiConfig` (method), the new entry takes its slot instead of adding "Özel DNS 2".
-* **Connection test results are cleared** when a run starts and when the engine port changes
-  (reconnect, stop); a running test is cancelled on a port change.
+* **Connection test results are cleared** when a run starts and when the running engine changes:
+  reconnect, stop, and an in-place update after a method/DNS change, which keeps the port
+  (keyed on port + `generation`); a running test is cancelled on the same trigger so it cannot
+  mix results from the old and the new engine.
 * **Additions**: landscape two-pane main screen; the diagnostics sheet shows the running argv
   (`describe()` only when disconnected); the licenses list also shows `THIRD-PARTY-NOTICES.txt`
   (AndroidX, Compose, Kotlin; Apache-2.0).

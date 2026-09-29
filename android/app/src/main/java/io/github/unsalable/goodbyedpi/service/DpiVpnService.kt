@@ -133,8 +133,9 @@ class DpiVpnService : VpnService() {
             // Her zaman acik VPN sistemi SERVICE_INTERFACE ile baslatir: kullanici istegi sayilir.
             ACTION_START, SERVICE_INTERFACE -> scope.launch { startByUser() }
             // Bildirim izni yeni verildi: yukaridaki goForeground bildirimi zaten yeniden gonderdi.
-            // Servis bu istekle yeni dogduysa (motor yok; ya da Recovery.giveUp cokmus surecten
-            // asili kalan kaydi temizliyor) on plandan cikip hemen birakilir.
+            // Servis bu istekle yeni dogduysa (motor yok; ya da Recovery.giveUp /
+            // ServiceController.recoverInBackground cokmus surecten asili kalan kaydi
+            // temizliyor) on plandan cikip hemen birakilir.
             ACTION_REFRESH_NOTIFICATION -> scope.launch { stopSelfIfIdle(startId) }
             // START_STICKY yeniden baslatmasi (surec olmeden servis durdurulduysa): son istege bak.
             null -> scope.launch { startFromSticky(startId) }
@@ -378,7 +379,7 @@ class DpiVpnService : VpnService() {
 
     private fun publishRunning() {
         val cfg = engine.runningConfig ?: return
-        publish(EngineState.Running(engine.sinceElapsed, cfg.methodName, cfg.dnsName, cfg.socksPort, engine.runningArgv))
+        publish(EngineState.Running(engine.sinceElapsed, cfg.methodName, cfg.dnsName, cfg.socksPort, engine.runningArgv, engine.generation))
     }
 
     private fun publish(state: EngineState) {
@@ -394,7 +395,7 @@ class DpiVpnService : VpnService() {
     // argv uzun; gunluge yalnizca ozet (argv hata ayiklama derlemesinde DpiEngine'de yaziliyor).
     private fun describe(state: EngineState): String =
         if (state is EngineState.Running) {
-            "Running(${state.methodName}, ${state.dnsName}, port ${state.socksPort}, argv ${state.argv.size} oge)"
+            "Running(${state.methodName}, ${state.dnsName}, port ${state.socksPort}, argv ${state.argv.size} oge, motor ${state.generation})"
         } else {
             state.toString()
         }

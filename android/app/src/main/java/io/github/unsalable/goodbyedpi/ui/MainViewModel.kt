@@ -86,7 +86,7 @@ class MainViewModel(
     private val _connTest = MutableStateFlow(ConnTestUi.Idle)
     val connTest: StateFlow<ConnTestUi> = _connTest.asStateFlow()
 
-    /** Suren baglanti testi; motor portu degisince iptal edilir (sonucu eski porta ait olurdu). */
+    /** Suren baglanti testi; calisan motor degisince iptal edilir (sonucu eski motora ait olurdu). */
     private var connTestJob: Job? = null
 
     // Aktivitenin yapacagi isler (izin ekranlari). Tamponlu: aktivite o an durmus olsa bile
@@ -101,10 +101,11 @@ class MainViewModel(
     private var opened = false
 
     init {
-        // Baglanti testi sonuclari o anki motora (port) ait: VPN kapaninca ya da yeniden
-        // kurulup port degisince eski satirlar yeni baglantinin sonucu gibi okunmasin.
+        // Baglanti testi sonuclari o anki motora ait: VPN kapaninca, yeniden kurulunca ya da
+        // yontem/DNS degisip motor yerinde guncellenince (port ayni kalir) eski satirlar yeni
+        // yapilandirmanin sonucu gibi okunmasin; suren test de karisik sonuc vermesin.
         viewModelScope.launch {
-            connection.map { it.socksPort }.distinctUntilChanged().drop(1).collect {
+            engineState.map(::connTestKey).distinctUntilChanged().drop(1).collect {
                 connTestJob?.cancel()
                 connTestJob = null
                 _connTest.value = ConnTestUi.Idle
@@ -402,6 +403,13 @@ class MainViewModel(
 
     companion object {
         private const val TAG = "MainViewModel"
+
+        /**
+         * Baglanti testi sonuclarinin ait oldugu motor: calisan port + motor kimligi; motor
+         * yoksa null. Yalnizca ad degisimi (profil adi) anahtari degistirmez.
+         */
+        internal fun connTestKey(state: EngineState): Pair<Int, Int>? =
+            (state as? EngineState.Running)?.let { it.socksPort to it.generation }
 
         internal fun diagnosticsText(state: EngineState, s: AppSettings): String {
             val running = state as? EngineState.Running
