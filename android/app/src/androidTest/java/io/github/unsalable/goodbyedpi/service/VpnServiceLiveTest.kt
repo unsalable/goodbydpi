@@ -79,10 +79,12 @@ class VpnServiceLiveTest {
         assertEquals("Düz bölme", r1.methodName)
         assertEquals("Yandex (1253)", r1.dnsName)
         assertTrue(repo.current.wantRunning)
+        // C1: calisan argv durumda (Tanilama bunu gosterir), secilen port dahil.
+        assertTrue(r1.argv.joinToString(" ").contains("-p ${r1.socksPort}"))
 
         assertTrue(shell("ip addr show tun0").contains("inet 198.18.0.1/32"))
-        val conn = shell("dumpsys connectivity")
-        assertTrue("VPN agi yok", conn.contains("VPN CONNECTED extra: VPN:${ctx.packageName}"))
+        val net1 = vpnNetId()
+        assertTrue("VPN agi yok", net1 != null)
         assertEquals("HTTP/1.1 200 OK", httpViaShell("example.com"))
         // Trafik tun'dan gecti: sayac artti (akisi dinleyen biz; ornekleme yalnizca dinlerken).
         val traffic = withTimeout(5_000) { EngineStateHolder.traffic.first { it.txBytes > 0 && it.rxBytes > 0 } }
@@ -93,11 +95,15 @@ class VpnServiceLiveTest {
         Thread.sleep(1_000)
         assertEquals(r1, EngineStateHolder.state.value)
 
-        // Canli yontem degisimi: arayuz yalnizca ayari yazar, servis ~400 ms sonra yeniden kurar.
+        // Canli yontem degisimi: arayuz yalnizca ayari yazar, servis ~400 ms sonra yalnizca
+        // byedpi'yi AYNI portta degistirir; VPN agi (ve uygulamalarin baglantisi) dusmez.
         repo.update { it.copy(method = "tlsrec") }
         val r2 = awaitRunning { it.methodName == "TLS kayıt bölme" }
         Log.i(TAG, "yontem degisti: $r2")
-        assertTrue(r2.socksPort != r1.socksPort || r2.sinceElapsed != r1.sinceElapsed)
+        assertEquals(r1.socksPort, r2.socksPort)
+        assertEquals(r1.sinceElapsed, r2.sinceElapsed)
+        assertTrue(r2.argv.contains("--tlsrec"))
+        assertEquals("VPN agi yeniden kuruldu", net1, vpnNetId())
         assertEquals("HTTP/1.1 200 OK", httpViaShell("example.com"))
 
         // DNS gercekten bizim yonlendirmemizden geciyor: dinlenmeyen bir porta yonlenince ad
@@ -105,7 +111,14 @@ class VpnServiceLiveTest {
         // kendisi cevapliyor; geri dongu:9 ise hic cevap vermez.
         val dead = CustomDnsEntry.createNew(repo.current.customDns, CustomDnsEntry(name = "Ölü DNS", v4 = "127.0.0.1", v4Port = 9))
         repo.update { s -> s.copy(customDns = s.customDns + dead, dns = dead.id) }
-        awaitRunning { it.dnsName == dead.name }
+        val r3 = awaitRunning { it.dnsName == dead.name }
+        // Yalnizca IPv4 adresli DNS: VPN'e verilen sunucular degisti (IPv6 sanal cozucu yok),
+        // tun eski acikken yeniden kuruldu; ag yine ayni.
+        assertEquals("VPN agi yeniden kuruldu", net1, vpnNetId())
+        // C4: yalnizca ad degisimi motora dokunmaz, durum/bildirim metni tazelenir.
+        repo.update { s -> s.copy(customDns = s.customDns.map { if (it.id == dead.id) it.copy(name = "Ölü DNS 2") else it }) }
+        val r4 = awaitRunning { it.dnsName == "Ölü DNS 2" }
+        assertEquals(r3.copy(dnsName = r4.dnsName), r4)
         val failed = httpViaShell("example.org", timeoutSec = 6)
         Log.i(TAG, "olu DNS ile: '$failed'")
         assertFalse(failed.startsWith("HTTP/"))
@@ -113,6 +126,7 @@ class VpnServiceLiveTest {
         // DNS Kapali: VPN'e alttaki agin DNS'i verilir, cozumleme calisir.
         repo.update { it.copy(dns = DnsProfile.OFF_ID) }
         awaitRunning { it.dnsName == "Kapalı" }
+        assertEquals("VPN agi yeniden kuruldu", net1, vpnNetId())
         val lp = shell("dumpsys connectivity").lines().first { it.contains("VPN CONNECTED extra: VPN:${ctx.packageName}") }
         Log.i(TAG, "Kapali DNS: " + Regex("DnsAddresses: \\[[^]]*]").find(lp)?.value)
         assertFalse(lp.contains("198.18.0.53"))
@@ -125,6 +139,14 @@ class VpnServiceLiveTest {
         assertFalse(shell("ip addr show tun0").contains("198.18.0.1"))
         assertFalse(repo.current.wantRunning)
         assertFalse(shell("dumpsys connectivity").contains("VPN CONNECTED extra: VPN:${ctx.packageName}"))
+    }
+
+    /** Bizim VPN agimizin kimligi (dumpsys connectivity "network{N}"); yoksa null. */
+    private fun vpnNetId(): Int? {
+        val line = shell("dumpsys connectivity").lines()
+            .firstOrNull { it.contains("NetworkAgentInfo{") && it.contains("VPN CONNECTED extra: VPN:${ctx.packageName}") }
+            ?: return null
+        return Regex("""network\{(\d+)\}""").find(line)?.groupValues?.get(1)?.toInt()
     }
 
     private suspend fun awaitState(timeoutMs: Long, pred: (EngineState) -> Boolean): EngineState =

@@ -62,10 +62,21 @@ class MainActivity : ComponentActivity() {
         handleConnectExtra(intent)
     }
 
-    /** Karo, izin eksikken "baglan" istegiyle acar; izin ekrani ViewModel olayi olarak gelir. */
+    /**
+     * Karo, izin eksikken "baglan" istegiyle acar; izin ekrani ViewModel olayi olarak gelir.
+     * Istek yalnizca disa kapali ConnectRequest takma adindan gelirse gecerli (sozlesme C5):
+     * MainActivity disa acik, baska bir uygulama EXTRA_CONNECT koyup VPN'i acabilirdi. Son
+     * kullanilanlardan acilis (FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) gorevin eski temel
+     * intent'ini yeniden verir; istek coktan islenmisti, tekrar baglanmasin.
+     */
     private fun handleConnectExtra(intent: Intent?) {
         if (intent?.getBooleanExtra(ServiceController.EXTRA_CONNECT, false) != true) return
         intent.removeExtra(ServiceController.EXTRA_CONNECT)
+        if (intent.component?.className != ServiceController.CONNECT_ALIAS) {
+            Log.w(TAG, "baglanma istegi takma ad disindan geldi, yok sayildi: ${intent.component}")
+            return
+        }
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         vm.onConnectRequested()
     }
 

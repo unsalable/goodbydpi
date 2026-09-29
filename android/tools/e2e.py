@@ -224,7 +224,9 @@ class E2E:
 
     def vpn_state(self) -> tuple[bool, str]:
         """tun0 var mi ve connectivity'de VPN agi bizim paketimize mi ait."""
-        tun = self.adb.sh("ip -o addr show tun0 2>/dev/null")
+        # Arayuz adi sabit degil: canli ayar degisimi tun'u eski acikken yeniden kuruyor (VPN agi
+        # dusmesin diye), yeni arayuz tun1 olabiliyor. Adrese gore aranir.
+        tun = self.adb.sh("ip -o addr show 2>/dev/null | grep 198.18.0.1")
         conn = self.adb.sh("dumpsys connectivity")
         # NetworkAgentInfo satiri: "... ni{VPN CONNECTED extra: VPN:<paket>} ..." (Wi-Fi satirlarinda
         # NOT_VPN yetenegi gecer, o yuzden duz "VPN" aramasi yetmez). Sahip bilgisi surumden surume
@@ -502,7 +504,7 @@ class E2E:
     def step_vpn_up(self, r: StepResult):
         up, detail = self.vpn_state()
         r.expect(up, f"tun0 + VPN agi: {detail}")
-        addr = self.adb.sh("ip -o addr show tun0")
+        addr = self.adb.sh("ip -o addr show 2>/dev/null | grep 198.18.0.1")
         r.expect("198.18.0.1" in addr, "tun0 adresi 198.18.0.1")
         s = self.read_settings()
         r.expect(s.get("wantRunning") is True, "wantRunning=true kaydedildi")

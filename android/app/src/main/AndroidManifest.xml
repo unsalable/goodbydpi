@@ -39,6 +39,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Hizli ayar karosunun "baglan" istegi (izin eksikken) YALNIZCA bu disa kapali takma
+             addan gelir; MainActivity disa acik oldugu icin EXTRA_CONNECT'i baska yoldan kabul
+             etmez (baska uygulamalar VPN'i acamasin). launchMode hedeften gelir (singleTop). -->
+        <activity-alias
+            android:name=".ConnectRequest"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
         <!-- Sistem VPN servisine BIND_VPN_SERVICE ile system_server olarak baglanir; disari
              acmaya gerek yok. intent-filter + SUPPORTS_ALWAYS_ON "Her zaman acik VPN" icin. -->
         <service
@@ -56,6 +64,17 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn" />
         </service>
+
+        <!-- Surec olunce VPN'i geri getiren bekci ve 15 dk'lik emniyet isi (service.Recovery).
+             Bekci on plan degil ve kimse ona baglanmiyor: sistem onu yapiskan olarak yeniden
+             baslatiyor, VPN servisini baslatmiyor. -->
+        <service
+            android:name=".service.KeeperService"
+            android:exported="false" />
+        <service
+            android:name=".service.RecoveryJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <receiver
             android:name=".service.BootReceiver"

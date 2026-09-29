@@ -33,6 +33,7 @@ sealed interface EngineState {
         val methodName: String,
         val dnsName: String,
         val socksPort: Int,
+        val argv: List<String> = emptyList(),
     ) : EngineState
 
     data object Stopping : EngineState

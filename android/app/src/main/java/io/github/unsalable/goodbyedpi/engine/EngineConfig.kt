@@ -59,14 +59,19 @@ data class EngineConfig(
      * farkli olup olmadigini soyler. DnsProfile esitligi yalnizca kimlige baktigi icin (ozel
      * DNS'in adresi degisince esit kalir) data class esitligi burada yetmiyor; port da
      * disarida: her calismada motor yeni port seciyor.
+     *
+     * Adlar (yontem adi, DNS adi) BILEREK yok: yalnizca gosterim. Ozel profilin adini yazarken
+     * motor yeniden kurulmasin; ad degisince servis yalnizca durum/bildirim metnini tazeler
+     * (sozlesme C4). DNS adresi ve portu --redirect uzerinden argv'de, yani anahtarda.
      */
     fun runtimeKey(): List<Any?> = listOf(
-        methodName,
-        dns.name,
         excludeLan,
         ipv6,
         ByeDpiArgs.build(copy(socksPort = 0)),
     )
+
+    /** Yalnizca gosterilen adlar (yontem, DNS) farkli mi; motor davranisi aynidir. */
+    fun sameEngineAs(other: EngineConfig): Boolean = runtimeKey() == other.runtimeKey()
 
     companion object {
         fun from(settings: AppSettings): EngineConfig = EngineConfig(

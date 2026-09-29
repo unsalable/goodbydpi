@@ -117,6 +117,49 @@ class SettingsRepositoryTest {
     }
 
     @Test
+    fun updateNowChangesMemoryAtOnceAndPersistsLatest() = runBlocking {
+        val repo = SettingsRepository(file)
+        val s = repo.updateNow { it.copy(wantRunning = true) }
+        // Askiya almadan: donuste bellek zaten yeni degerde.
+        assertTrue(s.wantRunning)
+        assertTrue(repo.current.wantRunning)
+        repo.updateNow { it.copy(wantRunning = false) }
+        repo.updateNow { it.copy(wantRunning = true, isp = "turknet") }
+        repo.awaitPersisted()
+        val reloaded = SettingsRepository(file).current
+        assertTrue(reloaded.wantRunning)
+        assertEquals("turknet", reloaded.isp)
+        assertFalse(File(file.path + ".tmp").exists())
+    }
+
+    @Test
+    fun updateNowEqualValueDoesNotWrite() = runBlocking {
+        val repo = SettingsRepository(file)
+        val before = repo.current
+        assertSame(before, repo.updateNow { it })
+        repo.awaitPersisted()
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun mixedUpdateAndUpdateNowLoseNothing() = runBlocking {
+        val repo = SettingsRepository(file)
+        val jobs = (1..200).map { i ->
+            async(Dispatchers.Default) {
+                if (i % 2 == 0) {
+                    repo.update { s -> s.copy(lastUpdateCheck = s.lastUpdateCheck + 1) }
+                } else {
+                    repo.updateNow { s -> s.copy(lastUpdateCheck = s.lastUpdateCheck + 1) }
+                }
+            }
+        }
+        jobs.awaitAll()
+        repo.awaitPersisted()
+        assertEquals(200L, repo.current.lastUpdateCheck)
+        assertEquals(200L, SettingsRepository(file).current.lastUpdateCheck)
+    }
+
+    @Test
     fun writeFailureKeepsMemoryState() = runBlocking {
         // Hedef bir klasorse yazma basarisiz olur; cagirana hata firlatilmamali.
         val dir = File(tmp.root, "blocked").apply { mkdirs() }
