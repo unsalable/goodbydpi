@@ -23,6 +23,14 @@ data class GdpiColors(
     val success: Color,
     val danger: Color,
     val track: Color,
+    /**
+     * Yalnizca metin ve kucuk glifler icin (SPEC'teki success/danger/accent dolgu, halka ve
+     * nokta rengi olarak kalir). Acik temada SPEC renkleri beyaz zeminde WCAG AA'yi
+     * tutturmuyor (yesil ~2.5:1, kirmizi ~3.8:1, vurgu ~4.2:1); koyu temada ayni renkler yeterli.
+     */
+    val successText: Color,
+    val dangerText: Color,
+    val accentText: Color,
     val isDark: Boolean,
 ) {
     companion object {
@@ -39,6 +47,9 @@ data class GdpiColors(
             success = Color(0xFF34D399),
             danger = Color(0xFFF87171),
             track = Color(0xFF232833),
+            successText = Color(0xFF34D399),
+            dangerText = Color(0xFFF87171),
+            accentText = Color(0xFF818CF8),
             isDark = true,
         )
 
@@ -55,6 +66,10 @@ data class GdpiColors(
             success = Color(0xFF10B981),
             danger = Color(0xFFEF4444),
             track = Color(0xFFE9EBF0),
+            // Beyaz zeminde: ~5.5:1, ~6.5:1, ~6.3:1 (yuzey #F6F7F9 uzerinde de 4.5'in ustunde).
+            successText = Color(0xFF047857),
+            dangerText = Color(0xFFB91C1C),
+            accentText = Color(0xFF4F46E5),
             isDark = false,
         )
     }

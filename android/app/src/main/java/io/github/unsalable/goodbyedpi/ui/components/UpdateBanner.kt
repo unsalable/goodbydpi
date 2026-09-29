@@ -119,7 +119,7 @@ private fun BannerContent(
                 Column {
                     Text(title, style = GdpiType.optionTitle, color = c.text)
                     if (detail.isNotEmpty()) {
-                        Text(detail, style = GdpiType.optionHint, color = if (failed) c.danger else c.muted, modifier = Modifier.padding(top = 2.dp))
+                        Text(detail, style = GdpiType.optionHint, color = if (failed) c.dangerText else c.muted, modifier = Modifier.padding(top = 2.dp))
                     }
                 }
             }
@@ -148,7 +148,10 @@ private fun BannerContent(
                     GhostButton("Kapat", onLater, color = c.muted)
                     GhostButton("Tekrar dene", onUpdate)
                 }
-                // Indirme/dogrulama/kurulum sirasinda dugme yok: islem kendiliginden ilerliyor.
+                // Indirme (Otomatik guncelle aciksa istenmeden de baslar, mobil veride olabilir)
+                // iptal edilebilir; UpdateManager.dismiss isi durdurur ve bu surumu tekrar sormaz.
+                is UpdateState.Downloading -> GhostButton("Vazgeç", onLater, color = c.muted)
+                // Dogrulama/kurulum sirasinda dugme yok: kurulum sisteme teslim edildiyse geri alinamaz.
                 else -> Box(Modifier.height(6.dp))
             }
         }

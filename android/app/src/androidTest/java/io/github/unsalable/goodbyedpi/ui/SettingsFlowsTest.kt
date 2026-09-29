@@ -3,6 +3,7 @@ package io.github.unsalable.goodbyedpi.ui
 import android.Manifest
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasScrollToKeyAction
 import androidx.compose.ui.test.hasText
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToKey
 import androidx.compose.ui.test.performTextReplacement
@@ -139,6 +141,9 @@ class SettingsFlowsTest {
 
         compose.onNodeWithContentDescription("IPv4 adresi").performScrollTo().performTextReplacement("1.2.3")
         compose.onNodeWithText("Geçersiz IPv4 adresi.").assertExists()
+        // Hata ilgili kutuda: adres kirmizi, port degil.
+        compose.onNodeWithContentDescription("IPv4 adresi").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
+        compose.onNodeWithContentDescription("IPv4 adresi portu").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Error))
 
         compose.onNodeWithContentDescription("IPv4 adresi").performTextReplacement("1.2.3.4")
         compose.waitForIdle()
@@ -147,6 +152,7 @@ class SettingsFlowsTest {
 
         compose.onNodeWithContentDescription("IPv4 adresi portu").performTextReplacement("70000")
         compose.onNodeWithText("Port 0-65535 aralığında olmalı.").assertExists()
+        compose.onNodeWithContentDescription("IPv4 adresi portu").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Error))
         // Gecersiz port kaydedilmez.
         assertTrue(repo.current.customDns.none { it.v4Port == 70000 })
 
@@ -156,7 +162,80 @@ class SettingsFlowsTest {
 
         compose.onNodeWithContentDescription("IPv6 adresi").performTextReplacement("2001:db8::zz")
         compose.onNodeWithText("Geçersiz IPv6 adresi.").assertExists()
+
+        // Turkce sayi klavyesinin virgulu noktaya cevrilir.
+        compose.onNodeWithContentDescription("IPv6 adresi").performTextReplacement("")
+        compose.onNodeWithContentDescription("IPv4 adresi").performTextReplacement("9,9,9,9")
+        compose.waitFor("v4=9.9.9.9") { repo.current.customDns.any { it.v4 == "9.9.9.9" } }
     }
+
+    /**
+     * Ad her tus vurusunda kaydedilmez (bagliyken her kayit durum metnini yeniliyor, SNI ve
+     * DNS ise motoru yeniden baslatiyor): duraklama, "Tamam" ya da odak kaybi kaydeder. Bos
+     * birakilip cikilinca kayitli ad geri gelir.
+     */
+    @Test
+    fun profileName_commitsOnPauseOrDone_andRestoresWhenLeftBlank() {
+        openSettings()
+        compose.onNodeWithContentDescription("Yeni özel ayar").performClick()
+        compose.waitFor("ozel profil secili") { CustomIds.isCustom(repo.current.method) }
+        compose.waitForIdle()
+        val original = repo.current.selectedMethod().name
+        val field = compose.onNodeWithContentDescription("Profil adı").performScrollTo()
+
+        compose.mainClock.autoAdvance = false
+        try {
+            field.performTextReplacement("O")
+            compose.mainClock.advanceTimeBy(300)
+            field.performTextReplacement("Oy")
+            compose.mainClock.advanceTimeBy(300)
+            Thread.sleep(300)
+            assertEquals("yazarken kaydedilmemeli", original, repo.current.selectedMethod().name)
+            compose.mainClock.advanceTimeBy(COMMIT_DELAY_MS + 100)
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.waitFor("duraklamadan sonra ad=Oy") { repo.current.selectedMethod().name == "Oy" }
+
+        field.performTextReplacement("Oyun")
+        field.performImeAction()
+        compose.waitFor("Tamam ile ad=Oyun") { repo.current.selectedMethod().name == "Oyun" }
+
+        field.performTextReplacement("")
+        compose.onNodeWithText("Ad boş olamaz; alandan çıkınca kayıtlı ad geri gelir.").assertExists()
+        field.performImeAction()
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Profil adı").assert(hasText("Oyun"))
+        assertEquals("Oyun", repo.current.selectedMethod().name)
+    }
+
+    /** "Onerilene don" SNI kutusunu da yeniler ve alt cubuktaki "Geri al" eski degerleri getirir. */
+    @Test
+    fun resetToRecommended_reseedsSniAndCanBeUndone() {
+        openSettings()
+        compose.onNodeWithContentDescription("Yeni özel ayar").performClick()
+        compose.waitFor("ozel profil secili") { CustomIds.isCustom(repo.current.method) }
+        compose.waitForIdle()
+
+        val sni = compose.onNodeWithContentDescription("Sahte site adı").performScrollTo()
+        sni.performTextReplacement("google.com")
+        sni.performImeAction()
+        compose.waitFor("sni=google.com") { currentSni() == "google.com" }
+
+        compose.onNodeWithText("Önerilene dön").performScrollTo().performClick()
+        compose.waitFor("sni onerilene dondu") { currentSni() != "google.com" }
+        compose.waitForIdle()
+        val recommended = currentSni()
+        compose.onNodeWithContentDescription("Sahte site adı").assert(hasText(recommended))
+
+        compose.onNodeWithText("Geri al").performClick()
+        compose.waitFor("geri alindi") { currentSni() == "google.com" }
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Sahte site adı").assert(hasText("google.com"))
+    }
+
+    private fun currentSni(): String =
+        repo.current.customProfiles.first { it.id.equals(repo.current.method, ignoreCase = true) }.config.fakeSni
 
     @Test
     fun themeToggle_flipsAndPersists() {

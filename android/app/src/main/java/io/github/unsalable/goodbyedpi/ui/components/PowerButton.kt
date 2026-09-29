@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -43,6 +45,14 @@ import kotlinx.coroutines.launch
 private const val BOX = 168f
 
 /**
+ * Baglaninca hale kac kez disari yayilir. Sonra parilti sabit kalir: surekli nabiz, ana ekran
+ * acik kaldikca saniyede ~60 kare cizdiriyordu (emulatorde RenderThread bir cekirdegin
+ * ~%28'i); SPEC'in "yavas nabiz"i baglanma anini vurgulamak icin yeterli.
+ */
+internal const val HALO_PULSES = 3
+private const val PULSE_MS = 2400
+
+/**
  * Buyuk guc dugmesi (masaustu PowerButton stili). Kompozisyon, distan ice: nabiz halesi >
  * ray > donen yay > govde > glif.
  *
@@ -51,11 +61,26 @@ private const val BOX = 168f
  * degerler cizim evresinde okunur: animasyon suresince yalnizca bu dugme yeniden cizilir,
  * hicbir sey yeniden kurulmaz ya da yerlesmez.
  *
- * Surekli animasyonlar (donen yay, nefes, nabiz) yalnizca ilgili durumda calisir; Kapali
- * durumda hicbir saat donmez. Ekran gorunmezken Compose kare saati zaten durur.
+ * Surekli animasyonlar (donen yay, nefes) yalnizca Baglaniyor durumunda calisir; Bagli durumda
+ * hale birkac nabizdan sonra durur. Kapali ya da oturmus Bagli durumda hicbir saat donmez.
+ */
+/**
+ * @param stateLabel erisilebilirlik durumu (ekrandaki baslikla ayni; "Durduruluyor" dahil)
+ * @param enabled kapanirken false: dokunus bir sey yapmaz, erisilebilirlikte devre disi
+ * @param seenPhase tek seferlik efektlerin (hata sallantisi, baglanma cokmesi ve nabiz) en son
+ *   oynatildigi durum. Ana ekran Ayarlar acikken kompozisyondan cikiyor ve ekran donunce
+ *   aktivite yeniden kuruluyor; bu deger disarida (kaydedilebilir) tutulursa donuste efektler
+ *   yeniden oynamaz. null: henuz hicbir durum gorulmedi, ilk durum "zaten gorulmus" sayilir.
  */
 @Composable
-fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Modifier) {
+fun PowerButton(
+    phase: PowerPhase,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    stateLabel: String = defaultStateLabel(phase),
+    enabled: Boolean = true,
+    seenPhase: MutableState<PowerPhase?> = remember { mutableStateOf(null) },
+) {
     val c = GdpiTheme.colors
     val density = LocalDensity.current
 
@@ -67,14 +92,17 @@ fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Mod
         when (it) {
             PowerPhase.Off -> c.muted
             PowerPhase.Connecting -> c.accent
-            PowerPhase.Connected -> Color.White
+            // Koyu temada vurgu gecisi acik tonlu: beyaz glif orada 3:1'in altinda kaliyor
+            // (~2.7-3.0), koyu zemin rengi ~6.4:1 veriyor (AccentButton ile ayni gerekce).
+            PowerPhase.Connected -> if (c.isDark) c.bg else Color.White
             PowerPhase.Failed -> c.danger
         }
     }
 
     val spin = remember { Animatable(0f) }
     val breath = remember { Animatable(1f) }
-    val pulse = remember { Animatable(0f) }
+    // 1 = dinlenme: nabiz halkasi gorunmez, parilti sabit. Nabiz yalnizca baglanma aninda 0'dan baslar.
+    val pulse = remember { Animatable(1f) }
     val settle = remember { Animatable(1f) }
     val shake = remember { Animatable(0f) }
 
@@ -97,37 +125,45 @@ fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Mod
         }
     }
 
-    // Bagli: basari halesi yavasca disari dogru genisleyip soner (2.4 s, masaustuyle ayni).
-    LaunchedEffect(phase == PowerPhase.Connected) {
-        if (phase == PowerPhase.Connected) {
-            // Baglanti kuruldugu an govde kisa bir an icine cokup esneyerek oturur.
-            launch {
-                settle.animateTo(0.92f, tween(120, easing = Motion.EaseOut))
-                settle.animateTo(1f, Motion.release())
-            }
-            while (true) {
-                pulse.snapTo(0f)
-                pulse.animateTo(1f, tween(2400, easing = LinearEasing))
-            }
-        }
-    }
-
-    // Hata: bir kez yana sallanir.
+    // Tek seferlik efektler yalnizca gercek bir durum GECISINDE oynar: Ayarlar'dan donuste ya da
+    // ekran donunce "yeni baglandi / yeni hata" gibi tekrar etmesin (SPEC: "shake once").
     LaunchedEffect(phase) {
-        if (phase == PowerPhase.Failed) {
-            shake.snapTo(0f)
-            shake.animateTo(
-                0f,
-                keyframes {
-                    durationMillis = 480
-                    -12f at 60
-                    11f at 130
-                    -8f at 200
-                    6f at 270
-                    -3f at 340
-                    0f at 480
-                },
-            )
+        val previous = seenPhase.value
+        seenPhase.value = phase
+        val fresh = previous != null && previous != phase
+        when (phase) {
+            PowerPhase.Connected -> if (fresh) {
+                // Baglanti kuruldugu an govde kisa bir an icine cokup esneyerek oturur.
+                launch {
+                    settle.animateTo(0.92f, tween(120, easing = Motion.EaseOut))
+                    settle.animateTo(1f, Motion.release())
+                }
+                // Basari halesi birkac kez yavasca disari genisleyip soner (2.4 s, masaustuyle
+                // ayni), sonra sabit parilti kalir ve hicbir saat donmez.
+                repeat(HALO_PULSES) {
+                    pulse.snapTo(0f)
+                    pulse.animateTo(1f, tween(PULSE_MS, easing = LinearEasing))
+                }
+            } else {
+                pulse.snapTo(1f)
+            }
+            // Hata: bir kez yana sallanir.
+            PowerPhase.Failed -> if (fresh) {
+                shake.snapTo(0f)
+                shake.animateTo(
+                    0f,
+                    keyframes {
+                        durationMillis = 480
+                        -12f at 60
+                        11f at 130
+                        -8f at 200
+                        6f at 270
+                        -3f at 340
+                        0f at 480
+                    },
+                )
+            }
+            else -> Unit
         }
     }
 
@@ -156,12 +192,6 @@ fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Mod
     val interaction = remember { MutableInteractionSource() }
     val on = phase == PowerPhase.Connected || phase == PowerPhase.Connecting
     val description = if (on) "Bağlantıyı kes" else "Bağlan"
-    val state = when (phase) {
-        PowerPhase.Off -> "Kapalı"
-        PowerPhase.Connecting -> "Bağlanıyor"
-        PowerPhase.Connected -> "Bağlı"
-        PowerPhase.Failed -> "Bağlantı kurulamadı"
-    }
 
     Box(
         modifier = modifier
@@ -173,10 +203,10 @@ fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Mod
                 scaleX = b
                 scaleY = b
             }
-            .clickable(interactionSource = interaction, indication = null, role = Role.Button, onClick = onClick)
+            .clickable(interactionSource = interaction, indication = null, enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics {
                 contentDescription = description
-                stateDescription = state
+                stateDescription = stateLabel
             }
             .drawBehind {
                 val u = size.minDimension / BOX
@@ -252,6 +282,13 @@ fun PowerButton(phase: PowerPhase, onClick: () -> Unit, modifier: Modifier = Mod
                 }
             },
     )
+}
+
+internal fun defaultStateLabel(phase: PowerPhase): String = when (phase) {
+    PowerPhase.Off -> "Kapalı"
+    PowerPhase.Connecting -> "Bağlanıyor"
+    PowerPhase.Connected -> "Bağlı"
+    PowerPhase.Failed -> "Bağlantı kurulamadı"
 }
 
 private class Strokes(val ring: Stroke, val arc: Stroke, val glyph: Stroke)

@@ -15,6 +15,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,12 +52,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -79,6 +85,7 @@ import io.github.unsalable.goodbyedpi.model.CustomMethodProfile
 import io.github.unsalable.goodbyedpi.model.DnsProfile
 import io.github.unsalable.goodbyedpi.model.DpiConfig
 import io.github.unsalable.goodbyedpi.model.FakePayload
+import io.github.unsalable.goodbyedpi.model.IpLiterals
 import io.github.unsalable.goodbyedpi.model.ThemeMode
 import io.github.unsalable.goodbyedpi.ui.components.AccentButton
 import io.github.unsalable.goodbyedpi.ui.components.Divider
@@ -100,6 +107,7 @@ import io.github.unsalable.goodbyedpi.ui.theme.Motion
 import io.github.unsalable.goodbyedpi.ui.theme.rememberRefreshTransform
 import io.github.unsalable.goodbyedpi.update.UpdateState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -242,34 +250,43 @@ private fun CustomProfileEditor(profile: CustomMethodProfile, vm: MainViewModel,
     val cfg = profile.config
     val id = profile.id
     val set: ((DpiConfig) -> DpiConfig) -> Unit = { t -> vm.updateCustomConfig(id, t) }
-    var confirmDelete by remember(id) { mutableStateOf(false) }
+    // Kaydedilebilir: ekran donunce acik silme onayi kaybolmasin.
+    var confirmDelete by rememberSaveable(id) { mutableStateOf(false) }
 
     SurfaceCard(modifier) {
-        SectionLabel("PROFİL", color = c.accent)
+        SectionLabel("PROFİL", color = c.accentText)
+        // Ad her tus vurusunda degil, "Tamam", odak kaybi ya da kisa bir duraklamadan sonra
+        // kaydedilir: her kayit diske yaziliyor ve bagliyken bildirim/durum metnini yeniliyor.
+        val name = rememberDraft(id, profile.name, accept = { it.isNotBlank() }) { vm.renameCustomProfile(id, it) }
+        val blank = name.text.isBlank()
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Yerel metin: bosaltilip yeniden yazilirken ayarin "Ozel"e dusup kutuyu ezmemesi icin.
-            var name by remember(id) { mutableStateOf(profile.name) }
             GdpiTextField(
-                value = name,
-                onValueChange = {
-                    name = it
-                    vm.renameCustomProfile(id, it)
-                },
+                value = name.text,
+                onValueChange = { name.text = it },
                 label = "Profil adı",
                 placeholder = "Profil adı",
+                isError = blank,
+                // Bos birakilip cikilirsa kayitli ad geri gelir: kutu ile listedeki ad ayrismasin.
+                onFocusLost = { name.flush(restoreIfRejected = true) },
                 modifier = Modifier.weight(1f),
             )
             GdpiIconButton(GdpiIcons.ContentCopy, "Profili çoğalt", vm::addCustomProfile)
             GdpiIconButton(Icons.Filled.Delete, "Profili sil", { confirmDelete = true }, tint = c.danger)
         }
         Text(
-            "Yöntem listesinden istediğin kadar özel profil ekleyip aralarında geçiş yapabilirsin.",
+            if (blank) {
+                "Ad boş olamaz; alandan çıkınca kayıtlı ad geri gelir."
+            } else {
+                "Yöntem listesinden istediğin kadar özel profil ekleyip aralarında geçiş yapabilirsin."
+            },
             style = GdpiType.optionHint,
-            color = c.muted,
+            color = if (blank) c.dangerText else c.muted,
             modifier = Modifier.padding(top = 6.dp, start = 2.dp),
         )
 
         Divider(Modifier.padding(top = 14.dp, bottom = 4.dp))
+        // Sifirlama geri alinabilir (alt cubukta "Geri al"): baslik satirina yakin bir yanlis
+        // dokunus elle ayarlanmis profili kalici olarak silmesin.
         OptionGroup(
             title = "SAHTE PAKET",
             trailing = { GhostButton("Önerilene dön", { vm.resetCustomToRecommended(id) }) },
@@ -387,30 +404,102 @@ private fun CustomProfileEditor(profile: CustomMethodProfile, vm: MainViewModel,
 @Composable
 private fun FakeSniField(id: String, cfg: DpiConfig, enabled: Boolean, onSave: (String) -> Unit) {
     val c = GdpiTheme.colors
-    var text by remember(id) { mutableStateOf(cfg.fakeSni) }
-    val valid = isValidHostName(text.trim())
+    // SNI motor komut satirinda: her gecerli on ek ("d", "di", ...) kaydedilseydi bagliyken
+    // motor her duraklamada yeniden baslardi. "Onerilene don" gibi disaridan gelen degisiklik
+    // ise kutuya yansir (rememberDraft).
+    val draft = rememberDraft(id, cfg.fakeSni, accept = ::isValidHostName, commit = onSave)
+    val valid = isValidHostName(draft.text.trim())
     Column(Modifier.padding(vertical = 6.dp).enabledAlpha(enabled)) {
         Text("Sahte site adı (SNI)", style = GdpiType.optionTitle, color = c.text)
         GdpiTextField(
-            value = text,
-            onValueChange = {
-                text = it
-                if (isValidHostName(it.trim())) onSave(it.trim())
-            },
+            value = draft.text,
+            onValueChange = { draft.text = it },
             label = "Sahte site adı",
             placeholder = DpiConfig.DEFAULT_FAKE_SNI,
             keyboardType = KeyboardType.Uri,
             isError = !valid,
             enabled = enabled,
+            onFocusLost = { draft.flush() },
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         )
         Text(
             if (valid) "Sahte istekte görünen, engelsiz bir site adı" else "Geçersiz ad: yalnızca harf, rakam, nokta ve tire.",
             style = GdpiType.optionHint,
-            color = if (valid) c.muted else c.danger,
+            color = if (valid) c.muted else c.dangerText,
             modifier = Modifier.padding(top = 4.dp, start = 2.dp),
         )
     }
+}
+
+/** Ad/SNI alanlarinin kaydetme gecikmesi: yazarken her tus degil, duraklama kaydedilir. */
+internal const val COMMIT_DELAY_MS = 800L
+
+/**
+ * Serbest metin alaninin yerel taslagi. Yazim yerelde kalir; ayara yalnizca [flush] ile gider:
+ * klavyede "Tamam" / odak kaybi, ~800 ms duraklama ya da alan ekrandan kalkarken.
+ *
+ * Disaridan gelen degisiklik (ornek: "Onerilene don") kutuyu yeniden doldurur; kendi
+ * kaydimizin geri yankisi ([lastSent]) ise doldurmaz, yoksa yazarken kutu eski bir on eke
+ * geri sicrardi. Durum kaydedilebilir: ekran donunce yarim kalan (gecersiz) yazim kaybolmaz.
+ */
+@Stable
+internal class Draft(text: String, var seen: String, var lastSent: String?) {
+    var text by mutableStateOf(text)
+    var accept: (String) -> Boolean = { true }
+    var commit: (String) -> Unit = {}
+
+    /** Gecerli ve kayitlidan farkliysa kaydeder; [restoreIfRejected] ise gecersizde kayitliya doner. */
+    fun flush(restoreIfRejected: Boolean = false) {
+        val v = text.trim()
+        if (!accept(v)) {
+            if (restoreIfRejected) text = seen
+            return
+        }
+        if (v == seen || v == lastSent) return
+        lastSent = v
+        commit(v)
+    }
+
+    /** Ayardaki deger degisti: kendi kaydimizin yankisi degilse kutuya yansit. */
+    fun onPersisted(value: String) {
+        if (value == seen) return
+        seen = value
+        if (value == lastSent) {
+            lastSent = null
+            return
+        }
+        lastSent = null
+        if (value != text.trim()) text = value
+    }
+
+    companion object {
+        val Saver = listSaver<Draft, String>(
+            save = { listOf(it.text, it.seen, it.lastSent ?: NONE) },
+            restore = { Draft(it[0], it[1], it[2].takeUnless { v -> v == NONE }) },
+        )
+        private const val NONE = "\u0000"
+    }
+}
+
+@Composable
+internal fun rememberDraft(
+    key: String,
+    persisted: String,
+    accept: (String) -> Boolean,
+    commit: (String) -> Unit,
+): Draft {
+    val draft = rememberSaveable(key, saver = Draft.Saver) { Draft(persisted, persisted, null) }
+    draft.accept = accept
+    draft.commit = commit
+    LaunchedEffect(draft, persisted) { draft.onPersisted(persisted) }
+    // Her tus vurusu onceki bekleyisi iptal eder; yalnizca duraklama kaydedilir.
+    LaunchedEffect(draft, draft.text) {
+        delay(COMMIT_DELAY_MS)
+        draft.flush()
+    }
+    // Geri tusu, duzenleyicinin kapanmasi ya da listeden kayma: odak kaybi gelmeyebilir.
+    DisposableEffect(draft) { onDispose { draft.flush() } }
+    return draft
 }
 
 /** DpiConfig.sanitized ile ayni kural: motora giden ad bosluk ya da kabuk karakteri tasimasin. */
@@ -442,10 +531,10 @@ private fun OptionGroup(
         Icon(
             Icons.Filled.KeyboardArrowDown,
             contentDescription = null,
-            tint = c.accent,
+            tint = c.accentText,
             modifier = Modifier.size(20.dp).graphicsLayer { rotationZ = turn },
         )
-        Text(title, style = GdpiType.section, color = c.accent, modifier = Modifier.padding(start = 6.dp).weight(1f))
+        Text(title, style = GdpiType.section, color = c.accentText, modifier = Modifier.padding(start = 6.dp).weight(1f))
         trailing?.invoke()
     }
     AnimatedVisibility(
@@ -468,7 +557,7 @@ private fun Warning(visible: Boolean, text: String) {
         exit = fadeOut(Motion.fadeOut()) + shrinkVertically(Motion.spring()),
         label = "warning",
     ) {
-        Text(text, style = GdpiType.optionHint, color = c.danger, modifier = Modifier.padding(vertical = 8.dp))
+        Text(text, style = GdpiType.optionHint, color = c.dangerText, modifier = Modifier.padding(vertical = 8.dp))
     }
 }
 
@@ -482,7 +571,7 @@ private fun ConfirmDeleteDialog(title: String, name: String, onConfirm: () -> Un
         textContentColor = c.muted,
         title = { Text(title, style = GdpiType.screenTitle) },
         text = { Text("\"$name\" silinsin mi? Bu işlem geri alınamaz.", style = GdpiType.rowHint) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Sil", style = GdpiType.button, color = c.danger) } },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Sil", style = GdpiType.button, color = c.dangerText) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Vazgeç", style = GdpiType.button, color = c.muted) } },
     )
 }
@@ -513,84 +602,111 @@ private fun DnsSection(vm: MainViewModel, settings: SettingsUi, onPick: () -> Un
 }
 
 /**
- * Ozel DNS duzenleyicisi. Alanlar yerel tutulur ve her tus vurusunda dogrulanir; yalnizca
- * gecerli degerler kaydedilir, gecersiz yazim ekranda uyari olarak kalir (masaustu DnsWarning).
+ * Ozel DNS duzenleyicisi. Alanlar yerel tutulur ve her tus vurusunda dogrulanir (hata alanin
+ * hemen altinda, kenarlik kirmizi). Kayit ise "Tamam", odak kaybi ya da kisa bir duraklamadan
+ * sonra: adres motorun komut satirinda, bagliyken her gecerli ara yazim ("1.2.3.4" ->
+ * "1.2.3.45") motoru yeniden baslatirdi. Gecersiz yazim kaydedilmez (masaustu DnsWarning).
  */
 @Composable
 private fun CustomDnsEditor(entry: CustomDnsEntry, vm: MainViewModel, modifier: Modifier = Modifier) {
     val c = GdpiTheme.colors
     val id = entry.id
-    var name by remember(id) { mutableStateOf(entry.name) }
-    var v4 by remember(id) { mutableStateOf(entry.v4) }
-    var p4 by remember(id) { mutableStateOf(entry.v4Port.toString()) }
-    var v6 by remember(id) { mutableStateOf(entry.v6) }
-    var p6 by remember(id) { mutableStateOf(entry.v6Port.toString()) }
-    var confirmDelete by remember(id) { mutableStateOf(false) }
+    // Kaydedilebilir: ekran donunce yarim kalan (henuz gecersiz, kaydedilmemis) yazim kaybolmasin.
+    var v4 by rememberSaveable(id) { mutableStateOf(entry.v4) }
+    var p4 by rememberSaveable(id) { mutableStateOf(entry.v4Port.toString()) }
+    var v6 by rememberSaveable(id) { mutableStateOf(entry.v6) }
+    var p6 by rememberSaveable(id) { mutableStateOf(entry.v6Port.toString()) }
+    var confirmDelete by rememberSaveable(id) { mutableStateOf(false) }
+    val name = rememberDraft(id, entry.name, accept = { it.isNotBlank() }) { vm.renameCustomDns(id, it) }
+    val nameBlank = name.text.isBlank()
 
     val warning = dnsWarning(v4, p4, v6, p6)
-    val commit = {
+    val row4 = dnsRowWarning(v4, p4, v6 = false)
+    val row6 = dnsRowWarning(v6, p6, v6 = true)
+    val latest by rememberUpdatedState(entry)
+    val commit: () -> Unit = {
         if (dnsWarning(v4, p4, v6, p6) == null) {
-            vm.updateCustomDns(id, v4, p4.toIntOrNull() ?: 53, v6, p6.toIntOrNull() ?: 53)
+            val e = latest
+            val port4 = p4.toIntOrNull() ?: 53
+            val port6 = p6.toIntOrNull() ?: 53
+            // Degismeyen deger yeniden yazilmaz (odak kaybi ve duraklama ayni degeri iki kez getirir).
+            if (v4.trim() != e.v4 || port4 != e.v4Port || v6.trim() != e.v6 || port6 != e.v6Port) {
+                vm.updateCustomDns(id, v4, port4, v6, port6)
+            }
         }
     }
+    val commitNow by rememberUpdatedState(commit)
+    LaunchedEffect(id, v4, p4, v6, p6) {
+        delay(COMMIT_DELAY_MS)
+        commitNow()
+    }
+    DisposableEffect(id) { onDispose { commitNow() } }
 
     SurfaceCard(modifier) {
-        SectionLabel("DNS PROFİLİ", color = c.accent)
+        SectionLabel("DNS PROFİLİ", color = c.accentText)
         Row(verticalAlignment = Alignment.CenterVertically) {
             GdpiTextField(
-                value = name,
-                onValueChange = {
-                    name = it
-                    vm.renameCustomDns(id, it)
-                },
+                value = name.text,
+                onValueChange = { name.text = it },
                 label = "DNS adı",
                 placeholder = "DNS adı",
+                isError = nameBlank,
+                onFocusLost = { name.flush(restoreIfRejected = true) },
                 modifier = Modifier.weight(1f),
             )
             GdpiIconButton(GdpiIcons.ContentCopy, "DNS girişini çoğalt", vm::addCustomDns)
             GdpiIconButton(Icons.Filled.Delete, "DNS girişini sil", { confirmDelete = true }, tint = c.danger)
         }
+        if (nameBlank) {
+            Text(
+                "Ad boş olamaz; alandan çıkınca kayıtlı ad geri gelir.",
+                style = GdpiType.optionHint,
+                color = c.dangerText,
+                modifier = Modifier.padding(top = 6.dp, start = 2.dp),
+            )
+        }
 
         Divider(Modifier.padding(top = 14.dp, bottom = 12.dp))
-        SectionLabel("KENDİ DNS SUNUCUN", color = c.accent)
-        AddressRow(
+        SectionLabel("KENDİ DNS SUNUCUN", color = c.accentText)
+        AddressBlock(
             address = v4,
             port = p4,
             addressLabel = "IPv4 adresi",
             placeholder = "örn. 8.8.8.8",
-            onAddress = { v4 = it; commit() },
-            onPort = { p4 = it; commit() },
-            // IPv4 yalnizca rakam ve nokta: sayi klavyesi yeterli. IPv6 onaltilik harf istiyor.
-            keyboardType = KeyboardType.Decimal,
+            hint = "IPv4 adresi ve port",
+            rowWarning = row4,
+            // Turkce klavyelerin sayi tusunda ondalik ayirici virgul olabiliyor: noktaya cevrilir.
+            onAddress = { v4 = it.replace(',', '.') },
+            onPort = { p4 = it },
+            onFocusLost = commit,
+            // Sayi klavyesi (Decimal) bazi klavyelerde tr-TR icin yalnizca ',' sunuyor; Uri her
+            // klavyede '.' veriyor (IPv6 alani da ayni).
+            keyboardType = KeyboardType.Uri,
         )
-        Text("IPv4 adresi ve port", style = GdpiType.optionHint, color = c.muted, modifier = Modifier.padding(start = 2.dp, top = 4.dp))
-
-        AddressRow(
+        AddressBlock(
             address = v6,
             port = p6,
             addressLabel = "IPv6 adresi",
             placeholder = "isteğe bağlı",
-            onAddress = { v6 = it; commit() },
-            onPort = { p6 = it; commit() },
+            hint = "IPv6 adresi ve port (isteğe bağlı)",
+            rowWarning = row6,
+            onAddress = { v6 = it },
+            onPort = { p6 = it },
+            onFocusLost = commit,
             modifier = Modifier.padding(top = 10.dp),
         )
-        Text(
-            "IPv6 adresi ve port (isteğe bağlı)",
-            style = GdpiType.optionHint,
-            color = c.muted,
-            modifier = Modifier.padding(start = 2.dp, top = 4.dp),
-        )
 
-        // Uyarinin kendisi degisince de (IPv4 -> port) metin yumusakca yenilenir.
+        // Satirlara ait olmayan uyari (satirlar temizken) en altta; ayni metin iki kez gorunmesin.
+        val general = warning.takeIf { row4 == null && row6 == null }
         val shown = remember { mutableStateOf("") }
-        if (warning != null) shown.value = warning
+        if (general != null) shown.value = general
         AnimatedVisibility(
-            visible = warning != null,
+            visible = general != null,
             enter = fadeIn(Motion.fadeIn()) + expandVertically(Motion.spring()),
             exit = fadeOut(Motion.fadeOut()) + shrinkVertically(Motion.spring()),
             label = "dnsWarning",
         ) {
-            Text(shown.value, style = GdpiType.optionHint, color = c.danger, modifier = Modifier.padding(top = 10.dp))
+            Text(shown.value, style = GdpiType.optionHint, color = c.dangerText, modifier = Modifier.padding(top = 10.dp))
         }
     }
 
@@ -607,37 +723,88 @@ private fun CustomDnsEditor(entry: CustomDnsEntry, vm: MainViewModel, modifier: 
     }
 }
 
+/**
+ * Adres + port satiri ve altindaki aciklama. Satirda hata varsa aciklamanin yerine hata
+ * metni gelir ve blok klavyenin ustune kaydirilir: odaklanan kutu gorunur kalsa da altindaki
+ * uyari klavyenin altinda kaliyordu.
+ */
 @Composable
-private fun AddressRow(
+private fun AddressBlock(
     address: String,
     port: String,
     addressLabel: String,
     placeholder: String,
+    hint: String,
+    rowWarning: DnsRowWarning?,
     onAddress: (String) -> Unit,
     onPort: (String) -> Unit,
+    onFocusLost: () -> Unit,
     modifier: Modifier = Modifier,
     keyboardType: KeyboardType = KeyboardType.Uri,
 ) {
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        GdpiTextField(
-            value = address,
-            onValueChange = { onAddress(it.trim()) },
-            label = addressLabel,
-            placeholder = placeholder,
-            keyboardType = keyboardType,
-            modifier = Modifier.weight(1f),
-        )
-        GdpiTextField(
-            value = port,
-            // Yalnizca rakam; 5 haneden uzun port olamaz.
-            onValueChange = { t -> onPort(t.filter(Char::isDigit).take(5)) },
-            label = "$addressLabel portu",
-            placeholder = "53",
-            keyboardType = KeyboardType.Number,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.width(92.dp),
+    val c = GdpiTheme.colors
+    val requester = remember { BringIntoViewRequester() }
+    LaunchedEffect(rowWarning) {
+        if (rowWarning != null) {
+            // Klavye acilip yerlesim oturana kadar kisa bir bekleme; sonra blogun tamami gorunsun.
+            delay(120)
+            requester.bringIntoView()
+        }
+    }
+    Column(modifier.bringIntoViewRequester(requester)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            GdpiTextField(
+                value = address,
+                onValueChange = { onAddress(it.trim()) },
+                label = addressLabel,
+                placeholder = placeholder,
+                keyboardType = keyboardType,
+                isError = rowWarning?.address == true,
+                onFocusLost = onFocusLost,
+                modifier = Modifier.weight(1f),
+            )
+            GdpiTextField(
+                value = port,
+                // Yalnizca rakam; 5 haneden uzun port olamaz.
+                onValueChange = { t -> onPort(t.filter(Char::isDigit).take(5)) },
+                label = "$addressLabel portu",
+                placeholder = "53",
+                keyboardType = KeyboardType.Number,
+                textAlign = TextAlign.Center,
+                isError = rowWarning?.port == true,
+                onFocusLost = onFocusLost,
+                modifier = Modifier.width(92.dp),
+            )
+        }
+        Text(
+            rowWarning?.message ?: hint,
+            style = GdpiType.optionHint,
+            color = if (rowWarning != null) c.dangerText else c.muted,
+            modifier = Modifier.padding(start = 2.dp, top = 4.dp),
         )
     }
+}
+
+/** Tek satirin (adres + port) hatasi: hangi kutu kirmizi olacak ve ne yazacak. */
+internal data class DnsRowWarning(val message: String, val address: Boolean, val port: Boolean)
+
+/** Satir hatasi; bos adres hata degil (IPv6 istege bagli, ikisi de bossa genel uyari var). */
+internal fun dnsRowWarning(address: String, port: String, v6: Boolean): DnsRowWarning? {
+    val a = address.trim()
+    val addressMessage = if (a.isNotEmpty() && !(if (v6) IpLiterals.isIpv6(a) else IpLiterals.isIpv4(a))) {
+        if (v6) "Geçersiz IPv6 adresi." else "Geçersiz IPv4 adresi."
+    } else {
+        null
+    }
+    val portMessage = when {
+        port.isBlank() -> null
+        port.toIntOrNull() == null -> "Port bir sayı olmalı."
+        port.toInt() !in 0..65535 -> "Port 0-65535 aralığında olmalı."
+        else -> null
+    }
+    // Iki kutu da hataliysa ikisi de kirmizi; metin once adresi soyler (masaustu sirasi).
+    val message = addressMessage ?: portMessage ?: return null
+    return DnsRowWarning(message, address = addressMessage != null, port = portMessage != null)
 }
 
 /** Masaustu SetDnsPort + DnsProfile.Validate sirasiyla; hata yoksa null. */
@@ -673,7 +840,8 @@ private fun GeneralSection(vm: MainViewModel, settings: SettingsUi) {
         )
         ToggleRow(
             "Otomatik güncelle", settings.autoUpdate, { v -> vm.updateSettings { it.copy(autoUpdate = v) } },
-            hint = "GitHub'da yeni sürüm çıkınca haber verir",
+            // Davranisla ayni: acilista yeni surum varsa indirir ve kurulumu baslatir (UpdateManager.onAppOpen).
+            hint = "Açılışta GitHub'da yeni sürüm varsa indirip kurulumu başlatır",
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
         )
         ToggleRow(
@@ -720,7 +888,7 @@ private fun BackgroundSection() {
                 "Açık: bazı telefonlar bağlantıyı arka planda kapatabilir. Kapatmak için dokun."
             },
             value = if (ignoring) "Kapalı" else "Açık",
-            valueColor = if (ignoring) c.success else c.danger,
+            valueColor = if (ignoring) c.successText else c.dangerText,
             onClick = { SystemIntents.openBatteryOptimization(context) },
         )
         NavRow(
@@ -830,12 +998,12 @@ private fun ConnectionTestSection(vm: MainViewModel) {
                         Modifier.fillMaxWidth().heightIn(min = 36.dp).semantics(mergeDescendants = true) { },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(if (r.ok) "✓" else "✗", style = GdpiType.number, color = if (r.ok) c.success else c.danger, modifier = Modifier.width(24.dp))
+                        Text(if (r.ok) "✓" else "✗", style = GdpiType.number, color = if (r.ok) c.successText else c.dangerText, modifier = Modifier.width(24.dp))
                         Text(r.host, style = GdpiType.optionTitle, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             if (r.ok) "${r.millis ?: 0} ms" else (r.error ?: "Hata"),
                             style = GdpiType.optionHint,
-                            color = if (r.ok) c.muted else c.danger,
+                            color = if (r.ok) c.muted else c.dangerText,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             textAlign = TextAlign.End,
@@ -857,13 +1025,14 @@ private fun AboutSection(vm: MainViewModel, onSheet: (SettingsSheet) -> Unit) {
     val update by vm.updateState.collectAsStateWithLifecycle()
     val (updateValue, updateColor) = when (val u = update) {
         UpdateState.Checking -> "Denetleniyor…" to c.muted
-        UpdateState.UpToDate -> "Güncel" to c.success
-        is UpdateState.Available -> "Yeni: ${u.info.version}" to c.accent
-        is UpdateState.Downloading -> "İndiriliyor" to c.accent
-        is UpdateState.Verifying -> "Doğrulanıyor" to c.accent
-        is UpdateState.Installing -> "Kuruluyor" to c.accent
-        is UpdateState.NeedsPermission -> "İzin gerekli" to c.danger
-        is UpdateState.Failed -> "Denetlenemedi" to c.danger
+        UpdateState.UpToDate -> "Güncel" to c.successText
+        is UpdateState.Available -> "Yeni: ${u.info.version}" to c.accentText
+        is UpdateState.Downloading -> "İndiriliyor" to c.accentText
+        is UpdateState.Verifying -> "Doğrulanıyor" to c.accentText
+        is UpdateState.Installing -> "Kuruluyor" to c.accentText
+        is UpdateState.NeedsPermission -> "İzin gerekli" to c.dangerText
+        // Surum bilgisi varsa denetim basarili olmus, indirme/kurulum takilmis.
+        is UpdateState.Failed -> (if (u.info != null) "Güncellenemedi" else "Denetlenemedi") to c.dangerText
         UpdateState.Idle -> "" to c.muted
     }
 
@@ -886,7 +1055,7 @@ private fun AboutSection(vm: MainViewModel, onSheet: (SettingsSheet) -> Unit) {
         NavRow(title = "Açık kaynak lisansları", onClick = { onSheet(SettingsSheet.Licenses) })
         NavRow(
             title = "Tanılama",
-            hint = "Motorun şu anki ayarlarla çalıştıracağı komut satırı",
+            hint = "Motorun çalışan (bağlı değilse çalıştıracağı) komut satırı",
             onClick = { onSheet(SettingsSheet.Diagnostics) },
         )
     }
@@ -947,9 +1116,11 @@ private fun LicensesSheet(onDismiss: () -> Unit) {
                         Text(licenseTitle(file), style = GdpiType.screenTitle, color = c.text, modifier = Modifier.padding(start = 4.dp))
                     }
                     SelectionContainer(Modifier.weight(1f)) {
+                        // Satirlar 80 sutunda elle kirilmis; telefonda her ikinci satir kisa kaliyordu.
+                        // Paragraflar birlestirilir, orantili yaziyla okunur.
                         Text(
-                            text,
-                            style = GdpiType.mono,
+                            reflowLicense(text),
+                            style = GdpiType.rowHint,
                             color = c.text,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -963,9 +1134,41 @@ private fun LicensesSheet(onDismiss: () -> Unit) {
     }
 }
 
-/** "LICENSE-hev-socks5-tunnel.txt" -> "hev-socks5-tunnel". */
-private fun licenseTitle(file: String): String =
-    file.removePrefix("LICENSE-").removeSuffix(".txt")
+/** "LICENSE-hev-socks5-tunnel.txt" -> "hev-socks5-tunnel"; toplu bildirim dosyasi okunur adla. */
+private fun licenseTitle(file: String): String = when (file) {
+    THIRD_PARTY_NOTICES -> "AndroidX, Jetpack Compose, Kotlin"
+    else -> file.removePrefix("LICENSE-").removeSuffix(".txt")
+}
+
+private const val THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.txt"
+
+/**
+ * Elle kirilmis lisans metnini ekrana gore akitir: bos satirla ayrilan paragraflar korunur,
+ * paragraf icindeki tek satir sonlari bosluga doner. Madde basi ("-", "*", "(a)", "1.") ve
+ * girintisi derinlesen satirlar yeni satirda kalir ki listeler ve basliklar bozulmasin.
+ */
+internal fun reflowLicense(text: String): String {
+    val out = StringBuilder()
+    val paragraphs = text.replace("\r\n", "\n").split(Regex("\n[ \t]*\n+"))
+    for ((pi, para) in paragraphs.withIndex()) {
+        if (pi > 0) out.append("\n\n")
+        var lineStart = true
+        for (raw in para.split('\n')) {
+            val line = raw.trim()
+            if (line.isEmpty()) continue
+            if (!lineStart && startsNewLine(line)) out.append('\n')
+            else if (!lineStart) out.append(' ')
+            out.append(line)
+            lineStart = false
+        }
+    }
+    return out.toString().trim()
+}
+
+private val listMarker = Regex("^([-*•]|\\([a-z0-9]{1,3}\\)|[0-9]{1,2}[.)])\\s")
+
+private fun startsNewLine(line: String): Boolean =
+    listMarker.containsMatchIn(line) || line.startsWith("Copyright", ignoreCase = true)
 
 /** Tanilama: motorun komut satiri, secilebilir ve kopyalanabilir. */
 @Composable

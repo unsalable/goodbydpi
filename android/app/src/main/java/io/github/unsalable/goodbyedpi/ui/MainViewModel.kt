@@ -88,11 +88,18 @@ class MainViewModel(
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
     val events: Flow<UiEvent> = _events.receiveAsFlow()
 
-    // Alt cubukta gosterilecek kisa mesajlar ("VPN izni verilmedi" gibi).
-    private val _messages = Channel<String>(Channel.BUFFERED)
-    val messages: Flow<String> = _messages.receiveAsFlow()
+    // Alt cubukta gosterilecek kisa mesajlar ("VPN izni verilmedi" gibi), istege bagli eylemle.
+    private val _messages = Channel<UiMessage>(Channel.BUFFERED)
+    val messages: Flow<UiMessage> = _messages.receiveAsFlow()
 
     private var opened = false
+
+    /**
+     * VPN izin ekrani istendi, sonucu henuz gelmedi. Sistem izin penceresi yari saydam bir
+     * aktivite: arkadaki ekran STARTED kalir ve ikinci bir dokunus ikinci bir izin penceresini
+     * ustuste acardi. Sonuc (ya da acilamama) gelene kadar yeni baglanma istegi yok sayilir.
+     */
+    private var consentPending = false
 
     // ------------------------------------------------------------------ acilis
 
@@ -149,27 +156,42 @@ class MainViewModel(
     }
 
     private fun connect() {
-        askNotificationsOnce()
+        if (consentPending) return
         val consent = try {
             ServiceController.start(context)
         } catch (e: Exception) {
             Log.w(TAG, "Servis baslatilamadi", e)
-            _messages.trySend("Bağlantı başlatılamadı.")
+            _messages.trySend(UiMessage("Bağlantı başlatılamadı."))
             return
         }
-        if (consent != null) _events.trySend(UiEvent.RequestVpnConsent(consent))
+        if (consent != null) {
+            // Bildirim izni burada sorulmaz: iki sistem penceresi ayni anda acilir, VPN izni
+            // reddedilse bile ardindan alakasiz bir bildirim sorusu gelirdi. Izin verilince sorulur.
+            consentPending = true
+            _events.trySend(UiEvent.RequestVpnConsent(consent))
+        } else {
+            askNotificationsOnce()
+        }
     }
 
-    /** VPN izin ekranindan donus. */
+    /** VPN izin ekranindan donus (ya da izin ekrani hic acilamadi: granted = false). */
     fun onVpnConsentResult(granted: Boolean) {
+        consentPending = false
         if (!granted) {
-            _messages.trySend("VPN izni verilmedi.")
+            // Ustuste kalmis ikinci bir pencere iptal edildiyse baglanti zaten kurulmus olabilir;
+            // o zaman "izin verilmedi" demek yanlis olur.
+            val connected = engineState.value is EngineState.Running || engineState.value == EngineState.Starting
+            if (!connected && !hasVpnConsent()) _messages.trySend(UiMessage("VPN izni verilmedi."))
             return
         }
         // Izin simdi var; ikinci cagri servisi baslatir (tekrar Intent donerse sistem izni
         // hala vermemis demektir, dongu kurmayalim).
         val again = runCatching { ServiceController.start(context) }.getOrNull()
-        if (again != null) _messages.trySend("VPN izni alınamadı.")
+        if (again != null) {
+            _messages.trySend(UiMessage("VPN izni alınamadı."))
+            return
+        }
+        askNotificationsOnce()
     }
 
     /**
@@ -246,10 +268,22 @@ class MainViewModel(
     fun updateCustomConfig(id: String, transform: (DpiConfig) -> DpiConfig) =
         editProfile(id) { it.copy(config = transform(it.config)) }
 
-    /** "Onerilene don": profil, secili saglayicinin onerdigi yontemin degerlerine doner. */
-    fun resetCustomToRecommended(id: String) = edit { s ->
-        val cfg = s.ispProfile().recommended.build()
-        s.copy(customProfiles = s.customProfiles.map { if (it.id == id) it.copy(config = cfg) else it })
+    /**
+     * "Onerilene don": profil, secili saglayicinin onerdigi yontemin degerlerine doner.
+     * Tek dokunusla elle ayarlanmis bir profil silinmesin diye onceki degerler "Geri al" ile
+     * geri getirilebilir.
+     */
+    fun resetCustomToRecommended(id: String) {
+        val previous = repo.current.customProfiles.firstOrNull { it.id == id }?.config ?: return
+        edit { s ->
+            val cfg = s.ispProfile().recommended.build()
+            s.copy(customProfiles = s.customProfiles.map { if (it.id == id) it.copy(config = cfg) else it })
+        }
+        _messages.trySend(
+            UiMessage("Önerilen değerlere dönüldü.", actionLabel = "Geri al") {
+                updateCustomConfig(id) { previous }
+            },
+        )
     }
 
     private fun editProfile(id: String, transform: (CustomMethodProfile) -> CustomMethodProfile) = edit { s ->
@@ -334,22 +368,47 @@ class MainViewModel(
 
     // ------------------------------------------------------------- tani
 
-    /** Motorun su anki ayarlarla calistiracagi tam komut satiri (Hakkinda > Tanilama). */
+    /**
+     * Hakkinda > Tanilama. Motor calisiyorsa gercekten calisan komut satiri (baglanan port,
+     * otomatik yedek yontemin sectigi yontem dahil); kapaliysa su anki ayarlarla
+     * calistirilacak komut, bunu belirten bir notla.
+     */
     fun diagnostics(): String = try {
-        val s = repo.current
-        buildString {
-            appendLine(ByeDpiArgs.describe(EngineConfig.from(s)))
-            appendLine()
-            appendLine("Yöntem: ${s.selectedMethod().name}")
-            appendLine("DNS: ${s.selectedDns().name}")
-            append("Sağlayıcı: ${s.ispProfile().name}")
-        }
+        diagnosticsText(engineState.value, repo.current)
     } catch (e: Exception) {
         "Komut satırı oluşturulamadı: ${e.message}"
     }
 
     companion object {
         private const val TAG = "MainViewModel"
+
+        internal fun diagnosticsText(state: EngineState, s: AppSettings): String {
+            val running = state as? EngineState.Running
+            return buildString {
+                if (running != null && running.argv.isNotEmpty()) {
+                    appendLine("Çalışan komut:")
+                    appendLine(formatArgv(running.argv))
+                    appendLine()
+                    appendLine("Yöntem: ${running.methodName}")
+                    appendLine("DNS: ${running.dnsName}")
+                } else {
+                    appendLine(if (running != null) "Şu anki ayarlarla komut:" else "Bağlı değil; bağlanınca çalışacak komut:")
+                    appendLine(ByeDpiArgs.describe(EngineConfig.from(s)))
+                    appendLine()
+                    appendLine("Yöntem: ${s.selectedMethod().name}")
+                    appendLine("DNS: ${s.selectedDns().name}")
+                }
+                append("Sağlayıcı: ${s.ispProfile().name}")
+            }
+        }
+
+        /** ByeDpiArgs.describe ile ayni bicim: "ciadpi" + bosluk/tirnak iceren argumanlar tirnakli. */
+        internal fun formatArgv(argv: List<String>): String {
+            val args = if (argv.firstOrNull() == "ciadpi") argv.drop(1) else argv
+            return "ciadpi " + args.joinToString(" ") { a ->
+                if (a.isEmpty() || a.any { it == ' ' || it == '\'' || it == '"' }) "'" + a.replace("'", "'\\''") + "'" else a
+            }
+        }
 
         /** Ayar dosyasina girmeyen, yalnizca arayuze ait kucuk bayraklar. */
         internal const val UI_PREFS = "ui"

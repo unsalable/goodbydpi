@@ -66,9 +66,14 @@ class UpdateBannerTest {
         compose.onNodeWithText("İndiriliyor… %50").assertExists()
         compose.onNodeWithText("4,0 / 8,0 MB").assertExists()
         screenshot("update_downloading_light")
+        // Indirme (otomatik guncellemede istenmeden de baslar) seritten iptal edilebilir.
+        compose.onNodeWithText("Vazgeç").performClick()
+        assertEquals(2, later)
 
         state = UpdateState.Verifying(info)
         compose.onNodeWithText("Dosya doğrulanıyor…").assertExists()
+        // Dogrulama/kurulumda iptal yok (kurulum sisteme teslim edilince geri alinamaz).
+        compose.onNodeWithText("Vazgeç").assertDoesNotExist()
 
         state = UpdateState.Installing(info)
         compose.onNodeWithText("Güncelleme kuruluyor…").assertExists()

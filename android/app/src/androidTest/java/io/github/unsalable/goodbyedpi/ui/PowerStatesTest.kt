@@ -5,6 +5,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -75,6 +76,12 @@ class PowerStatesTest {
             compose.onNodeWithText("byedpi başlatılamadı: port kullanımda").assertExists()
             compose.onNodeWithContentDescription("Bağlan").assert(state("Bağlantı kurulamadı"))
             screenshot("state_failed_$tag")
+
+            // Kapanirken dugme "Baglaniyor" diye okunmaz ve dokunusa kapali.
+            EngineStateHolder.set(EngineState.Stopping)
+            compose.mainClock.advanceTimeBy(700)
+            compose.onNodeWithText("Durduruluyor…").assertExists()
+            compose.onNodeWithContentDescription("Bağlantıyı kes").assert(state("Durduruluyor")).assertIsNotEnabled()
 
             EngineStateHolder.set(EngineState.Stopped)
             compose.mainClock.advanceTimeBy(900)

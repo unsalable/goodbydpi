@@ -88,6 +88,93 @@ class UiLogicTest {
     }
 
     @Test
+    fun connectionUi_stoppingIsLabelledAndDisabled() {
+        val s = AppSettings().migrate()
+        val stopping = ConnectionUi.from(EngineState.Stopping, s)
+        assertTrue(stopping.stopping)
+        assertEquals("Durduruluyor", stopping.stateLabel)
+        assertEquals("Bağlanıyor", ConnectionUi.from(EngineState.Starting, s).stateLabel)
+        assertFalse(ConnectionUi.from(EngineState.Starting, s).stopping)
+        assertEquals("Bağlı", ConnectionUi.from(EngineState.Running(0, "a", "b", 1), s).stateLabel)
+    }
+
+    @Test
+    fun dnsRowWarning_marksTheOffendingField() {
+        assertNull(dnsRowWarning("", "53", v6 = false))
+        assertNull(dnsRowWarning("8.8.8.8", "", v6 = false))
+        assertEquals(DnsRowWarning("Geçersiz IPv4 adresi.", address = true, port = false), dnsRowWarning("1.2.3", "53", v6 = false))
+        assertEquals(DnsRowWarning("Port 0-65535 aralığında olmalı.", address = false, port = true), dnsRowWarning("1.2.3.4", "70000", v6 = false))
+        assertEquals("Geçersiz IPv6 adresi.", dnsRowWarning("2001:db8::zz", "53", v6 = true)?.message)
+        assertNull(dnsRowWarning("2001:db8::1", "853", v6 = true))
+        assertEquals(DnsRowWarning("Geçersiz IPv4 adresi.", address = true, port = true), dnsRowWarning("1.2", "99999", v6 = false))
+    }
+
+    @Test
+    fun draft_commitsOnlyValidChangedTextAndIgnoresOwnEcho() {
+        val commits = mutableListOf<String>()
+        val d = Draft("Özel", "Özel", null).apply {
+            accept = { it.isNotBlank() }
+            commit = { commits += it }
+        }
+        d.flush()
+        assertTrue("degismeyen ad yazilmaz", commits.isEmpty())
+
+        d.text = "Oyun "
+        d.flush()
+        d.flush()
+        assertEquals(listOf("Oyun"), commits)
+
+        // Kaydin yankisi gelmeden kullanici yazmaya devam etti: yanki kutuyu ezmemeli.
+        d.text = "Oyun 2"
+        d.onPersisted("Oyun")
+        assertEquals("Oyun 2", d.text)
+
+        // Bos ad kaydedilmez; odak kaybinda kayitli ad geri gelir.
+        d.text = "   "
+        d.flush(restoreIfRejected = true)
+        assertEquals("Oyun", d.text)
+        assertEquals(listOf("Oyun"), commits)
+
+        // Disaridan gelen degisiklik (Onerilene don) kutuya yansir; ayni degeri yeniden yazmak mumkun.
+        d.onPersisted("www.w3.org")
+        assertEquals("www.w3.org", d.text)
+        d.text = "Oyun"
+        d.flush()
+        assertEquals(listOf("Oyun", "Oyun"), commits)
+    }
+
+    @Test
+    fun diagnostics_prefersTheRunningArgv() {
+        val s = AppSettings().migrate()
+        val running = EngineState.Running(0, "Ters sıra", "Yandex (1253)", 39889, listOf("-i", "127.0.0.1", "-p", "39889", "--fake-data", "a b"))
+        val text = MainViewModel.diagnosticsText(running, s)
+        assertTrue(text, text.contains("ciadpi -i 127.0.0.1 -p 39889 --fake-data 'a b'"))
+        assertTrue(text.contains("Yöntem: Ters sıra"))
+
+        // Calismiyorsa ayarlardan kurulur ve bunu soyler.
+        val off = MainViewModel.diagnosticsText(EngineState.Stopped, s)
+        assertTrue(off, off.startsWith("Bağlı değil"))
+        assertTrue(off.contains("ciadpi -i 127.0.0.1"))
+        assertEquals("ciadpi -p 1", MainViewModel.formatArgv(listOf("ciadpi", "-p", "1")))
+    }
+
+    @Test
+    fun reflowLicense_joinsHardWrappedParagraphs() {
+        val mit = "MIT License\n\nCopyright (c) 2021 a\nCopyright (c) 2022 b\n\n" +
+            "Permission is hereby granted, free of charge, to any person\nobtaining a copy of this software.\n"
+        assertEquals(
+            "MIT License\n\nCopyright (c) 2021 a\nCopyright (c) 2022 b\n\n" +
+                "Permission is hereby granted, free of charge, to any person obtaining a copy of this software.",
+            reflowLicense(mit),
+        )
+        val list = "   4. Redistribution. You may\n      reproduce:\n\n      (a) You must give\n          a copy; and\n      (b) You must cause\n"
+        assertEquals("4. Redistribution. You may reproduce:\n\n(a) You must give a copy; and\n(b) You must cause", reflowLicense(list))
+        assertEquals("- a\n- b", reflowLicense("- a\n- b"))
+        // CRLF ve bosluklu bos satir da paragraf ayiricidir.
+        assertEquals("a b\n\nc", reflowLicense("a\r\nb\r\n  \r\nc"))
+    }
+
+    @Test
     fun byteFormatting_isTurkish() {
         assertEquals("0 B", formatBytes(0))
         assertEquals("1023 B", formatBytes(1023))
