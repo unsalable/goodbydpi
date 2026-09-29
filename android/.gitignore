@@ -10,3 +10,5 @@ app/.cxx/
 .kotlin/
 *.iml
 .idea/
+__pycache__/
+*.pyc
