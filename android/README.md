@@ -105,8 +105,15 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   Discord uygulamasında bir sesli kanal. example.com engelsizdir: o da açılmıyorsa sorun
   bağlantının kendisindedir.
 * **"Bağlantı kurulamadı".** Motor düşerse 1, 3 ve 10 saniye arayla yeniden kurulur; 5 dakikada
-  5 deneme başarısız olursa durur ve bildirim gösterir. Güç düğmesine yeniden dokunun. Başka bir
-  VPN uygulaması açılırsa Android GoodbyeDPI'ı kapatır (aynı anda tek VPN olabilir).
+  5 deneme başarısız olursa durur ve bildirim gösterir. Güç düğmesine yeniden dokunun. Böyle
+  kalıcı bir hatadan sonra bağlantı arka planda kendiliğinden açılmaz; uygulamayı ya da hızlı
+  ayar karosunu açınca yeniden denenir. Başka bir VPN uygulaması açılırsa Android GoodbyeDPI'ı
+  kapatır (aynı anda tek VPN olabilir).
+* **"Bağlantı koptu — yeniden bağlanmak için dokun".** Uygulama arka planda kapanırsa (bellek
+  sıkıntısı, çökme) bağlantı birkaç saniye ile birkaç dakika içinde kendiliğinden geri gelir.
+  Arka arkaya 5 kez geri getirildiği halde yine kapandıysa uygulama bunu yapmayı bırakır ve bu
+  bildirimi gösterir: dokunun, bağlantı yeniden kurulur. Tekrar ediyorsa **Tanılama** çıktısıyla
+  bildirin.
 * **Hata bildirirken** Ayarlar → HAKKINDA → **Tanılama** ekranındaki komut satırını ekleyin.
 
 ## Derleme

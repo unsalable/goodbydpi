@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -66,8 +67,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -76,6 +81,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -725,8 +731,9 @@ private fun CustomDnsEditor(entry: CustomDnsEntry, vm: MainViewModel, modifier: 
 
 /**
  * Adres + port satiri ve altindaki aciklama. Satirda hata varsa aciklamanin yerine hata
- * metni gelir ve blok klavyenin ustune kaydirilir: odaklanan kutu gorunur kalsa da altindaki
- * uyari klavyenin altinda kaliyordu.
+ * metni gelir. Kutulardan biri odaktayken blogun TAMAMI (aciklama/hata satiri dahil, altinda
+ * [KEYBOARD_GAP] payla) klavyenin ustune kaydirilir: metin alaninin kendi kaydirmasi yalnizca
+ * kutuyu gosteriyor, alttaki satir klavyenin altinda ya da kenarina yapisik kaliyordu.
  */
 @Composable
 private fun AddressBlock(
@@ -743,15 +750,25 @@ private fun AddressBlock(
     keyboardType: KeyboardType = KeyboardType.Uri,
 ) {
     val c = GdpiTheme.colors
+    val density = LocalDensity.current
     val requester = remember { BringIntoViewRequester() }
-    LaunchedEffect(rowWarning) {
-        if (rowWarning != null) {
-            // Klavye acilip yerlesim oturana kadar kisa bir bekleme; sonra blogun tamami gorunsun.
-            delay(120)
-            requester.bringIntoView()
-        }
+    var focused by remember { mutableStateOf(false) }
+    var blockSize by remember { mutableStateOf(IntSize.Zero) }
+    // Klavye acilirken her karede degisir; efekt her degisimde yeniden basladigi icin asagidaki
+    // bekleme bir "durulma" beklemesi olur: kaydirma klavye yerine oturunca bir kez yapilir.
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(focused, rowWarning, imeBottom) {
+        if (!focused) return@LaunchedEffect
+        delay(120)
+        val gap = with(density) { KEYBOARD_GAP.toPx() }
+        requester.bringIntoView(Rect(0f, 0f, blockSize.width.toFloat(), blockSize.height + gap))
     }
-    Column(modifier.bringIntoViewRequester(requester)) {
+    Column(
+        modifier
+            .bringIntoViewRequester(requester)
+            .onSizeChanged { blockSize = it }
+            .onFocusChanged { focused = it.hasFocus },
+    ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             GdpiTextField(
                 value = address,
@@ -784,6 +801,9 @@ private fun AddressBlock(
         )
     }
 }
+
+/** Odaktaki adres blogunun alt kenari ile klavye arasinda birakilan bosluk. */
+private val KEYBOARD_GAP = 16.dp
 
 /** Tek satirin (adres + port) hatasi: hangi kutu kirmizi olacak ve ne yazacak. */
 internal data class DnsRowWarning(val message: String, val address: Boolean, val port: Boolean)

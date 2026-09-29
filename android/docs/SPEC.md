@@ -480,8 +480,24 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   unbinds with `DeadObjectException` and AMS drops the record. Added: `KeeperService` (plain,
   non-exported START_STICKY service that `Vpn` does not bind; restarted ~1 s after death, then
   recovers), recovery in `App.onCreate`, and a persisted 15-min `RecoveryJobService` backstop.
-  Background recovery only runs in the boot the engine was armed in (after a reboot
-  `BootReceiver` decides) and never in instrumentation processes.
+  Background recovery only runs while armed (`arm()` on every engine start; `disarm()` on user
+  stop, revoke and `fail()` clears an explicit flag, so a later process birth in the same boot,
+  e.g. the 6-hourly update job, does not reopen a failed VPN), in the boot the engine was armed
+  in (after a reboot `BootReceiver` decides) and never in instrumentation processes. The same
+  gate applies to an AMS sticky restart of `DpiVpnService` (null intent). UI and tile recovery
+  still retry.
+* **Crash loops: one-shot check job + give-up** — a second native crash within AMS's crash
+  window makes AMS delay the keeper restart by 30-60 min. Every background recovery therefore
+  also schedules a non-persisted `RecoveryJobService` run (`CHECK_JOB_ID`, min latency 30 s,
+  1, 2, 4, then 8 min per consecutive recovery, deadline +90 s); JobScheduler is not subject to
+  the crash penalty. If the engine is up, the check keeps watching (every >= 1 min) for 10 min
+  after the last recovery. Recoveries less than 15 min apart count as consecutive; the 6th in a
+  row is not attempted: background recovery is disarmed, the stale foreground record AMS keeps
+  for the dead service (its "Bağlı" notification stayed up) is released by starting the service
+  with `ACTION_REFRESH_NOTIFICATION` (no engine -> leave foreground, stop), and an alerts
+  notification "Bağlantı koptu"
+  (tap: `.ConnectRequest` + `EXTRA_CONNECT`) is posted. A user/tile/boot start
+  resets the count.
 * **User stops are honoured** — recovery first checks `ApplicationExitInfo` for
   `REASON_USER_REQUESTED` newer than the last arm (API 30+, not within 60 s of a package update)
   or, below 30, a cancelled backstop job; then it clears `wantRunning`. Force stop and "Durdur" in
@@ -511,7 +527,15 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **Theme uses `UiModeManager.setApplicationNightMode` (API 31+) + `configChanges="uiMode"`** —
   no activity recreation; below 31 the starting window follows the system mode.
 * **Notification permission is asked after VPN consent, not together** — two system dialogs at
-  once; a refused consent should not be followed by an unrelated prompt.
+  once; a refused consent should not be followed by an unrelated prompt. The service is already
+  foreground by then and its notification was dropped, so on "Allow" the UI sends
+  `ACTION_REFRESH_NOTIFICATION`, which just re-runs `startForeground` (status + Durdur appear
+  in the first session).
+* **"+ Yeni DNS" / "+ Yeni özel ayar" reuse the untouched placeholder** — `migrate()` keeps one
+  entry per list; while that entry still has the default name and no addresses (DNS) or the
+  default `DpiConfig` (method), the new entry takes its slot instead of adding "Özel DNS 2".
+* **Connection test results are cleared** when a run starts and when the engine port changes
+  (reconnect, stop); a running test is cancelled on a port change.
 * **Additions**: landscape two-pane main screen; the diagnostics sheet shows the running argv
   (`describe()` only when disconnected); the licenses list also shows `THIRD-PARTY-NOTICES.txt`
   (AndroidX, Compose, Kotlin; Apache-2.0).

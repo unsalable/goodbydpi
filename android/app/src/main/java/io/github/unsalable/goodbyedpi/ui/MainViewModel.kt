@@ -38,6 +38,7 @@ import io.github.unsalable.goodbyedpi.update.UpdateManager
 import io.github.unsalable.goodbyedpi.update.UpdateState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,6 +46,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
@@ -83,6 +86,9 @@ class MainViewModel(
     private val _connTest = MutableStateFlow(ConnTestUi.Idle)
     val connTest: StateFlow<ConnTestUi> = _connTest.asStateFlow()
 
+    /** Suren baglanti testi; motor portu degisince iptal edilir (sonucu eski porta ait olurdu). */
+    private var connTestJob: Job? = null
+
     // Aktivitenin yapacagi isler (izin ekranlari). Tamponlu: aktivite o an durmus olsa bile
     // (ekran donerken) istek kaybolmaz, tekrar basladiginda islenir.
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
@@ -93,6 +99,18 @@ class MainViewModel(
     val messages: Flow<UiMessage> = _messages.receiveAsFlow()
 
     private var opened = false
+
+    init {
+        // Baglanti testi sonuclari o anki motora (port) ait: VPN kapaninca ya da yeniden
+        // kurulup port degisince eski satirlar yeni baglantinin sonucu gibi okunmasin.
+        viewModelScope.launch {
+            connection.map { it.socksPort }.distinctUntilChanged().drop(1).collect {
+                connTestJob?.cancel()
+                connTestJob = null
+                _connTest.value = ConnTestUi.Idle
+            }
+        }
+    }
 
     /**
      * VPN izin ekrani istendi, sonucu henuz gelmedi. Sistem izin penceresi yari saydam bir
@@ -210,6 +228,12 @@ class MainViewModel(
         _events.trySend(UiEvent.RequestNotificationPermission)
     }
 
+    /** Bildirim izni verildi: servis calisiyorsa durum bildirimi simdi gorunsun. */
+    fun onNotificationPermissionGranted() {
+        runCatching { ServiceController.refreshNotification(context) }
+            .onFailure { Log.w(TAG, "Durum bildirimi yenilenemedi", it) }
+    }
+
     // ------------------------------------------------------------------ tema
 
     fun setTheme(mode: ThemeMode) = edit { it.copy(themeMode = mode) }
@@ -242,13 +266,13 @@ class MainViewModel(
     /**
      * Secili yontemi kopyalayarak yeni bir ozel profil olusturur ve ona gecer. Ozel bir
      * profildeysek bu "cogalt" demek; hazir yontemden turetilen profil "(ozel)" ekiyle
-     * adlanir ki listede asliyla karismasin.
+     * adlanir ki listede asliyla karismasin. El degmemis "Ozel" yer tutucusu varsa yenisi
+     * eklenmez, o kullanilir (AppSettings.withNewCustomProfile).
      */
     fun addCustomProfile() = edit { s ->
         val source = s.selectedMethod()
         val name = if (CustomIds.isCustom(source.id)) source.name else "${source.name} (özel)"
-        val entry = CustomMethodProfile.createNew(s.customProfiles, source.build().sanitized(), name)
-        s.copy(customProfiles = s.customProfiles + entry, method = entry.id)
+        s.withNewCustomProfile(source.build().sanitized(), name)
     }
 
     /** Silinen profil seciliydi: saglayicinin onerdigi yonteme don. */
@@ -292,12 +316,8 @@ class MainViewModel(
 
     // ----------------------------------------------------------- ozel DNS
 
-    /** Yeni DNS girisi; ozel bir giristeysek onu kopyalar. */
-    fun addCustomDns() = edit { s ->
-        val current = s.customDns.firstOrNull { it.id.equals(s.dns, ignoreCase = true) }
-        val entry = CustomDnsEntry.createNew(s.customDns, current)
-        s.copy(customDns = s.customDns + entry, dns = entry.id)
-    }
+    /** Yeni DNS girisi; ozel bir giristeysek onu kopyalar (yer tutucu kurali: AppSettings.withNewCustomDns). */
+    fun addCustomDns() = edit { it.withNewCustomDns() }
 
     fun deleteCustomDns(id: String) = edit { s ->
         s.copy(
@@ -345,8 +365,9 @@ class MainViewModel(
     fun runConnectionTest() {
         if (_connTest.value.running) return
         val port = connection.value.socksPort
-        _connTest.value = _connTest.value.copy(running = true)
-        viewModelScope.launch {
+        // Onceki calismanin satirlari "Test ediliyor" altinda bu calismanin sonucu gibi durmasin.
+        _connTest.value = ConnTestUi(running = true, results = emptyList(), viaProxy = port != null)
+        connTestJob = viewModelScope.launch {
             val results = try {
                 withContext(Dispatchers.IO) { ConnectionTester.run(port) }
             } catch (e: CancellationException) {

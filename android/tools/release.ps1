@@ -90,7 +90,9 @@ function Fail([string]$Message) {
 
 function Parse-Version([string]$Text) {
     if ($Text -match '(\d+(?:\.\d+){0,3})') {
-        $parts = $Matches[1].Split('.') | ForEach-Object { [int]$_ }
+        # @(): tek bilesenli surumde ("36", "android-v2") boru hatti diziyi tek [int]'e acar,
+        # += toplama yapar ve while dongusu hic bitmezdi.
+        $parts = @($Matches[1].Split('.') | ForEach-Object { [int]$_ })
         while ($parts.Count -lt 4) { $parts += 0 }
         return [version]::new($parts[0], $parts[1], $parts[2], $parts[3])
     }

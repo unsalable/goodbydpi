@@ -117,6 +117,51 @@ data class AppSettings(
             customDns = dnsEntries,
         )
     }
+
+    /**
+     * "+ Yeni ozel ayar" / "Profili cogalt": [seed] degerli, [name] adli bir ozel profil
+     * ekleyip secer. Listede migrate()'in koydugu el degmemis "Ozel" yer tutucusu varsa yenisi
+     * eklenmez, o doldurulup secilir: yoksa ilk dokunusta bos "Ozel"in yanina ikinci bir
+     * profil gelir ve kullanici hic olusturmadigi bir girisle kalirdi. Yer tutucu zaten
+     * seciliyse (kaynak kendisi) hicbir sey degismez.
+     */
+    fun withNewCustomProfile(seed: DpiConfig, name: String?): AppSettings {
+        val placeholder = customProfiles.firstOrNull { it.isUntouchedPlaceholder }
+            ?: return CustomMethodProfile.createNew(customProfiles, seed, name).let { entry ->
+                copy(customProfiles = customProfiles + entry, method = entry.id)
+            }
+        val others = customProfiles.filter { it.id != placeholder.id }
+        val filled = placeholder.copy(
+            name = CustomIds.newName(CustomIds.cleanName(name, CustomMethodProfile.DEFAULT_NAME), others.map { it.name }),
+            config = seed,
+        )
+        return copy(
+            customProfiles = customProfiles.map { if (it.id == placeholder.id) filled else it },
+            method = filled.id,
+        )
+    }
+
+    /**
+     * "+ Yeni DNS" / "DNS girisini cogalt": secili giris ozelse onun kopyasi, degilse bos bir
+     * giris ekleyip secer. Yer tutucu kurali [withNewCustomProfile] ile ayni: el degmemis
+     * "Ozel DNS" varsa (bos adresli) yeni giris onun yerine gecer, "Ozel DNS 2" birikmez.
+     */
+    fun withNewCustomDns(): AppSettings {
+        val current = customDns.firstOrNull { it.id.equals(dns, ignoreCase = true) }
+        val placeholder = customDns.firstOrNull { it.isUntouchedPlaceholder }
+            ?: return CustomDnsEntry.createNew(customDns, current).let { entry ->
+                copy(customDns = customDns + entry, dns = entry.id)
+            }
+        val filled = if (current == null || current.id == placeholder.id) {
+            placeholder
+        } else {
+            CustomDnsEntry.createNew(customDns.filter { it.id != placeholder.id }, current).copy(id = placeholder.id)
+        }
+        return copy(
+            customDns = customDns.map { if (it.id == placeholder.id) filled else it },
+            dns = filled.id,
+        )
+    }
 }
 
 /**

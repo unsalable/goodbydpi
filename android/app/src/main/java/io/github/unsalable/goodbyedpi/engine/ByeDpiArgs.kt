@@ -1,8 +1,10 @@
 package io.github.unsalable.goodbyedpi.engine
 
+import android.os.Build
 import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
+import androidx.annotation.RequiresApi
 import io.github.unsalable.goodbyedpi.model.DpiConfig
 import io.github.unsalable.goodbyedpi.model.FakePayload
 
@@ -195,7 +197,16 @@ private object Md5SigProbe {
 
     val result: Boolean? by lazy { probe() }
 
+    // Os.setsockoptInt API 26'da geldi; 24-25'te yoklama yok, "bilinmiyor" (lint NewApi).
+    // SDK_INT okumasi da try icinde: JVM birim testinin sahte android.jar'i firlatabilir.
     private fun probe(): Boolean? = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) probeSockopt() else null
+    } catch (ignored: Throwable) {
+        null
+    }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun probeSockopt(): Boolean? = try {
         val fd = Os.socket(OsConstants.AF_INET, OsConstants.SOCK_STREAM, 0)
         try {
             Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_MD5SIG, 0)

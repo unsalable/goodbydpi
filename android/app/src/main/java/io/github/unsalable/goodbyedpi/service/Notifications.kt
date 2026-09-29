@@ -2,6 +2,7 @@ package io.github.unsalable.goodbyedpi.service
 
 import android.app.Notification
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.util.Log
@@ -25,6 +26,7 @@ object Notifications {
 
     private const val REQ_OPEN = 1
     private const val REQ_STOP = 2
+    private const val REQ_CONNECT = 3
 
     /** Bildirime dokununca uygulama; zaten aciksa one gelir, yenisi acilmaz. */
     fun contentIntent(context: Context): PendingIntent {
@@ -96,6 +98,33 @@ object Notifications {
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setAutoCancel(true)
             .setContentIntent(contentIntent(context))
+            .build()
+        notify(context, ALERT_ID, n)
+    }
+
+    /**
+     * Arka plan kurtarmasi vazgecti (surec ust uste coktu, bkz. Recovery.giveUp). Dokununca
+     * uygulama ConnectRequest takma adiyla "baglan" istegiyle acilir (C5; baska uygulama bu
+     * disa kapali bilesene intent gonderemez). ALERT_ID: basarili her baslatma onu kaldirir.
+     */
+    fun showDisconnected(context: Context) {
+        val intent = Intent()
+            .setComponent(ComponentName(context, ServiceController.CONNECT_ALIAS))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(ServiceController.EXTRA_CONNECT, true)
+        val pi = PendingIntent.getActivity(
+            context, REQ_CONNECT, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = context.getString(R.string.notif_disconnected_text)
+        val n = NotificationCompat.Builder(context, App.CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_stat_power)
+            .setContentTitle(context.getString(R.string.notif_disconnected_title))
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
             .build()
         notify(context, ALERT_ID, n)
     }

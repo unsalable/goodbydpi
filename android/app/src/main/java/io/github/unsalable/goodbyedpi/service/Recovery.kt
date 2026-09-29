@@ -29,6 +29,17 @@ import kotlin.math.abs
  *    VPN izni (OP_ACTIVATE_VPN) olan uygulamanin arka plandan on plan servis baslatmasi serbest.
  * 2. App.onCreate: surec baska bir nedenle (karo, alici, is) dogdugunda da bakilir.
  * 3. [RecoveryJobService]: 15 dk'lik kalici periyodik is; ilk ikisi bir sekilde kacarsa emniyet.
+ * 4. Kontrol isi ([CHECK_JOB_ID]): her arka plan kurtarmasindan sonra 30 sn-8 dk icinde tek
+ *    seferlik, kalici olmayan is. Surec kurtarmadan hemen sonra yine cokerse (ayni trafik ayni
+ *    yerel cokmeyi tetikliyor) ActivityManager bekcinin yeniden baslatmasini 30 dk erteliyor
+ *    ve periyodik is 15-34 dk uzakta; JobScheduler bu cokme cezasina tabi degil (e2e E2E-F1:
+ *    zorla calistirilan is VPN'i 1,3 sn'de geri getirdi). Ust uste [RecoveryPolicy.MAX_STREAK]
+ *    kurtarmadan sonra vazgecilir: arka plan yolu kapatilir ve "Baglanti koptu" bildirimi
+ *    cikar (dokununca baglanir); deterministik bir cokme dongusu pili tuketmesin.
+ *
+ * Arka plan kurtarmasi yalnizca [arm] ile kurulup [disarm] ile kaldirilmamissa calisir
+ * ([backgroundArmed]): kullanici durdurmasi, izin geri alinmasi ve kalici hata (fail) onu
+ * kapatir; arayuz ve karo (on plan) yollari yine dener.
  *
  * Bilerek durdurma (Ayarlar > Durmaya zorla, Android 13+ Etkin uygulamalar > Durdur) geri
  * alinmamali. Durmaya zorla servisleri yeniden baslatmaz ve isleri iptal eder; "Durdur"
@@ -46,7 +57,18 @@ internal object Recovery {
     private const val KEY_JOB_ARMED = "jobArmed"
     private const val KEY_HANDLED_EXIT = "handledExit"
 
+    /** arm() true, disarm() false yapar; arka plan kurtarmasi buna bakar (review REC-1). */
+    private const val KEY_BG_ARMED = "bgArmed"
+
+    // Ust uste arka plan kurtarmalari (RecoveryPolicy.Streak).
+    private const val KEY_STREAK_COUNT = "bgStreakCount"
+    private const val KEY_STREAK_LAST = "bgStreakLast"
+    private const val KEY_STREAK_BOOT = "bgStreakBoot"
+
     const val JOB_ID = 0x6764_0001
+
+    /** Kurtarmadan sonraki tek seferlik kontrol isi; kalici degil (yeniden baslatmada gerek yok). */
+    const val CHECK_JOB_ID = 0x6764_0002
     private const val JOB_PERIOD_MS = 15 * 60 * 1000L
 
     // Yazmalar commit (senkron): durdurulmus paketin bos sureci is bitince hemen
@@ -67,18 +89,127 @@ internal object Recovery {
             putInt(KEY_ARMED_BOOT, bootCount(app))
             putLong(KEY_ARMED_ELAPSED, SystemClock.elapsedRealtime())
             putBoolean(KEY_JOB_ARMED, jobOk)
+            putBoolean(KEY_BG_ARMED, true)
         }
         // Servis on plandayken uygulama "on planda" sayilir; duz startService serbest.
         runCatching { app.startService(Intent(app, KeeperService::class.java)) }
             .onFailure { Log.w(TAG, "bekci servisi baslatilamadi", it) }
     }
 
-    /** Kullanici durdurdu / izin geri alindi / kalici hata: kurtarma katmanlarini kaldirir. */
+    /**
+     * Kullanici durdurdu / izin geri alindi / kalici hata: kurtarma katmanlarini kaldirir ve
+     * arka plan yolunu kapatir. KEY_ARMED_AT kalir: userStoppedAfterArm "durdurma motor
+     * kurulduktan sonra mi" sorusunu ona gore cevapliyor.
+     */
     fun disarm(context: Context) {
         val app = context.applicationContext
         runCatching { app.stopService(Intent(app, KeeperService::class.java)) }
-        runCatching { app.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID) }
-        prefs(app).edit(commit = true) { putBoolean(KEY_JOB_ARMED, false) }
+        val js = runCatching { app.getSystemService(JobScheduler::class.java) }.getOrNull()
+        runCatching { js?.cancel(JOB_ID) }
+        runCatching { js?.cancel(CHECK_JOB_ID) }
+        prefs(app).edit(commit = true) {
+            putBoolean(KEY_JOB_ARMED, false)
+            putBoolean(KEY_BG_ARMED, false)
+        }
+    }
+
+    /**
+     * Arka plan kurtarmasi (bekci, isler, App.onCreate) yapilabilir mi: kurtarma [arm] ile
+     * kurulmus, sonra [disarm] edilmemis ve ayni acilistayiz. Kalici hatadan (fail -> disarm)
+     * sonra wantRunning bilerek true kalir (arayuz acilinca tekrar denensin); bu bayrak
+     * olmadan 6 saatlik guncelleme isinin dogurdugu surec VPN'i kendiliginden geri acardi.
+     */
+    fun backgroundArmed(context: Context): Boolean =
+        RecoveryPolicy.canRecoverInBackground(
+            bgArmed = prefs(context).getBoolean(KEY_BG_ARMED, false),
+            sameBoot = sameBootAsArmed(context),
+        )
+
+    private fun readStreak(p: SharedPreferences) = RecoveryPolicy.Streak(
+        count = p.getInt(KEY_STREAK_COUNT, 0),
+        lastElapsed = p.getLong(KEY_STREAK_LAST, 0L),
+        boot = p.getInt(KEY_STREAK_BOOT, -1),
+    )
+
+    /**
+     * Arka plan kurtarmasi motoru baslatmak uzere: ust uste sayaci ilerletir ve kontrol isini
+     * kurar. Sinir asildiysa vazgecer ([giveUp]) ve false doner; cagiran baslatmamali.
+     */
+    fun beginBackgroundRecovery(context: Context): Boolean {
+        val app = context.applicationContext
+        val p = prefs(app)
+        val prev = readStreak(p)
+        val next = RecoveryPolicy.nextStreak(prev, SystemClock.elapsedRealtime(), bootCount(app))
+        if (RecoveryPolicy.shouldGiveUp(next)) {
+            giveUp(app, prev.count)
+            return false
+        }
+        p.edit(commit = true) {
+            putInt(KEY_STREAK_COUNT, next.count)
+            putLong(KEY_STREAK_LAST, next.lastElapsed)
+            putInt(KEY_STREAK_BOOT, next.boot)
+        }
+        scheduleCheck(app, RecoveryPolicy.checkDelayMs(next.count))
+        Log.i(TAG, "arka plan kurtarmasi ${next.count}/${RecoveryPolicy.MAX_STREAK}")
+        return true
+    }
+
+    /** Kullanici kendisi baglandi (arayuz, karo, acilis): onceki arka plan kurtarmalari sayilmaz. */
+    fun resetBackgroundStreak(context: Context) {
+        val p = prefs(context)
+        if (!p.contains(KEY_STREAK_COUNT)) return
+        p.edit(commit = true) {
+            remove(KEY_STREAK_COUNT)
+            remove(KEY_STREAK_LAST)
+            remove(KEY_STREAK_BOOT)
+        }
+    }
+
+    /**
+     * Kontrol isi ve periyodik is. Motor yoksa kurtarir (beginBackgroundRecovery bir sonraki
+     * kontrolu kurar). Motor ayaktaysa ve son kurtarma yeniyse izlemeyi surdurur: AMS cezasi
+     * kurtarmadan dakikalar sonraki bir cokmede de (goruldu: 78 sn) bekciyi 30 dk erteliyor.
+     */
+    fun runCheck(context: Context, source: String) {
+        val app = context.applicationContext
+        if (ServiceController.recoverInBackground(app, source)) return
+        val state = EngineStateHolder.state.value
+        if (state !is EngineState.Running && state != EngineState.Starting) return
+        if (!backgroundArmed(app)) return
+        val delay = RecoveryPolicy.watchDelayMs(readStreak(prefs(app)), SystemClock.elapsedRealtime(), bootCount(app))
+            ?: return
+        scheduleCheck(app, delay)
+    }
+
+    /**
+     * Ust uste cokmede vazgec: arka plan yolu kapanir (disarm), wantRunning kalir (arayuz ya
+     * da karo acilinca baglanir) ve kullanici bildirimle haberdar edilir; yoksa VPN sessizce
+     * kapali kalir, DPI engelleri geri gelirdi.
+     */
+    private fun giveUp(app: Context, count: Int) {
+        Log.w(TAG, "arka plan kurtarmasi $count kez ust uste tutmadi; vazgeciliyor")
+        disarm(app)
+        resetBackgroundStreak(app)
+        // Olen surecin on plan bildirimi ("Bagli", Durdur) ActivityManager'da asili kaliyor
+        // (goruldu; uygulama on plan bildirimini cancel ile silemiyor): servisi bos bir istekle
+        // bu surecte ayaga kaldirip birakmak kaydi ve bildirimi temizler.
+        ServiceController.releaseStaleService(app)
+        Notifications.showDisconnected(app)
+    }
+
+    private fun scheduleCheck(context: Context, delayMs: Long) {
+        val js = context.getSystemService(JobScheduler::class.java) ?: return
+        try {
+            val job = JobInfo.Builder(CHECK_JOB_ID, ComponentName(context, RecoveryJobService::class.java))
+                .setMinimumLatency(delayMs)
+                .setOverrideDeadline(delayMs + RecoveryPolicy.CHECK_DEADLINE_SLACK_MS)
+                // Cokme dongusu yeniden baslatmadan sonra anlamsiz; acilista karar BootReceiver'in.
+                .setPersisted(false)
+                .build()
+            if (js.schedule(job) != JobScheduler.RESULT_SUCCESS) Log.w(TAG, "kontrol isi kurulamadi")
+        } catch (e: Exception) {
+            Log.w(TAG, "kontrol isi kurulamadi", e)
+        }
     }
 
     private fun scheduleJob(context: Context): Boolean {
@@ -193,6 +324,59 @@ internal object RecoveryPolicy {
         if (exit.timestampMs == handledExitMs) return false
         if (lastUpdateMs > 0 && abs(exit.timestampMs - lastUpdateMs) < UPDATE_WINDOW_MS) return false
         return true
+    }
+
+    /** Arka plan kurtarmasi: kurulmus (disarm edilmemis) ve ayni acilis. */
+    fun canRecoverInBackground(bgArmed: Boolean, sameBoot: Boolean): Boolean = bgArmed && sameBoot
+
+    /** Ust uste arka plan kurtarmalari: kac tane, sonuncusu ne zaman (elapsedRealtime), hangi acilista. */
+    data class Streak(val count: Int, val lastElapsed: Long, val boot: Int)
+
+    /** Bu kadar arka plan kurtarmasi ust uste tutmazsa (bir sonraki denemede) vazgecilir. */
+    const val MAX_STREAK = 5
+
+    /** Iki kurtarma arasi bundan uzunsa onceki tutmus sayilir, sayac bastan baslar. */
+    const val STREAK_GAP_MS = 15 * 60_000L
+
+    /** Kurtarmadan sonra motor ayakta olsa da bu sure boyunca kontrol isi surer. */
+    const val WATCH_MS = 10 * 60_000L
+
+    /** Kontrol isinin en erken ve en gec calismasi arasindaki pay (JobInfo overrideDeadline). */
+    const val CHECK_DEADLINE_SLACK_MS = 90_000L
+
+    private const val CHECK_BASE_MS = 30_000L
+    private const val CHECK_MAX_MS = 8 * 60_000L
+    private const val WATCH_MIN_MS = 60_000L
+
+    /**
+     * Yeni bir arka plan kurtarmasi: oncekinden [STREAK_GAP_MS] icinde ve ayni acilistaysa
+     * sayac artar, degilse 1'den baslar. Acilis sayisi okunamadiysa (-1) yalnizca zamana bakilir.
+     */
+    fun nextStreak(prev: Streak, nowElapsed: Long, nowBoot: Int): Streak {
+        val sameBoot = prev.boot < 0 || nowBoot < 0 || prev.boot == nowBoot
+        val gap = nowElapsed - prev.lastElapsed
+        val continues = prev.count > 0 && sameBoot && gap in 0 until STREAK_GAP_MS
+        return Streak(if (continues) prev.count + 1 else 1, nowElapsed, nowBoot)
+    }
+
+    fun shouldGiveUp(next: Streak): Boolean = next.count > MAX_STREAK
+
+    /** n'inci kurtarmadan sonraki kontrol: 30 sn, 1, 2, 4, 8 dk (ustel, 8 dk'da sabit). */
+    fun checkDelayMs(count: Int): Long {
+        val shift = (count - 1).coerceIn(0, 10)
+        return (CHECK_BASE_MS shl shift).coerceAtMost(CHECK_MAX_MS)
+    }
+
+    /**
+     * Motor ayakta bulundu: son kurtarma [WATCH_MS]'den yeniyse bir sonraki kontrolun
+     * gecikmesi (en az 1 dk), degilse null (izleme biter).
+     */
+    fun watchDelayMs(streak: Streak, nowElapsed: Long, nowBoot: Int): Long? {
+        if (streak.count <= 0) return null
+        if (streak.boot >= 0 && nowBoot >= 0 && streak.boot != nowBoot) return null
+        val age = nowElapsed - streak.lastElapsed
+        if (age !in 0 until WATCH_MS) return null
+        return maxOf(checkDelayMs(streak.count), WATCH_MIN_MS)
     }
 
     /**

@@ -132,6 +132,10 @@ class DpiVpnService : VpnService() {
             ACTION_RESTART -> scope.launch { restart(intent.getBooleanExtra(EXTRA_FORCE, false), startId) }
             // Her zaman acik VPN sistemi SERVICE_INTERFACE ile baslatir: kullanici istegi sayilir.
             ACTION_START, SERVICE_INTERFACE -> scope.launch { startByUser() }
+            // Bildirim izni yeni verildi: yukaridaki goForeground bildirimi zaten yeniden gonderdi.
+            // Servis bu istekle yeni dogduysa (motor yok; ya da Recovery.giveUp cokmus surecten
+            // asili kalan kaydi temizliyor) on plandan cikip hemen birakilir.
+            ACTION_REFRESH_NOTIFICATION -> scope.launch { stopSelfIfIdle(startId) }
             // START_STICKY yeniden baslatmasi (surec olmeden servis durdurulduysa): son istege bak.
             null -> scope.launch { startFromSticky(startId) }
             else -> {
@@ -197,7 +201,10 @@ class DpiVpnService : VpnService() {
 
     private fun startFromSticky(startId: Int) {
         if (engine.isRunning || retryJob?.isActive == true) return
-        if (settings.current.wantRunning) {
+        // Surec olunce sistem bu servisi de yeniden baslatabiliyor (cokme sonrasi goruldu). Bu da
+        // bir arka plan kurtarmasi: App.onCreate'in karari (disarm: kalici hata, ust uste cokmede
+        // vazgecildi) burada da gecerli, yoksa vazgecilen baglanti kendiliginden geri acilirdi.
+        if (settings.current.wantRunning && Recovery.backgroundArmed(this)) {
             Log.i(TAG, "yapiskan yeniden baslatma: son istek acik, motor kuruluyor")
             policy.reset()
             startEngine()
@@ -573,6 +580,9 @@ class DpiVpnService : VpnService() {
         const val ACTION_START = "io.github.unsalable.goodbyedpi.action.START"
         const val ACTION_STOP = "io.github.unsalable.goodbyedpi.action.STOP"
         const val ACTION_RESTART = "io.github.unsalable.goodbyedpi.action.RESTART"
+
+        /** Yalnizca on plan bildirimini yeniden gonderir (bkz. ServiceController.refreshNotification). */
+        const val ACTION_REFRESH_NOTIFICATION = "io.github.unsalable.goodbyedpi.action.REFRESH_NOTIFICATION"
 
         /** RESTART ile: yapilandirma ayni olsa da yeniden kur. */
         const val EXTRA_FORCE = "io.github.unsalable.goodbyedpi.extra.FORCE"

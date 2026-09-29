@@ -52,7 +52,37 @@ object ServiceController {
      * dondurur (cagiran onu baslatir, RESULT_OK gelince start'i tekrar cagirir);
      * izin varsa servisi baslatip null dondurur. wantRunning'i servis kendisi true yapar.
      */
-    fun start(context: Context): Intent? = start(context, reportFailure = true)
+    fun start(context: Context): Intent? {
+        // Kullanici (ya da acilis) baglaniyor: onceki arka plan kurtarmalarinin sayaci sifirlanir.
+        runCatching { Recovery.resetBackgroundStreak(context.applicationContext) }
+        return start(context, reportFailure = true)
+    }
+
+    /**
+     * Durum bildirimini yeniden gosterir (servis on plandayken). Bildirim izni servis
+     * basladiktan SONRA verildiginde (ilk baglanma: once VPN izni, sonra bildirim izni) on plan
+     * bildirimi izinsiz gonderildigi icin hic gorunmemisti ve durum degisene kadar gelmiyordu;
+     * servis REFRESH_NOTIFICATION'da startForeground'u yeniden cagirir (instrumented F1).
+     */
+    fun refreshNotification(context: Context) {
+        when (EngineStateHolder.state.value) {
+            is EngineState.Running, EngineState.Starting ->
+                startServiceCompat(context, DpiVpnService.ACTION_REFRESH_NOTIFICATION, foreground = false, reportFailure = false)
+            else -> Unit
+        }
+    }
+
+    /**
+     * Motor bu surecte yokken servisi REFRESH_NOTIFICATION ile baslatir; servis motorsuz
+     * oldugunu gorup on plandan cikar ve durur. Cokmus surecin servis kaydi ActivityManager'da
+     * "on planda" asili kalinca eski "Bagli" bildirimi (Durdur dugmesiyle) VPN yokken
+     * gorunmeye devam ediyordu (Recovery.giveUp). On plan olarak: arka plandan duz startService
+     * reddedilir; servis her istekte once startForeground cagiriyor.
+     */
+    internal fun releaseStaleService(context: Context) {
+        if (EngineStateHolder.state.value != EngineState.Stopped) return
+        startServiceCompat(context, DpiVpnService.ACTION_REFRESH_NOTIFICATION, foreground = true, reportFailure = false)
+    }
 
     private fun start(context: Context, reportFailure: Boolean): Intent? {
         val consent = try {
@@ -109,10 +139,12 @@ object ServiceController {
     fun recoverIfNeeded(context: Context): Boolean = recover(context, background = false, source = "arayuz")
 
     /**
-     * Arayuz olmadan kurtarma: bekci servisi, periyodik is ve App.onCreate. Ek olarak yalnizca
-     * motorun kuruldugu acilista (yeniden baslatmadan sonra karar BootReceiver'in) ve
-     * enstrumantasyon testi disinda. Basarisiz baslatma Failed yazmaz: kullanici bir sey
-     * yapmadi, sonraki firsat (arayuz, karo) yine denesin.
+     * Arayuz olmadan kurtarma: bekci servisi, isler ve App.onCreate. Ek olarak yalnizca
+     * kurtarma kuruluyken (disarm edilmemis: kullanici durdurmadi, kalici hata yok), motorun
+     * kuruldugu acilista (yeniden baslatmadan sonra karar BootReceiver'in), ust uste kurtarma
+     * sinirinin altinda (Recovery.beginBackgroundRecovery) ve enstrumantasyon testi disinda.
+     * Basarisiz baslatma Failed yazmaz: kullanici bir sey yapmadi, sonraki firsat (arayuz,
+     * karo) yine denesin.
      */
     internal fun recoverInBackground(context: Context, source: String): Boolean =
         recover(context, background = true, source = source)
@@ -132,8 +164,8 @@ object ServiceController {
             Recovery.disarm(app)
             return false
         }
-        if (background && !Recovery.sameBootAsArmed(app)) {
-            Log.i(TAG, "$source: motor bu acilista kurulmadi; karar BootReceiver'in")
+        if (background && !Recovery.backgroundArmed(app)) {
+            Log.i(TAG, "$source: arka plan kurtarmasi kurulu degil (durduruldu, kalici hata ya da yeni acilis)")
             return false
         }
         val prepared = runCatching { VpnService.prepare(app) == null }.getOrDefault(false)
@@ -142,6 +174,12 @@ object ServiceController {
             val now = SystemClock.elapsedRealtime()
             if (lastRecoveryAt != 0L && now - lastRecoveryAt < RECOVERY_DEDUPE_MS) return true
             lastRecoveryAt = now
+        }
+        if (background) {
+            // Ust uste cokme dongusunde vazgecer (bildirim + disarm); aksi halde kontrol isini kurar.
+            if (!Recovery.beginBackgroundRecovery(app)) return false
+        } else {
+            Recovery.resetBackgroundStreak(app)
         }
         Log.i(TAG, "$source: son istek acikti ama motor yok, baglanti geri getiriliyor")
         return start(app, reportFailure = !background) == null

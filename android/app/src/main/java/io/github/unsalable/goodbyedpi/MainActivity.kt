@@ -33,8 +33,12 @@ class MainActivity : ComponentActivity() {
         vm.onVpnConsentResult(result.resultCode == RESULT_OK)
     }
 
-    // Reddedilirse bir sey yapilmaz: servis bildirimsiz de calisir (bkz. MainViewModel).
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    // Reddedilirse bir sey yapilmaz: servis bildirimsiz de calisir (bkz. MainViewModel). Izin
+    // verilirse durum bildirimi yeniden gonderilir: servis coktan baslamis, izinsiz gonderdigi
+    // on plan bildirimi (Durdur dugmesiyle) yoksa ilk oturum boyunca hic gorunmezdi.
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) vm.onNotificationPermissionGranted()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Sistem cubugu simgelerinin rengi temaya gore Theme.kt'de yeniden ayarlaniyor;

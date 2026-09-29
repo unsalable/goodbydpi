@@ -722,6 +722,10 @@ static inline int transp_conn(struct poolhd *pool, struct eval *val)
 
 #ifdef BYEDPI_LIB
 #define ACCEPT_RETRY_MS 100
+/* gdpi: ust uste bu kadar "tek baglantilik" hata (EPERM/EPROTO...) gelirse hata
+ * kalicidir (orn. LSM accept'i reddediyor, baglanti kuyrukta kaliyor): dinleyici
+ * kaynak sikintisindaki gibi ACCEPT_RETRY_MS susturulur ki dongu stop'u gorebilsin. */
+#define ACCEPT_SOFT_MAX 64
 #endif
 
 static int on_accept(struct poolhd *pool, struct eval *val, int et)
@@ -738,6 +742,7 @@ static int on_accept(struct poolhd *pool, struct eval *val, int et)
             return -1;
         }
     }
+    int soft_fails = 0;
     #endif
     
     while (1) {
@@ -760,11 +765,17 @@ static int on_accept(struct poolhd *pool, struct eval *val, int et)
              * kaynak sikintisinda dinleyici ACCEPT_RETRY_MS susturulur. conev
              * seviye tetiklemeli: POLLIN kapatilmazsa kuyruktaki baglanti
              * yuzunden dongu %100 CPU ile doner. -1 donulmez: loop_event
-             * dinleyiciyi kapatirdi. */
+             * dinleyiciyi kapatirdi. Tek baglantilik hatalar da sinirli
+             * (ACCEPT_SOFT_MAX): yalnizca ECONNABORTED baglantiyi kuyruktan
+             * kesin dusurur, EPERM/EPROTO kalici olabilir; sinirsiz continue
+             * is parcacigini loop_event'e hic dondurmez ve stop gorulmezdi. */
             if (e == EINTR || e == ECONNABORTED || e == EPROTO || e == EPERM) {
-                continue;
+                if (++soft_fails < ACCEPT_SOFT_MAX) {
+                    continue;
+                }
             }
-            if (e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM) {
+            if (soft_fails >= ACCEPT_SOFT_MAX ||
+                    e == EMFILE || e == ENFILE || e == ENOBUFS || e == ENOMEM) {
                 static unsigned int fails = 0;
                 if (!(fails++ % 64)) {
                     uniperror("accept (paused)");
@@ -782,6 +793,9 @@ static int on_accept(struct poolhd *pool, struct eval *val, int et)
             pool->brk = 1;
             return -1;
         }
+        #ifdef BYEDPI_LIB
+        soft_fails = 0;
+        #endif
         LOG(LOG_S, "accept: fd=%d\n", c);
         #ifndef __linux__
         #ifdef _WIN32

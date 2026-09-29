@@ -91,6 +91,14 @@ data class CustomMethodProfile(
     val name: String = DEFAULT_NAME,
     val config: DpiConfig = DpiConfig(),
 ) {
+    /**
+     * migrate()'in "en az bir profil" icin koydugu, kullanicinin hic dokunmadigi yer tutucu
+     * mu? Varsayilan ad ve varsayilan degerler: yeniden adlandirilmis ya da bir degeri
+     * degistirilmis profil kullanicinindir, yeniden kullanilmaz.
+     */
+    val isUntouchedPlaceholder: Boolean
+        get() = name == DEFAULT_NAME && config == DpiConfig()
+
     /** Listede gosterilecek MethodPreset karsiligi; aciklama olarak tekniklerin ozeti. */
     fun toPreset(): MethodPreset {
         val cfg = config
@@ -124,6 +132,10 @@ data class CustomDnsEntry(
     val v6: String = "",
     val v6Port: Int = 53,
 ) {
+    /** migrate()'in koydugu, adi degismemis ve adres girilmemis yer tutucu mu? */
+    val isUntouchedPlaceholder: Boolean
+        get() = name == DEFAULT_NAME && v4.isEmpty() && v6.isEmpty()
+
     /** Listede ve motorda kullanilan DnsProfile karsiligi. */
     fun toProfile(): DnsProfile = DnsProfile.createCustom(id, name, v4, v4Port, v6, v6Port)
 
