@@ -530,11 +530,15 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   restart). After a second crash within AMS's crash window the keeper is deferred 30-150 min,
   and the window is then bounded by the check job: about 1-1.5 min (it was up to 8.5 min,
   E2E-V7-1). When the new process does not recover (background recovery not armed, the user
-  stopped the app, VPN consent gone), `recoverInBackground` sees the status notification in
+  stopped the app), `recoverInBackground` sees the status notification in
   `NotificationManager.getActiveNotifications()` while the engine is `Stopped` and releases the
   record the same way as the give-up (start with `ACTION_REFRESH_NOTIFICATION`, leave
   foreground, stop); with no such notification nothing is started. The status notification text
-  is not made neutral: while it is up it is correct except for this bounded window. The in-process dedupe of recovery requests
+  is not made neutral: while it is up it is correct except for this bounded window.
+  If VPN consent is gone (another VPN app was prepared while our process was dead), background
+  recovery clears `wantRunning` and disarms like `onRevoke`; on API 31+ the stale record cannot
+  be released from the background (the FGS start exemption is `OP_ACTIVATE_VPN`), so it stays
+  until AMS's deferred sticky restart or the next app open. The in-process dedupe of recovery requests
   (5 s) only records a start that was actually issued: a give-up in `App.onCreate` does not make
   the UI's recovery a moment later a silent no-op.
 * **User stops are honoured** — recovery first checks `ApplicationExitInfo` for

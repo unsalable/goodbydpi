@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -102,6 +103,13 @@ object ServiceController {
      */
     private fun releaseStaleServiceIfShown(context: Context) {
         if (EngineStateHolder.state.value != EngineState.Stopped) return
+        // Android 12+'da arka plandan on plan servisi baslatma izni bize yalnizca VPN izni
+        // (OP_ACTIVATE_VPN) sayesinde var; izin gittiyse baslatma reddedilir, denemeyelim.
+        // Kalan bildirim, sistemin ertelenmis yapiskan yeniden baslatmasinda ya da uygulama
+        // acilinca kalkar (SPEC 8, bilinen sinir).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            runCatching { VpnService.prepare(context) != null }.getOrDefault(true)
+        ) return
         val shown = runCatching {
             context.getSystemService(NotificationManager::class.java)
                 ?.activeNotifications?.any { it.id == Notifications.STATUS_ID } == true
@@ -204,7 +212,18 @@ object ServiceController {
             return false
         }
         val prepared = runCatching { VpnService.prepare(app) == null }.getOrDefault(false)
-        if (!prepared) return false
+        if (!prepared) {
+            if (background) {
+                // Surec olukken VPN izni gitmis (baska bir VPN uygulamasi hazirlandi ya da izin
+                // ayarlardan kaldirildi): onRevoke hic calismadi. Kullanici bilerek baska bir
+                // tunele gecti; onRevoke gibi son istegi kapat ki sonraki surec dogumlari ve
+                // yapiskan yeniden baslatma bosuna ugrasmasin.
+                Log.i(TAG, "$source: VPN izni artik yok; arka plan kurtarmasi kapatildi")
+                runBlocking { repo.update { it.copy(wantRunning = false) } }
+                Recovery.disarm(app)
+            }
+            return false
+        }
         // Arka plan: ust uste cokme dongusunde vazgecer (bildirim + disarm), damga yazilmaz ve
         // hemen ardindan acilan arayuz yine baglanir; aksi halde kontrol isini kurar.
         val decision = recoveryDedupe.tryBegin(SystemClock.elapsedRealtime()) {

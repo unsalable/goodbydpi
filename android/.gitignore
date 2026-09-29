@@ -12,3 +12,4 @@ app/.cxx/
 .idea/
 __pycache__/
 *.pyc
+e2e-out/
