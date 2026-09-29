@@ -150,42 +150,178 @@ class ConnectionTesterTest {
         }
     }
 
+    // ------------------------------------------------ SOCKS yolu (sozlesme C3)
+
     @Test
-    fun socksPathSendsHostnameToProxy() = runBlocking {
-        // Kucuk bir SOCKS5 sunucusu: istemcinin adres turunu (ATYP) kaydedip reddeder.
-        val proxy = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
-        val atyp = AtomicInteger(-1)
-        val hostSeen = arrayOfNulls<String>(1)
-        thread(isDaemon = true) {
-            val s = runCatching { proxy.accept() }.getOrNull() ?: return@thread
-            s.use {
-                val inp = it.getInputStream()
-                val out = it.getOutputStream()
-                inp.read() // VER
-                val n = inp.read() // NMETHODS
-                repeat(n) { inp.read() }
-                out.write(byteArrayOf(5, 0)); out.flush()
-                inp.read(); inp.read(); inp.read() // VER CMD RSV
-                val t = inp.read()
-                atyp.set(t)
-                if (t == 3) {
-                    val len = inp.read()
-                    hostSeen[0] = String(ByteArray(len) { inp.read().toByte() })
-                }
-                // Hata: host unreachable (4)
-                out.write(byteArrayOf(5, 4, 0, 1, 0, 0, 0, 0, 0, 0)); out.flush()
-            }
-        }
-        try {
-            val r = ConnectionTester.run(proxy.localPort, listOf("discord.com"), 2_000).single()
+    fun socksPathResolvesThroughRedirectedDnsAndConnectsByIp() = runBlocking {
+        // byedpi --redirect taklidi: 198.18.0.53:53 kabul edilir ve DNS sunucusu gibi cevap verir
+        // (once CNAME sonra A: zincir atlanmali); asil hedef reddedilir.
+        FakeSocks(dnsAnswer = { name, type ->
+            if (type == DnsWire.TYPE_A) FakeDns.Reply(cname = "cdn.$name", a = listOf(byteArrayOf(10, 9, 8, 7))) else FakeDns.Reply()
+        }).use { proxy ->
+            val r = ConnectionTester.run(proxy.port, listOf("discord.com"), 2_000).single()
             assertFalse(r.ok)
             assertEquals(ERR_CONNECT, r.error)
-            // Elle kurulan SOCKS yolu adi vekile birakir; JDK'nin HttpURLConnection'i burada ATYP=1
-            // (yerelde cozulmus IP) gonderiyordu, bu test o yuzden var.
-            assertEquals(3, atyp.get())
-            assertEquals("discord.com", hostSeen[0])
-        } finally {
-            proxy.close()
+            assertEquals(listOf("1:198.18.0.53:53", "1:10.9.8.7:443"), proxy.requests())
+            assertEquals(listOf("discord.com/A"), proxy.dnsQueries())
         }
+    }
+
+    @Test
+    fun socksPathFallsBackToSystemResolverWhenRedirectRefused() = runBlocking {
+        // DNS "Kapali": yonlendirme yok, byedpi 198.18.0.53'u reddeder (C2). Ad sistemde cozulur,
+        // vekile yine IP gider; hicbir istek ad (ATYP=3) tasimaz.
+        FakeSocks(dnsAnswer = null).use { proxy ->
+            val started = System.nanoTime()
+            val r = ConnectionTester.run(proxy.port, listOf("localhost"), 2_000).single()
+            val ms = (System.nanoTime() - started) / 1_000_000
+            assertFalse(r.ok)
+            assertEquals(ERR_CONNECT, r.error)
+            assertEquals(listOf("1:198.18.0.53:53", "1:127.0.0.1:443"), proxy.requests())
+            assertTrue("reddedilen DNS adimi beklememeli ($ms ms)", ms < 1_500)
+        }
+    }
+
+    @Test
+    fun socksPathReportsNxdomainFromSelectedDnsWithoutFallback() = runBlocking {
+        FakeSocks(dnsAnswer = { _, _ -> FakeDns.Reply(rcode = DnsWire.RCODE_NXDOMAIN) }).use { proxy ->
+            val r = ConnectionTester.run(proxy.port, listOf("no-such-host.example"), 2_000).single()
+            assertFalse(r.ok)
+            assertEquals(ERR_DNS, r.error)
+            // Yalnizca DNS baglantisi; sistem cozucusu ya da hedefe CONNECT yok.
+            assertEquals(listOf("1:198.18.0.53:53"), proxy.requests())
+        }
+    }
+
+    @Test
+    fun socksPathTriesAaaaWhenNoARecord() = runBlocking {
+        val v6 = ByteArray(16).also { it[0] = 0x20; it[1] = 0x01; it[15] = 1 }
+        FakeSocks(dnsAnswer = { _, type ->
+            if (type == DnsWire.TYPE_AAAA) FakeDns.Reply(aaaa = listOf(v6)) else FakeDns.Reply()
+        }).use { proxy ->
+            val r = ConnectionTester.run(proxy.port, listOf("v6only.example"), 2_000).single()
+            assertEquals(ERR_CONNECT, r.error)
+            assertEquals(listOf("v6only.example/A", "v6only.example/AAAA"), proxy.dnsQueries())
+            assertEquals("4:2001:0:0:0:0:0:0:1:443", proxy.requests().last())
+        }
+    }
+
+    @Test
+    fun socksPathSkipsDnsForIpLiterals() = runBlocking {
+        FakeSocks(dnsAnswer = null).use { proxy ->
+            ConnectionTester.run(proxy.port, listOf("192.0.2.1:8443"), 2_000).single()
+            assertEquals(listOf("1:192.0.2.1:8443"), proxy.requests())
+        }
+    }
+}
+
+/** Test icin DNS cevabi uretir (sorgunun sorusunu aynen tekrarlar, adlari isaretciyle yazar). */
+internal object FakeDns {
+    data class Reply(
+        val rcode: Int = DnsWire.RCODE_NOERROR,
+        val cname: String? = null,
+        val a: List<ByteArray> = emptyList(),
+        val aaaa: List<ByteArray> = emptyList(),
+    )
+
+    /** Sorgudan (ad, tur) okur. */
+    fun question(q: ByteArray): Pair<String, Int> {
+        var pos = 12
+        val labels = ArrayList<String>()
+        while (q[pos].toInt() != 0) {
+            val len = q[pos].toInt()
+            labels += String(q, pos + 1, len, Charsets.US_ASCII)
+            pos += 1 + len
+        }
+        pos++
+        val type = ((q[pos].toInt() and 0xFF) shl 8) or (q[pos + 1].toInt() and 0xFF)
+        return labels.joinToString(".") to type
+    }
+
+    fun answer(q: ByteArray, r: Reply): ByteArray {
+        val qEnd = run {
+            var pos = 12
+            while (q[pos].toInt() != 0) pos += 1 + q[pos].toInt()
+            pos + 5
+        }
+        val out = java.io.ByteArrayOutputStream()
+        fun u16(v: Int) { out.write(v ushr 8 and 0xFF); out.write(v and 0xFF) }
+        fun rr(type: Int, name: Int, data: ByteArray) {
+            u16(name); u16(type); u16(1); u16(0); u16(60); u16(data.size); out.write(data)
+        }
+        val count = (if (r.cname != null) 1 else 0) + r.a.size + r.aaaa.size
+        out.write(q, 0, 2) // kimlik
+        u16(0x8180 or r.rcode)
+        u16(1); u16(count); u16(0); u16(0)
+        out.write(q, 12, qEnd - 12)
+        var owner = 0xC00C
+        if (r.cname != null) {
+            val enc = java.io.ByteArrayOutputStream()
+            r.cname.split('.').forEach { enc.write(it.length); enc.write(it.toByteArray()) }
+            enc.write(0)
+            val cnameAt = out.size() + 12
+            rr(5, owner, enc.toByteArray())
+            owner = 0xC000 or cnameAt
+        }
+        r.a.forEach { rr(DnsWire.TYPE_A, owner, it) }
+        r.aaaa.forEach { rr(DnsWire.TYPE_AAAA, owner, it) }
+        return out.toByteArray()
+    }
+}
+
+/**
+ * En kucuk SOCKS5 vekil: her CONNECT'i "ATYP:adres:port" olarak kaydeder. 198.18.0.53:53
+ * [dnsAnswer] verilmisse kabul edilip DNS-over-TCP sunucusu gibi cevaplanir; digerleri
+ * "connection refused" (5) ile reddedilir. 127.0.0.1'de dinler: byedpi gibi.
+ */
+internal class FakeSocks(private val dnsAnswer: ((String, Int) -> FakeDns.Reply)?) : AutoCloseable {
+    private val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+    private val log = java.util.Collections.synchronizedList(ArrayList<String>())
+    private val dnsLog = java.util.Collections.synchronizedList(ArrayList<String>())
+    val port: Int get() = server.localPort
+
+    fun requests(): List<String> = synchronized(log) { log.toList() }
+    fun dnsQueries(): List<String> = synchronized(dnsLog) { dnsLog.toList() }
+
+    init {
+        thread(isDaemon = true) {
+            while (!server.isClosed) {
+                val s = runCatching { server.accept() }.getOrNull() ?: break
+                thread(isDaemon = true) { runCatching { s.use { handle(it) } } }
+            }
+        }
+    }
+
+    private fun handle(s: java.net.Socket) {
+        val inp = java.io.DataInputStream(s.getInputStream())
+        val out = s.getOutputStream()
+        inp.readUnsignedByte() // VER
+        repeat(inp.readUnsignedByte()) { inp.readUnsignedByte() }
+        out.write(byteArrayOf(5, 0)); out.flush()
+        inp.readUnsignedByte(); inp.readUnsignedByte(); inp.readUnsignedByte() // VER CMD RSV
+        val atyp = inp.readUnsignedByte()
+        val addr = when (atyp) {
+            1 -> InetAddress.getByAddress(ByteArray(4).also { inp.readFully(it) }).hostAddress
+            4 -> InetAddress.getByAddress(ByteArray(16).also { inp.readFully(it) }).hostAddress
+            3 -> String(ByteArray(inp.readUnsignedByte()).also { inp.readFully(it) }, Charsets.US_ASCII)
+            else -> "?"
+        }
+        val dport = inp.readUnsignedShort()
+        log += "$atyp:$addr:$dport"
+        val answer = dnsAnswer
+        if (atyp == 1 && addr == "198.18.0.53" && dport == 53 && answer != null) {
+            out.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, 0, 53)); out.flush()
+            while (true) {
+                val q = runCatching { DnsWire.readTcp(inp) }.getOrNull() ?: return
+                val (name, type) = FakeDns.question(q)
+                dnsLog += "$name/" + if (type == DnsWire.TYPE_A) "A" else if (type == DnsWire.TYPE_AAAA) "AAAA" else "$type"
+                DnsWire.writeTcp(out, FakeDns.answer(q, answer(name, type)))
+            }
+        }
+        out.write(byteArrayOf(5, 5, 0, 1, 0, 0, 0, 0, 0, 0)); out.flush()
+    }
+
+    override fun close() {
+        server.close()
     }
 }

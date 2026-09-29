@@ -1,5 +1,6 @@
 package io.github.unsalable.goodbyedpi.diag
 
+import io.github.unsalable.goodbyedpi.engine.ByeDpiArgs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -8,10 +9,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.EOFException
+import java.io.IOException
 import java.io.InputStream
 import java.io.InterruptedIOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.NoRouteToHostException
@@ -98,7 +101,7 @@ object ConnectionTester {
     private val probeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Zaman asiminda baska is parcacigindan kapatilacak kaynak (baglanti ya da soket). */
-    private class Closer {
+    internal class Closer {
         @Volatile
         var target: (() -> Unit)? = null
 
@@ -134,50 +137,145 @@ object ConnectionTester {
     }
 
     /**
-     * SOCKS yolu elle: ana bilgisayar adi vekile AD olarak (SOCKS5 ATYP=3) gitmeli ki cozumlemeyi
-     * byedpi yapsin. HttpURLConnection'a SOCKS Proxy verildiginde Android 16 (API 36 emulator)
-     * adi iletiyor ama JDK adi yerelde cozup vekile IP gonderiyor (birim testinde goruldu); eski
-     * Android surumlerindeki OkHttp kopyasi icin de garanti yok. createUnresolved ile acilan soket
-     * her ortamda adi iletir; ustune TLS ve tek bir HTTP/1.1 istegi yeter (herhangi bir durum
-     * kodu "ulasildi" demek).
+     * SOCKS yolu elle (sozlesme C3). Vekile hicbir zaman ad (SOCKS ATYP=3) gitmez: byedpi -N ile
+     * adli istekleri reddediyor (olay dongusunde bloklayan getaddrinfo olmasin diye) ve bizim
+     * uid'imiz VPN disinda oldugu icin ad zaten ISS'in DNS'inde cozulurdu; DNS ile engellenen
+     * siteler tun'da calisirken testte "Sertifika hatasi" gorunurdu. Onun yerine:
+     *  1. Ad, tun'daki uygulamalarla ayni DNS'te cozulur: SOCKS CONNECT 198.18.0.53:53 (byedpi
+     *     --redirect bunu secili DNS sunucusuna ve portuna iletir) + TCP uzerinden A/AAAA sorgusu.
+     *     DNS "Kapali"ysa yonlendirme yoktur ve byedpi bu CONNECT'i reddeder; o zaman (ya da DNS
+     *     adimi baska bir sebeple olmazsa) sistem cozucusune dusulur.
+     *  2. Vekile IP ile CONNECT, ustune SNI = ad ve ad dogrulamali TLS, tek bir HTTP/1.1 istegi
+     *     (herhangi bir durum kodu "ulasildi" demek).
+     * Vekilin adresi 127.0.0.1 sabiti: ART'ta InetAddress.getLoopbackAddress() ::1 donduruyor,
+     * byedpi ise yalnizca 127.0.0.1'i dinliyor (her baglanti ECONNREFUSED oluyordu).
      */
     private fun probeViaSocks(host: String, socksPort: Int, timeoutMs: Int, closer: Closer): SiteResult {
         val start = System.nanoTime()
+        val deadline = start + timeoutMs * 1_000_000L
         val name = host.substringBefore(':')
         val port = host.substringAfter(':', "443").toIntOrNull() ?: 443
-        val raw = Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(InetAddress.getLoopbackAddress(), socksPort)))
-        closer.target = { raw.close() }
+        val proxy = socksProxy(socksPort)
         return try {
-            raw.soTimeout = timeoutMs
-            raw.connect(InetSocketAddress.createUnresolved(name, port), timeoutMs)
-            val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
-            // createSocket(ad) SNI'yi ada gore doldurur.
-            val ssl = factory.createSocket(raw, name, port, true) as SSLSocket
-            closer.target = { ssl.close() }
-            // Ad dogrulamasi: JDK'da bu parametreyle el sikismasinda, Android'de asagida.
-            ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
-            ssl.startHandshake()
-            if (IS_ANDROID && !HttpsURLConnection.getDefaultHostnameVerifier().verify(name, ssl.session)) {
-                throw SSLPeerUnverifiedException("Hostname $name not verified")
-            }
-            val req = "GET / HTTP/1.1\r\nHost: $name\r\nUser-Agent: $USER_AGENT\r\n" +
-                "Accept-Encoding: identity\r\nConnection: close\r\n\r\n"
-            ssl.outputStream.apply {
-                write(req.toByteArray(Charsets.US_ASCII))
-                flush()
-            }
-            val status = readStatusLine(ssl.inputStream)
-            val ms = (System.nanoTime() - start) / 1_000_000
-            if (STATUS_RE.containsMatchIn(status)) {
-                SiteResult(host, true, ms, null)
-            } else {
-                SiteResult(host, false, null, ERR_CONNECT)
+            val target = resolveForSocks(name, proxy, timeoutMs, closer)
+            val raw = Socket(proxy)
+            closer.target = { raw.close() }
+            try {
+                val left = remainingMs(deadline)
+                raw.soTimeout = left
+                raw.connect(InetSocketAddress(target, port), left)
+                val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                // createSocket(ad) SNI'yi ada gore doldurur (alttaki soket IP'ye bagli olsa da).
+                val ssl = factory.createSocket(raw, name, port, true) as SSLSocket
+                closer.target = { ssl.close() }
+                ssl.soTimeout = remainingMs(deadline)
+                // Ad dogrulamasi: JDK'da bu parametreyle el sikismasinda, Android'de asagida.
+                ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                ssl.startHandshake()
+                if (IS_ANDROID && !HttpsURLConnection.getDefaultHostnameVerifier().verify(name, ssl.session)) {
+                    throw SSLPeerUnverifiedException("Hostname $name not verified")
+                }
+                val req = "GET / HTTP/1.1\r\nHost: $name\r\nUser-Agent: $USER_AGENT\r\n" +
+                    "Accept-Encoding: identity\r\nConnection: close\r\n\r\n"
+                ssl.outputStream.apply {
+                    write(req.toByteArray(Charsets.US_ASCII))
+                    flush()
+                }
+                val status = readStatusLine(ssl.inputStream)
+                val ms = (System.nanoTime() - start) / 1_000_000
+                if (STATUS_RE.containsMatchIn(status)) {
+                    SiteResult(host, true, ms, null)
+                } else {
+                    SiteResult(host, false, null, ERR_CONNECT)
+                }
+            } finally {
+                runCatching { raw.close() }
             }
         } catch (e: Throwable) {
             SiteResult(host, false, null, describeError(e))
-        } finally {
-            runCatching { raw.close() }
         }
+    }
+
+    internal fun socksProxy(socksPort: Int): Proxy =
+        Proxy(Proxy.Type.SOCKS, InetSocketAddress(InetAddress.getByAddress(LOOPBACK_V4), socksPort))
+
+    private fun remainingMs(deadline: Long): Int =
+        ((deadline - System.nanoTime()) / 1_000_000).coerceIn(MIN_STEP_MS.toLong(), Int.MAX_VALUE.toLong()).toInt()
+
+    /**
+     * SOCKS CONNECT'te kullanilacak adres. IP yaziliysa aynen; degilse once secili DNS'e vekil
+     * uzerinden sorulur, olmazsa sistem cozucusu. Secili DNS "boyle bir ad yok" derse sistem
+     * cozucusune gidilmez: tun'daki uygulamalar da ayni cevabi goruyor, test bunu gostermeli.
+     */
+    internal fun resolveForSocks(name: String, proxy: Proxy, timeoutMs: Int, closer: Closer): InetAddress {
+        ipv4Literal(name)?.let { return it }
+        val budget = (timeoutMs / 3).coerceIn(MIN_STEP_MS, DNS_BUDGET_MS)
+        when (val r = resolveViaProxy(name, proxy, budget, closer)) {
+            is ProxyDns.Found -> return r.addresses.first()
+            is ProxyDns.NotFound -> throw UnknownHostException("$name: secili DNS kayit dondurmedi (rcode ${r.rcode})")
+            ProxyDns.Unavailable -> Unit
+        }
+        val all = InetAddress.getAllByName(name)
+        // Emulatorde ve cogu mobil agda IPv6 yok ya da yarim; byedpi de bizim uid'imizle cikiyor.
+        return all.firstOrNull { it is Inet4Address } ?: all.first()
+    }
+
+    internal sealed interface ProxyDns {
+        data class Found(val addresses: List<InetAddress>) : ProxyDns
+        data class NotFound(val rcode: Int) : ProxyDns
+
+        /** Yonlendirme yok (DNS kapali: byedpi reddeder) ya da DNS sunucusu TCP'de cevap vermedi. */
+        data object Unavailable : ProxyDns
+    }
+
+    /** Sanal cozucuye (byedpi --redirect) SOCKS uzerinden DNS-over-TCP; once A, bos gelirse AAAA. */
+    internal fun resolveViaProxy(name: String, proxy: Proxy, budgetMs: Int, closer: Closer): ProxyDns {
+        val s = Socket(proxy)
+        closer.target = { s.close() }
+        try {
+            try {
+                s.soTimeout = budgetMs
+                // Adres yazisi IP oldugu icin getByName DNS'e gitmez.
+                s.connect(InetSocketAddress(InetAddress.getByName(ByeDpiArgs.VIRTUAL_DNS_V4), 53), budgetMs)
+            } catch (e: IOException) {
+                return ProxyDns.Unavailable
+            }
+            val input = s.getInputStream()
+            val output = s.getOutputStream()
+            for (type in intArrayOf(DnsWire.TYPE_A, DnsWire.TYPE_AAAA)) {
+                val id = random.nextInt(0x10000)
+                DnsWire.writeTcp(output, DnsWire.query(id, name, type))
+                val answer = DnsWire.parse(DnsWire.readTcp(input), id, type)
+                when (answer.rcode) {
+                    DnsWire.RCODE_NOERROR -> if (answer.addresses.isNotEmpty()) return ProxyDns.Found(answer.addresses)
+                    DnsWire.RCODE_NXDOMAIN -> return ProxyDns.NotFound(answer.rcode)
+                    // SERVFAIL / REFUSED: sunucu cozemedi; karari sistem cozucusune birak.
+                    else -> return ProxyDns.Unavailable
+                }
+            }
+            return ProxyDns.NotFound(DnsWire.RCODE_NOERROR)
+        } catch (e: IOException) {
+            return ProxyDns.Unavailable
+        } catch (e: IllegalArgumentException) {
+            // Ad DNS'e yazilamiyor (bos etiket vb.); sistem cozucusu uygun hatayi versin.
+            return ProxyDns.Unavailable
+        } finally {
+            runCatching { s.close() }
+        }
+    }
+
+    /** "1.2.3.4" -> adres; ad ise null (ag erisimi yapmaz). */
+    private fun ipv4Literal(name: String): InetAddress? {
+        val parts = name.split('.')
+        if (parts.size != 4) return null
+        val bytes = ByteArray(4)
+        for ((i, p) in parts.withIndex()) {
+            if (p.isEmpty() || p.length > 3 || !p.all { it in '0'..'9' }) return null
+            val v = p.toInt()
+            if (v > 255) return null
+            bytes[i] = v.toByte()
+        }
+        return InetAddress.getByAddress(bytes)
     }
 
     /** Ilk satiri okur ("HTTP/1.1 200 OK"); satir gelmeden baglanti kapanirsa EOFException. */
@@ -230,6 +328,13 @@ object ConnectionTester {
     }
 
     private const val OVERALL_SLACK_MS = 2_000L
+
+    /** DNS adiminin ust siniri: yonlendirme yokken eski byedpi 198.18.0.53'e gercekten baglanmayi dener. */
+    private const val DNS_BUDGET_MS = 3_000
+    private const val MIN_STEP_MS = 500
+
+    private val LOOPBACK_V4 = byteArrayOf(127, 0, 0, 1)
+    private val random = java.security.SecureRandom()
     private const val MAX_CAUSES = 8
 
     private val RESET_HINTS = listOf(

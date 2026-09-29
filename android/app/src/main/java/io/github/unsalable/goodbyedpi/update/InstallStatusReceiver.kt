@@ -1,6 +1,5 @@
 package io.github.unsalable.goodbyedpi.update
 
-import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -26,26 +25,19 @@ class InstallStatusReceiver : BroadcastReceiver() {
         if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
             val confirm = confirmIntent(intent)
             if (confirm == null) {
-                UpdateManager.onInstallResult(context, PackageInstaller.STATUS_FAILURE, "onay ekranı yok")
+                UpdateManager.onInstallResult(context, PackageInstaller.STATUS_FAILURE, "onay ekranı yok", version)
                 return
             }
-            confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (isVisible()) {
-                try {
-                    context.startActivity(confirm)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Onay ekrani acilamadi, bildirime dusuluyor", e)
-                    UpdateNotifier.showConfirm(context.applicationContext, confirm)
-                }
-            } else {
-                UpdateNotifier.showConfirm(context.applicationContext, confirm)
-            }
-            UpdateManager.onInstallResult(context, status, message)
+            // Gorunurluk karari (etkinlik mi, bildirim mi) UpdateManager'da: surec onceligi VPN'in
+            // on plan servisi yuzunden "gorunur" diyor ama sistem arka plandan etkinlik acmaya
+            // izin vermiyor (UPD-1).
+            val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+            UpdateManager.onConfirmRequired(context, confirm, sessionId, version)
             return
         }
 
         val pending = goAsync()
-        UpdateManager.onInstallResult(context, status, message) { pending.finish() }
+        UpdateManager.onInstallResult(context, status, message, version) { pending.finish() }
     }
 
     @Suppress("DEPRECATION")
@@ -55,15 +47,6 @@ class InstallStatusReceiver : BroadcastReceiver() {
         } else {
             intent.getParcelableExtra(Intent.EXTRA_INTENT)
         }
-
-    /** Arayuz gorunur mu? Gorunmuyorsa sistem arka plandan etkinlik baslatmamiza izin vermez. */
-    private fun isVisible(): Boolean = try {
-        val info = ActivityManager.RunningAppProcessInfo()
-        ActivityManager.getMyMemoryState(info)
-        info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE
-    } catch (e: Exception) {
-        false
-    }
 
     private companion object {
         const val TAG = "InstallStatusReceiver"

@@ -27,10 +27,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  *       --es cmd <komut> [secenekler]
  *
  * Komutlar:
- *   state                         o anki durumu yazar
- *   reset                         lastUpdateCheck / dismissedUpdate / pendingUpdate'i sifirlar
+ *   state                         o anki durumu, surecler arasi hafizayi ve arayuz gorunurlugunu yazar
+ *   reset                         lastUpdateCheck / dismissedUpdate / pendingUpdate'i ve hafizayi sifirlar
  *   check  [--es api URL]         UpdateManager.checkNow (sinirsiz denetim)
  *   open   [--es api URL]         lastUpdateCheck=0 yapip UpdateManager.onAppOpen: otomatik akis
+ *   bg     [--es api URL]         lastUpdateCheck=0 yapip UpdateManager.backgroundCheck: periyodik
+ *                                 isin/VPN servisinin yolu (arayuz kapaliyken sessiz kurulum)
+ *   (gercek periyodik is:  adb shell cmd jobscheduler run -f <pkg> 4201)
  *   update                        UpdateManager.startUpdate (Available/Failed durumunda)
  *   install --es apk YOL          yerel APK'yi gercek kurulum yolundan (dogrula + oturum) gecirir;
  *                                 YOL mutlak ya da uygulamanin cache klasorune gore
@@ -38,6 +41,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   conntest [--ei socks PORT] [--es hosts a,b]   ConnectionTester.run
  *
  * api verilirse http:// adreslere de izin verilir (yerel test sunucusu, 10.0.2.2).
+ * Her komuta --ez confirm true eklenirse sonraki kurulumlar sistem onayi ister (USER_ACTION_REQUIRED).
  */
 class DebugUpdateReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -46,6 +50,11 @@ class DebugUpdateReceiver : BroadcastReceiver() {
         val cmd = intent.getStringExtra("cmd") ?: "state"
         Log.i(TAG, "komut: $cmd (calisan surum ${BuildConfig.VERSION_NAME} / ${BuildConfig.VERSION_CODE}, ${app.packageName})")
 
+        // --ez confirm true: kurulum sistem onayi istesin (onay/bildirim yolunu denemek icin).
+        if (intent.hasExtra("confirm")) {
+            UpdateInstaller.debugRequireUserAction = intent.getBooleanExtra("confirm", false)
+            Log.i(TAG, "onay zorlamasi=${UpdateInstaller.debugRequireUserAction}")
+        }
         intent.getStringExtra("api")?.let { api ->
             UpdateManager.apiUrl = api
             UpdateManager.allowHttp = api.startsWith("http://")
@@ -70,12 +79,26 @@ class DebugUpdateReceiver : BroadcastReceiver() {
 
     private suspend fun runCommand(app: Context, cmd: String, intent: Intent) {
         when (cmd) {
-            "state" -> Unit
+            "state" -> {
+                val s = SettingsRepository.get(app).current
+                Log.i(
+                    TAG,
+                    "hafiza=${UpdateMemoStore.read(app)} pendingUpdate=${s.pendingUpdate} " +
+                        "lastUpdateCheck=${s.lastUpdateCheck} arayuzGorunur=${UpdateManager.isUiVisible}",
+                )
+            }
             "reset" -> {
                 SettingsRepository.get(app).update {
                     it.copy(lastUpdateCheck = 0L, dismissedUpdate = null, pendingUpdate = null)
                 }
+                UpdateMemoStore.update(app) { UpdateMemo() }
                 Log.i(TAG, "ayarlar sifirlandi")
+            }
+            "bg" -> {
+                SettingsRepository.get(app).update { it.copy(lastUpdateCheck = 0L) }
+                Log.i(TAG, "arka plan denetimi (arayuzGorunur=${UpdateManager.isUiVisible})")
+                UpdateManager.backgroundCheck(app)
+                awaitSettled()
             }
             "check" -> {
                 UpdateManager.checkNow(app)

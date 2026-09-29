@@ -35,6 +35,17 @@ object UpdateInstaller {
     const val MSG_INVALID = "Paket okunamadı"
     const val MSG_SESSION = "Kurulum başlatılamadı"
 
+    /**
+     * Yalnizca hata ayiklama kancasi (src/debug): onay ekranini zorlar. Emulatorde onaysiz
+     * kurulum kosullari hep tuttugu icin "onay gerekiyor" yolu (bildirim, one geliste onay
+     * ekrani) baska turlu denenemiyor. Surum derlemesinde hic degismez.
+     */
+    @Volatile
+    internal var debugRequireUserAction = false
+
+    /** Yeniden indirmekle duzelmeyen dogrulama hatalari (yayinin kendisi yanlis). */
+    val PERMANENT_ERRORS = setOf(MSG_PACKAGE, MSG_OLDER, MSG_SIGNATURE)
+
     /** Android 8+ "bilinmeyen uygulamalari yukle" izni; oncesinde oturum kendisi onay sorar. */
     fun canInstall(context: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
@@ -93,11 +104,27 @@ object UpdateInstaller {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Kosullar tutarsa (kaydin sahibi biziz, izin var, hedef SDK guncel) onaysiz;
                 // tutmazsa sistem sessizce STATUS_PENDING_USER_ACTION'a duser, hata olmaz.
-                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+                setRequireUserAction(
+                    if (debugRequireUserAction) {
+                        PackageInstaller.SessionParams.USER_ACTION_REQUIRED
+                    } else {
+                        PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                    },
+                )
             }
             // setRequestUpdateOwnership (API 34) bilincli olarak kullanilmiyor: sahiplik alinca
             // kullanicinin tarayicidan ya da dosya yoneticisinden elle kurdugu surumler de
             // "sahibi degistirilsin mi" onayina takiliyor; bize sagladigi bir sey yok (magaza yok).
+        }
+
+        // Onceki denemelerden kalan kendi oturumlarimiz (onayi hic verilmemis, surec olmus):
+        // yenisi onlarin yerini aliyor. Birakilmazsa sistem gunlerce tutar ve oturum sinirina sayilir.
+        // UpdateManager buraya onay bekleyen bir oturum varken gelmez (Installing'de yeni is yok).
+        runCatching {
+            installer.mySessions.forEach { old ->
+                runCatching { installer.abandonSession(old.sessionId) }
+                Log.i(TAG, "Eski kurulum oturumu ${old.sessionId} birakildi")
+            }
         }
 
         val sessionId = try {
@@ -128,7 +155,12 @@ object UpdateInstaller {
             Log.i(TAG, "Kurulum oturumu $sessionId gonderildi (${apk.length()} bayt, surum $version)")
             return sessionId
         } catch (e: Exception) {
-            runCatching { session?.abandon() }
+            // openSession'in kendisi firlattiysa elimizde Session yok ama oturum olusturuldu:
+            // kimligiyle birakilmazsa her yeniden denemede bir tane daha sizar (UPD-6).
+            runCatching {
+                val s = session
+                if (s != null) s.abandon() else installer.abandonSession(sessionId)
+            }
             throw if (e is UpdateException) e else UpdateException(MSG_SESSION, e)
         } finally {
             runCatching { session?.close() }
