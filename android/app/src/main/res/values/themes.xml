@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- AppCompat/MDC bagimliligi olmasin diye platform temasi; gorunumun tamami Compose'da. -->
+    <style name="Theme.GoodbyeDPI.Base" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.GoodbyeDPI" parent="Theme.GoodbyeDPI.Base">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:colorAccent">@color/brand_indigo</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">@bool/light_system_bars</item>
+    </style>
+</resources>

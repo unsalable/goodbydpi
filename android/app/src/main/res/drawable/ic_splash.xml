@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ acilis ekrani simgesi: sistem ortadaki daireyi gosterir. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M54,20a34,34 0,1 1,0 68a34,34 0,1 1,0 -68z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endColor="#8B5CF6"
+                android:endX="88"
+                android:endY="88"
+                android:startColor="#6366F1"
+                android:startX="20"
+                android:startY="20"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+    <path
+        android:pathData="M65.57,42.21A18,18 0,1 1,42.43 42.21"
+        android:strokeWidth="6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,34L54,54"
+        android:strokeWidth="6"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+</vector>

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Android 12+: kurulum kaydinin sahibi bizsek kendi guncellememiz onay sormadan gecer
+         (PackageInstaller USER_ACTION_NOT_REQUIRED bu izin olmadan yok sayiliyor). -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Yedekleme kapali: ayarlar cihaza ozel (VPN izni, pil istisnasi) ve kucuk; baska
+         cihaza tasinan wantRunning bayragi orada izinsiz bir VPN baslatmaya calisirdi. -->
+    <application
+        android:name=".App"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GoodbyeDPI"
+        tools:targetApi="36">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Hizli ayar karosunun "baglan" istegi (izin eksikken) YALNIZCA bu disa kapali takma
+             addan gelir; MainActivity disa acik oldugu icin EXTRA_CONNECT'i baska yoldan kabul
+             etmez (baska uygulamalar VPN'i acamasin). launchMode hedeften gelir (singleTop). -->
+        <activity-alias
+            android:name=".ConnectRequest"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
+
+        <!-- Sistem VPN servisine BIND_VPN_SERVICE ile system_server olarak baglanir; disari
+             acmaya gerek yok. intent-filter + SUPPORTS_ALWAYS_ON "Her zaman acik VPN" icin. -->
+        <service
+            android:name=".service.DpiVpnService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON"
+                android:value="true" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
+
+        <!-- Surec olunce VPN'i geri getiren bekci ve 15 dk'lik emniyet isi (service.Recovery).
+             Bekci on plan degil ve kimse ona baglanmiyor: sistem onu yapiskan olarak yeniden
+             baslatiyor, VPN servisini baslatmiyor. -->
+        <service
+            android:name=".service.KeeperService"
+            android:exported="false" />
+        <service
+            android:name=".service.RecoveryJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".service.QuickTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_power"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+        <!-- Guncelleyici: PackageInstaller oturum sonucu (yalnizca sistem doldurur) ve kendi
+             guncellememizden sonra "guncellendi" bildirimi. Ikisi de disa kapali. -->
+        <receiver
+            android:name=".update.InstallStatusReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".update.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 6 saatte bir arka plan guncelleme denetimi (JobScheduler); yalnizca sistem baglanir. -->
+        <service
+            android:name=".update.UpdateJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+    </application>
+</manifest>
