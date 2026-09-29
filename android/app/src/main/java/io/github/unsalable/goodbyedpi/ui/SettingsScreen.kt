@@ -840,8 +840,9 @@ private fun GeneralSection(vm: MainViewModel, settings: SettingsUi) {
         )
         ToggleRow(
             "Otomatik güncelle", settings.autoUpdate, { v -> vm.updateSettings { it.copy(autoUpdate = v) } },
-            // Davranisla ayni: acilista yeni surum varsa indirir ve kurulumu baslatir (UpdateManager.onAppOpen).
-            hint = "Açılışta GitHub'da yeni sürüm varsa indirip kurulumu başlatır",
+            // Davranisla ayni: acilista ve arka planda (~6 saatte bir) GitHub'a bakar, yeni surumu
+            // indirip dogrular ve kurar (UpdateManager.onAppOpen / UpdateJobService).
+            hint = "Yeni sürümü GitHub'dan kendisi indirir ve kurar (açılışta ve ~6 saatte bir)",
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
         )
         ToggleRow(

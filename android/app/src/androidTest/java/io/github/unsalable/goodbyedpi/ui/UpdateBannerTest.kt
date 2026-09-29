@@ -72,11 +72,14 @@ class UpdateBannerTest {
 
         state = UpdateState.Verifying(info)
         compose.onNodeWithText("Dosya doğrulanıyor…").assertExists()
-        // Dogrulama/kurulumda iptal yok (kurulum sisteme teslim edilince geri alinamaz).
+        // Dogrulamada iptal yok (birkac saniye surer).
         compose.onNodeWithText("Vazgeç").assertDoesNotExist()
 
         state = UpdateState.Installing(info)
         compose.onNodeWithText("Güncelleme kuruluyor…").assertExists()
+        // Arka planda kacirilan kurulum onayi seritten yeniden acilabilir.
+        compose.onNodeWithText("Onayla").performClick()
+        assertEquals(2, updates)
 
         state = UpdateState.NeedsPermission(info)
         compose.onNodeWithText("İzin ver").performClick()
@@ -85,7 +88,7 @@ class UpdateBannerTest {
         state = UpdateState.Failed(info, "İndirme tamamlanamadı.")
         compose.onNodeWithText("İndirme tamamlanamadı.").assertExists()
         compose.onNodeWithText("Tekrar dene").performClick()
-        assertEquals(2, updates)
+        assertEquals(3, updates)
 
         // Surum bilgisi olmayan hata (arka plan denetimi) ana ekranda gosterilmez.
         state = UpdateState.Failed(null, "GitHub'a ulaşılamadı.")

@@ -6,6 +6,8 @@ import android.system.OsConstants
 import io.github.unsalable.goodbyedpi.model.DnsProfile
 import io.github.unsalable.goodbyedpi.model.MethodPreset
 import java.io.File
+import java.net.InetAddress
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
@@ -42,7 +44,11 @@ internal object EngineTestSupport {
         val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port))
         Socket(proxy).use { raw ->
             raw.soTimeout = timeoutMs
-            raw.connect(InetSocketAddress.createUnresolved(host, 443), timeoutMs)
+            // byedpi --no-domain ile calisiyor (ad tipi SOCKS istegini reddeder): adi burada
+            // cozup IP ile baglaniyoruz, TLS yine ada gore (SNI + ad dogrulamasi).
+            val ip = InetAddress.getAllByName(host).firstOrNull { it is Inet4Address }
+                ?: InetAddress.getByName(host)
+            raw.connect(InetSocketAddress(ip, 443), timeoutMs)
             val tls = (SSLSocketFactory.getDefault() as SSLSocketFactory)
                 .createSocket(raw, host, 443, true) as SSLSocket
             tls.use { s ->

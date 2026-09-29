@@ -149,9 +149,15 @@ private fun BannerContent(
                     GhostButton("Tekrar dene", onUpdate)
                 }
                 // Indirme (Otomatik guncelle aciksa istenmeden de baslar, mobil veride olabilir)
-                // iptal edilebilir; UpdateManager.dismiss isi durdurur ve bu surumu tekrar sormaz.
+                // iptal edilebilir; UpdateManager.dismiss isi durdurur ve surumu 24 saat erteler.
                 is UpdateState.Downloading -> GhostButton("Vazgeç", onLater, color = c.muted)
-                // Dogrulama/kurulum sirasinda dugme yok: kurulum sisteme teslim edildiyse geri alinamaz.
+                // Android onay isteyip ekrani kacirildiysa (arka plandaydik) onayi yeniden ac;
+                // Kapat oturumu birakir ve 24 saat ertelenir (UpdateManager.startUpdate/dismiss).
+                is UpdateState.Installing -> {
+                    GhostButton("Kapat", onLater, color = c.muted)
+                    GhostButton("Onayla", onUpdate)
+                }
+                // Dogrulama sirasinda dugme yok: birkac saniye surer.
                 else -> Box(Modifier.height(6.dp))
             }
         }
