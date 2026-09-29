@@ -2,12 +2,12 @@ package io.github.unsalable.goodbyedpi.service
 
 import android.annotation.SuppressLint
 import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import io.github.unsalable.goodbyedpi.MainActivity
 import io.github.unsalable.goodbyedpi.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,10 +66,15 @@ class QuickTileService : TileService() {
         if (consent != null) openApp()
     }
 
-    /** VPN izni yok: izin ekrani yalnizca bir etkinlikten acilabilir; uygulamayi ac, o istesin. */
+    /**
+     * VPN izni yok: izin ekrani yalnizca bir etkinlikten acilabilir; uygulamayi ac, o istesin.
+     * Disa kapali ConnectRequest takma adi uzerinden (C5): MainActivity istegi yalnizca oradan
+     * kabul ediyor. Paket applicationId (sonekli olabilir), sinif adi namespace'ten.
+     */
     @SuppressLint("StartActivityAndCollapseDeprecated")
     private fun openApp() {
-        val intent = Intent(this, MainActivity::class.java)
+        val intent = Intent()
+            .setComponent(ComponentName(this, ServiceController.CONNECT_ALIAS))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(ServiceController.EXTRA_CONNECT, true)
         try {

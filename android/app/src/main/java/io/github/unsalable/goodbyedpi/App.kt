@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import android.util.Log
 import io.github.unsalable.goodbyedpi.data.SettingsRepository
+import io.github.unsalable.goodbyedpi.service.ServiceController
 
 class App : Application() {
     override fun onCreate() {
@@ -19,6 +20,13 @@ class App : Application() {
         // Ayar dosyasini simdi okuyalim: ilk ekran ve servis bekletmeden hazir bulsun.
         runCatching { SettingsRepository.get(this) }
             .onFailure { Log.w(TAG, "Ayarlar yuklenemedi", it) }
+
+        // Surec baska bir nedenle dogduysa (karo baglamasi, alici, periyodik is, bekci) ve VPN
+        // bu surecin onceki hali olurken dustuyse hemen geri getir: sistem DpiVpnService'i
+        // kendisi yeniden baslatmiyor (bkz. service.Recovery). Kosullar (istek acik, ayni
+        // acilis, kullanici durdurmamis, VPN izni var, test sureci degil) ServiceController'da.
+        runCatching { ServiceController.recoverInBackground(this, "surec baslangici") }
+            .onFailure { Log.w(TAG, "Baglanti geri getirilemedi", it) }
     }
 
     private fun createNotificationChannels() {

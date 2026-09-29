@@ -9,6 +9,7 @@ import io.github.unsalable.goodbyedpi.engine.EngineTestSupport.fdCount
 import io.github.unsalable.goodbyedpi.engine.EngineTestSupport.httpsGetViaSocks
 import io.github.unsalable.goodbyedpi.engine.EngineTestSupport.plainConfig
 import io.github.unsalable.goodbyedpi.model.DnsProfile
+import io.github.unsalable.goodbyedpi.model.MethodPreset
 import io.github.unsalable.goodbyedpi.service.TrafficStats
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -209,6 +210,93 @@ class DpiEngineTest {
         engine = e2
         val cfg = e2.start(plainConfig())
         assertEquals("HTTP/1.1 200 OK", httpsGetViaSocks(cfg.socksPort))
+    }
+
+    /**
+     * Canli ayar degisimi VPN agini dusurmemeli (e2e RT-2): yontem degisince yalnizca byedpi
+     * AYNI portta degisir, tun fd'si acik kalir; tun degisince yeni tun eski acikken kurulur,
+     * hev yeni fd'ye tasinir, eski fd kapanir. Ad degisimi hicbir seyi yeniden kurmaz.
+     */
+    @Test
+    fun reconfigureSwapsOnlyWhatChanged() {
+        warmUp()
+        val fdBefore = fdCount()
+        val tun = newTun()
+        val handed = ArrayList<ParcelFileDescriptor>()
+        val e = DpiEngine(dir, { tun.engineEnd().also { handed += it } })
+        engine = e
+        val c1 = e.start(plainConfig())
+        val port = c1.socksPort
+        assertEquals(1, handed.size)
+
+        // 1) Yontem degisimi: byedpi yeni argv ile ayni portta, tun ve hev yerinde.
+        val disorder = plainConfig().copy(methodName = MethodPreset.Disorder.name, primary = MethodPreset.Disorder.build().copy(voiceFake = false))
+        val c2 = e.reconfigure(disorder, rebuildTun = false)
+        assertEquals(port, c2.socksPort)
+        assertEquals(1, handed.size)
+        handed[0].fd // acik (kapaliysa IllegalStateException)
+        assertTrue(e.runningArgv.contains("--disorder"))
+        assertEquals(MethodPreset.Disorder.name, e.runningConfig?.methodName)
+        assertTrue(TProxy.TProxyIsRunning())
+        assertNull(e.checkHealth())
+        assertEquals(1, byedpiThreads())
+        assertEquals("HTTP/1.1 200 OK", httpsGetViaSocks(port))
+
+        // 2) Yalnizca ad: hicbir sey yeniden kurulmaz, argv ayni.
+        val argv = e.runningArgv
+        val c3 = e.reconfigure(disorder.copy(methodName = "Yeni ad"), rebuildTun = false)
+        assertEquals("Yeni ad", c3.methodName)
+        assertEquals("Yeni ad", e.runningConfig?.methodName)
+        assertEquals(argv, e.runningArgv)
+        assertEquals(1, handed.size)
+
+        // 3) Tun degisimi: yeni tun, eski fd kapanir, hev yeni fd'de, byedpi ayni.
+        val c4 = e.reconfigure(disorder.copy(excludeLan = false), rebuildTun = true)
+        assertEquals(port, c4.socksPort)
+        assertEquals(2, handed.size)
+        try {
+            handed[0].fd
+            fail("eski tun fd'si acik kaldi")
+        } catch (_: IllegalStateException) {
+        }
+        handed[1].fd
+        assertTrue(TProxy.TProxyIsRunning())
+        assertNull(e.checkHealth())
+        assertEquals("HTTP/1.1 200 OK", httpsGetViaSocks(port))
+
+        e.stop()
+        engine = null
+        Thread.sleep(200)
+        val fdAfter = fdCount()
+        Log.i("GdpiTest", "yerinde guncelleme fd: $fdBefore -> $fdAfter")
+        assertTrue("fd sizintisi: $fdBefore -> $fdAfter", fdAfter <= fdBefore + 2)
+    }
+
+    /** Yerinde guncelleme bir adimda duserse motor TAMAMEN durur (yarim motor yok). */
+    @Test
+    fun reconfigureFailureStopsEverything() {
+        val tun = newTun()
+        var allowTun = true
+        val handed = ArrayList<ParcelFileDescriptor>()
+        val e = DpiEngine(dir, { if (allowTun) tun.engineEnd().also { handed += it } else null })
+        engine = e
+        e.start(plainConfig())
+        allowTun = false
+        try {
+            e.reconfigure(plainConfig().copy(excludeLan = false), rebuildTun = true)
+            fail("basarisiz olmaliydi")
+        } catch (ex: DpiEngine.StartException) {
+            assertEquals("VPN izni yok", ex.message)
+            assertFalse(ex.retryable)
+        }
+        assertFalse(e.isRunning)
+        try {
+            handed[0].fd
+            fail("tun fd'si acik kaldi")
+        } catch (_: IllegalStateException) {
+        }
+        engine = null
+        assertNoEngineLeft()
     }
 
     @Test

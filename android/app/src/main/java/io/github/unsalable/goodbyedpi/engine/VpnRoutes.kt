@@ -94,7 +94,7 @@ data class Cidr(val address: BigInteger, val prefix: Int, val bits: Int) {
  * ayni kod yolu: davranis cihazdan cihaza degismesin ve saf Kotlin olarak JVM'de sinansin.
  *
  * Cikarilan bloklar tun'a hic girmez, alttaki agdan dogrudan gider: yazici, NAS, Chromecast,
- * modem arayuzu calismaya devam eder.
+ * modem arayuzu, 255.255.255.255'e yayinla kesif calismaya devam eder.
  *
  * 100.64.0.0/10 (CGNAT, RFC 6598) de cikarilir: operatorun kendi ic agi (mobil hatlarin kendi
  * adresi, bazi operator DNS/portal adresleri, tethering). Orada DPI yok ve atlatilacak bir engel
@@ -111,6 +111,10 @@ object VpnRoutes {
         "172.16.0.0/12",
         "192.168.0.0/16",
         "224.0.0.0/4",
+        // E sinifi ayrilmis blok; icinde sinirli yayin 255.255.255.255 var. Tun'a girerse yayinla
+        // yapilan yerel kesif (LIFX, Tuya kurulumu vb.) byedpi'de SO_BROADCAST'siz sendto ile
+        // olur. Internette kullanilmiyor; 224/4 ile birlikte 224/3 (WireGuard da boyle yapar).
+        "240.0.0.0/4",
     ).map(Cidr::parse)
 
     val LAN_V6: List<Cidr> = listOf(

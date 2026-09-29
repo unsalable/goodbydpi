@@ -58,8 +58,12 @@ class VpnRoutesTest {
         for (ip in listOf("10.0.2.3", "192.168.1.1", "172.16.0.1", "172.31.255.255", "169.254.1.1", "224.0.0.251", "239.255.255.250", "100.64.0.1", "100.127.255.255")) {
             assertFalse(ip, covered(r, ip))
         }
-        // Uc esik: 240/4 (ayrilmis) ve 255.255.255.255 kapsanir; LAN listesinde yok.
-        assertTrue(covered(r, "240.0.0.1"))
+        // 240/4 (ayrilmis E sinifi + sinirli yayin 255.255.255.255) de disarida: yayinla
+        // yerel cihaz arayan uygulamalar (akilli ampul kurulumu vb.) tun'a dusmesin. 224/4 ile
+        // birlesip 224.0.0.0/3 olur; hicbir rota 224.0.0.0'dan yukariya uzanmaz.
+        for (ip in listOf("240.0.0.1", "255.255.255.255", "250.1.2.3")) assertFalse(ip, covered(r, ip))
+        assertTrue(r.all { it.last < Cidr.parse("224.0.0.0").address })
+        assertTrue(covered(r, "198.18.0.53"))
         assertTrue("${r.size} rota", r.size < 64)
     }
 

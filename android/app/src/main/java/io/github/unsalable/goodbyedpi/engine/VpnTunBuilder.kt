@@ -79,5 +79,16 @@ class VpnTunBuilder(
                 .distinct()
             return usable.ifEmpty { listOf(InetAddress.getByName(FALLBACK_DNS)) }
         }
+
+        /**
+         * Tun'un sistemde gorunen her seyi: adresler/yollar (excludeLan, ipv6) ve VPN'e verilen
+         * DNS sunuculari. Bu degismedikce tun yeniden kurulmaz (yalnizca byedpi degisir). DNS
+         * kume olarak: ayni sunucularin sirasi degisti diye VPN yeniden kurulmasin.
+         */
+        internal fun tunKey(config: EngineConfig, underlyingDns: List<InetAddress>): List<Any> = listOf(
+            config.excludeLan,
+            config.ipv6,
+            dnsServers(config, underlyingDns).toSet(),
+        )
     }
 }

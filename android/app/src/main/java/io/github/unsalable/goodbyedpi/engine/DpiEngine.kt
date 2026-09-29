@@ -49,11 +49,13 @@ class DpiEngine(
         cause: Throwable? = null,
     ) : Exception(message, cause)
 
-    private class Run(
+    private data class Run(
         val config: EngineConfig,
         val byedpi: ByeDpiRunner,
         val pfd: ParcelFileDescriptor,
         val sinceElapsed: Long,
+        /** byedpi'ye gercekte verilen argv (secilen port dahil). */
+        val argv: List<String>,
     )
 
     @Volatile
@@ -68,6 +70,10 @@ class DpiEngine(
     /** Calisan yapilandirma (secilen port dahil); calismiyorsa null. */
     val runningConfig: EngineConfig?
         get() = run?.config
+
+    /** Calisan byedpi'nin argv'si (program adi haric); calismiyorsa bos. */
+    val runningArgv: List<String>
+        get() = run?.argv.orEmpty()
 
     val sinceElapsed: Long
         get() = run?.sinceElapsed ?: 0L
@@ -84,20 +90,136 @@ class DpiEngine(
         if (run != null) stop()
         resetCounters()
 
-        // 1) byedpi. Port 0 ise bos port seciyoruz; secimle bind arasinda baska bir uygulama
-        //    portu kapabilir, o durumda baska portla birkac kez daha deneriz.
-        var cfg = config
-        var byedpi: ByeDpiRunner? = null
-        val attempts = if (config.socksPort == 0) PORT_ATTEMPTS else 1
+        // 1) byedpi.
+        val (proxy, cfg) = launchByeDpi(config)
+
+        // 2) Tun. null = VPN izni yok (ya da baska bir uygulama her zaman acik VPN).
+        val pfd: ParcelFileDescriptor = try {
+            establishTun(cfg)
+        } catch (t: Throwable) {
+            proxy.stop()
+            throw t
+        }
+
+        // 3) hev. fd'nin sahibi biziz: hev kapatmaz, getFd() verilir (detach degil); durdurunca
+        //    once hev, sonra pfd.close (HEV_NOTES 2).
+        try {
+            startHev(cfg, pfd)
+            if (!proxy.isAlive) {
+                runCatching { TProxy.TProxyStopService() }
+                throw StartException(ByeDpiRunner.describeExit(proxy.exitCode ?: NativeBridge.ERR_EXITED), retryable = true)
+            }
+        } catch (t: Throwable) {
+            runCatching { pfd.close() }
+            proxy.stop()
+            throw t
+        }
+
+        run = Run(cfg, proxy, pfd, SystemClock.elapsedRealtime(), ByeDpiArgs.build(cfg))
+        Log.i(TAG, "motor calisiyor: port ${cfg.socksPort}, yontem ${cfg.methodName}, dns ${cfg.dnsName}")
+        return cfg
+    }
+
+    /**
+     * Calisan motoru VPN agini DUSURMEDEN yeni yapilandirmaya gecirir. Tun fd'si kapanmadigi
+     * surece sistemin VPN agi ayni kalir; uygulamalar "ag koptu" gormez (e2e RT-2).
+     *
+     * - Yalnizca adlar farkliysa: hicbir sey yeniden kurulmaz, adlar guncellenir.
+     * - byedpi argv'si farkliysa (yontem, yedekler, DNS yonlendirmesi): yalnizca byedpi AYNI
+     *   portta yeniden baslar; hev ve tun yerinde kalir (hev portu zaten biliyor).
+     * - [rebuildTun] (yollar, adresler ya da VPN'e verilen DNS sunuculari degisti): yeni tun
+     *   eski fd ACIKKEN kurulur. Vpn sinifi bu durumda ayni agin LinkProperties'ini yerinde
+     *   gunceller; sonra hev yeni fd'ye tasinir ve eski fd kapatilir.
+     *
+     * Calismiyorsa [start] gibi davranir. Herhangi bir adim basarisiz olursa motor TAMAMEN
+     * durur (yarim motor yok) ve [StartException] firlatilir; cagiran normal yeniden deneme
+     * yoluna gider.
+     */
+    fun reconfigure(config: EngineConfig, rebuildTun: Boolean): EngineConfig {
+        val r = run ?: return start(config)
+        val port = r.config.socksPort
+        val samePort = config.copy(socksPort = port)
+        val swapByeDpi = ByeDpiArgs.build(samePort) != r.argv
+        if (!swapByeDpi && !rebuildTun) {
+            run = r.copy(config = samePort)
+            return samePort
+        }
+
+        // Bundan sonra byedpi'nin (eski ya da yeni) donusu "beklenmedik" sayilmasin; kaynaklar
+        // yerel degiskenlerde, hata olursa hepsi kapatilir.
+        run = null
+        var proxy: ByeDpiRunner? = r.byedpi
+        var pfd: ParcelFileDescriptor? = r.pfd
+        var newPfd: ParcelFileDescriptor? = null
+        var hevRunning = true
+        try {
+            // 1) Yeni tun, eski hala acikken.
+            if (rebuildTun) newPfd = establishTun(samePort)
+
+            // 2) byedpi degisimi: once eskisi tamamen durmali (surec basina tek vekil).
+            var cfg = samePort
+            if (swapByeDpi) {
+                val old = checkNotNull(proxy)
+                proxy = null
+                if (!old.stop()) throw StartException("byedpi durdurulamadı.", retryable = true)
+                // Once ayni port (hev'e dokunmadan). Baska bir uygulama araya girip kaptiysa ve
+                // port motorun seciminde ise bos bir portla devam; o zaman hev de yeniden kurulur.
+                val (runner, used) = launchByeDpi(config, preferredPort = port)
+                proxy = runner
+                cfg = used
+            }
+
+            // 3) hev: yeni fd'ye ya da yeni porta tasinmasi gerekiyorsa.
+            if (newPfd != null || cfg.socksPort != port) {
+                runCatching { TProxy.TProxyStopService() }.onFailure { Log.e(TAG, "hev durdurulamadi", it) }
+                hevRunning = false
+                if (newPfd != null) {
+                    runCatching { pfd?.close() }
+                    pfd = newPfd
+                    newPfd = null
+                }
+                resetCounters()
+                startHev(cfg, checkNotNull(pfd))
+                hevRunning = true
+            }
+            val p = checkNotNull(proxy)
+            if (!p.isAlive) {
+                throw StartException(ByeDpiRunner.describeExit(p.exitCode ?: NativeBridge.ERR_EXITED), retryable = true)
+            }
+            run = Run(cfg, p, checkNotNull(pfd), r.sinceElapsed, ByeDpiArgs.build(cfg))
+            Log.i(TAG, "motor yerinde guncellendi: byedpi ${if (swapByeDpi) "yeni" else "ayni"}, tun ${if (rebuildTun) "yeni" else "ayni"}, port ${cfg.socksPort}")
+            return cfg
+        } catch (t: Throwable) {
+            if (hevRunning) runCatching { TProxy.TProxyStopService() }
+            runCatching { newPfd?.close() }
+            runCatching { pfd?.close() }
+            proxy?.stop()
+            Log.w(TAG, "yerinde guncelleme basarisiz, motor durdu", t)
+            if (t is StartException) throw t
+            throw StartException("Motor yeniden yapılandırılamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
+        }
+    }
+
+    /**
+     * byedpi'yi baslatir ve hazir olmasini bekler. [EngineConfig.socksPort] 0 degilse port
+     * sabit; 0 ise motor secer ([preferredPort] once denenir). Secimle bind arasinda baska bir
+     * uygulama portu kapabilir; o durumda baska portla birkac kez daha denenir.
+     */
+    private fun launchByeDpi(config: EngineConfig, preferredPort: Int = 0): Pair<ByeDpiRunner, EngineConfig> {
+        val fixed = config.socksPort != 0
+        val attempts = if (fixed) 1 else PORT_ATTEMPTS
         for (attempt in 1..attempts) {
-            val port = if (config.socksPort != 0) config.socksPort else freeLoopbackPort()
-            cfg = config.copy(socksPort = port)
+            val port = when {
+                fixed -> config.socksPort
+                attempt == 1 && preferredPort != 0 -> preferredPort
+                else -> freeLoopbackPort()
+            }
+            val cfg = config.copy(socksPort = port)
             if (BuildConfig.DEBUG) Log.d(TAG, ByeDpiArgs.describe(cfg))
             val runner = ByeDpiRunner(ByeDpiArgs.build(cfg), port, ::onByeDpiExit)
             try {
                 runner.start()
-                byedpi = runner
-                break
+                return runner to cfg
             } catch (e: StartException) {
                 runner.stop()
                 if (!e.portBusy || attempt == attempts) throw e
@@ -108,21 +230,21 @@ class DpiEngine(
                 throw StartException("byedpi başlatılamadı.", retryable = true, cause = t)
             }
         }
-        val proxy = checkNotNull(byedpi)
+        error("ulasilamaz")
+    }
 
-        // 2) Tun. null = VPN izni yok (ya da baska bir uygulama her zaman acik VPN).
-        val pfd: ParcelFileDescriptor = try {
+    /** Tun'u kurar; null (VPN izni yok) kalici hatadir. */
+    private fun establishTun(cfg: EngineConfig): ParcelFileDescriptor {
+        val pfd = try {
             tun.establish(cfg)
         } catch (t: Throwable) {
-            proxy.stop()
             throw StartException("VPN arayüzü kurulamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
-        } ?: run {
-            proxy.stop()
-            throw StartException("VPN izni yok", retryable = false)
         }
+        return pfd ?: throw StartException("VPN izni yok", retryable = false)
+    }
 
-        // 3) hev. fd'nin sahibi biziz: hev kapatmaz, getFd() verilir (detach degil); durdurunca
-        //    once hev, sonra pfd.close (HEV_NOTES 2).
+    /** hev'i [pfd] uzerinde baslatir; basarisizsa kendi yarim kalanini durdurup firlatir. */
+    private fun startHev(cfg: EngineConfig, pfd: ParcelFileDescriptor) {
         var hevStarted = false
         try {
             hevLogFile?.let { runCatching { HevConfig.rotateLog(it) } }
@@ -135,20 +257,11 @@ class DpiEngine(
             // sonra IsRunning=false olarak gorunur.
             Thread.sleep(HEV_SETTLE_MS)
             if (!TProxy.TProxyIsRunning()) throw StartException("Tünel başlatılamadı.", retryable = true)
-            if (!proxy.isAlive) {
-                throw StartException(ByeDpiRunner.describeExit(proxy.exitCode ?: NativeBridge.ERR_EXITED), retryable = true)
-            }
         } catch (t: Throwable) {
             if (hevStarted) runCatching { TProxy.TProxyStopService() }
-            runCatching { pfd.close() }
-            proxy.stop()
             if (t is StartException) throw t
             throw StartException("Tünel başlatılamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
         }
-
-        run = Run(cfg, proxy, pfd, SystemClock.elapsedRealtime())
-        Log.i(TAG, "motor calisiyor: port ${cfg.socksPort}, yontem ${cfg.methodName}, dns ${cfg.dnsName}")
-        return cfg
     }
 
     /** Ters sira: hev (tun is parcacigini join eder) -> tun fd -> byedpi (join, sinirli sure). */
