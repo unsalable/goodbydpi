@@ -54,13 +54,44 @@ class ReleaseParserTest {
     fun singleObjectResponseIsAccepted() {
         val body = """
             {"tag_name":"android-v1.4.0","draft":false,"prerelease":false,"html_url":"h","body":"",
-             "assets":[{"name":"app-release.apk","size":5,"browser_download_url":"https://e/a.apk"}]}
+             "assets":[{"name":"GoodbyeDPI-Android-1.4.0.apk","size":5,"browser_download_url":"https://e/a.apk"}]}
         """.trimIndent()
         val info = ReleaseParser.pickLatest(body)!!
         assertEquals("1.4.0", info.version)
-        // Tercih edilen adlar yoksa herhangi bir .apk.
-        assertEquals("app-release.apk", info.assetName)
+        assertEquals("GoodbyeDPI-Android-1.4.0.apk", info.assetName)
         assertNull(info.sha256)
+    }
+
+    @Test
+    fun foreignApkNamesAreNeverPicked() {
+        // Probe, hata ayiklama derlemesi ya da baska bir APK surum sayilmaz (UPD-5).
+        for (name in listOf("app-release.apk", "GoodbyeDPI-Android-1.4.0-debug.apk", "GoodbyeDPI-Probe.apk", "GoodbyeDPI-Android.apk.sha256")) {
+            val body = """
+                [{"tag_name":"android-v1.4.0","draft":false,"prerelease":false,"body":"",
+                  "assets":[{"name":"$name","browser_download_url":"https://e/a.apk"}]}]
+            """.trimIndent()
+            assertNull(name, ReleaseParser.pickLatest(body))
+        }
+    }
+
+    @Test
+    fun desktopTagWithApkDoesNotMaskAndroidReleases() {
+        // Masaustu v2.4.0'a yanlislikla APK eklenmis: 2.4.0 > 1.1.0 olsa da Android surumu kazanir.
+        val body = """
+            [{"tag_name":"v2.4.0","draft":false,"prerelease":false,"body":"",
+              "assets":[{"name":"GoodbyeDPI-Android.apk","browser_download_url":"https://e/desk.apk"},
+                        {"name":"GoodbyeDPI-UI-Setup.exe","browser_download_url":"https://e/s.exe"}]},
+             {"tag_name":"2.5.0","draft":false,"prerelease":false,"body":"",
+              "assets":[{"name":"GoodbyeDPI-Android.apk","browser_download_url":"https://e/bare.apk"}]},
+             {"tag_name":"ANDROID-V1.1.0","draft":false,"prerelease":false,"body":"",
+              "assets":[{"name":"GoodbyeDPI-Android.apk","browser_download_url":"https://e/and.apk"}]}]
+        """.trimIndent()
+        val info = ReleaseParser.pickLatest(body)!!
+        assertEquals("1.1.0", info.version)
+        assertEquals("https://e/and.apk", info.downloadUrl)
+        assertEquals(true, ReleaseParser.isAndroidTag("android-v1.0.0"))
+        assertEquals(false, ReleaseParser.isAndroidTag("v1.0.0"))
+        assertEquals(false, ReleaseParser.isAndroidTag(null))
     }
 
     @Test

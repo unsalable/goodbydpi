@@ -14,13 +14,16 @@ import kotlinx.serialization.json.longOrNull
  *
  * Depo masaustu surumlerini de barindiriyor (v2.x.y, *setup.exe). Android surumleri
  * "android-vX.Y.Z" etiketiyle ve --latest=false ile yayimlaniyor ki masaustu guncelleyicisi
- * (/releases/latest) onlari hic gormesin. Burada da ters yonu koruyoruz: yalnizca .apk
- * dosyasi olan surumler aday; masaustunun v2.3.1'i APK tasimadigi icin hic secilmez.
+ * (/releases/latest) onlari hic gormesin. Burada da ters yonu koruyoruz: yalnizca "android-v"
+ * etiketli ve GoodbyeDPI-Android(-surum).apk dosyasi olan surumler aday; masaustunun v2.x'i
+ * (yanlislikla bir APK eklense bile) hic secilmez.
  */
 object ReleaseParser {
     /** Surumlerde aranan sabit ad; dist gorevi APK'yi bu adla da uretir. */
     const val PREFERRED_ASSET = "GoodbyeDPI-Android.apk"
     private const val VERSIONED_PREFIX = "GoodbyeDPI-Android-"
+    const val ANDROID_TAG_PREFIX = "android-v"
+    private val VERSIONED_ASSET = Regex("""(?i)GoodbyeDPI-Android-\d+(\.\d+){0,3}\.apk""")
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -67,6 +70,10 @@ object ReleaseParser {
     fun toReleaseInfo(release: JsonObject): ReleaseInfo? {
         if (release.bool("draft") == true || release.bool("prerelease") == true) return null
         val tag = release.str("tag_name")?.trim().orEmpty()
+        // Yalnizca Android etiketleri (UPD-5): masaustu v2.x'e yanlislikla bir APK eklenirse o
+        // surum numarasi her android-v1.x'ten buyuk oldugu icin butun Android surumlerini
+        // golgeler, istemciler de o APK'yi her denetimde indirip reddederdi.
+        if (!isAndroidTag(tag)) return null
         val version = VersionUtil.normalize(tag) ?: return null
 
         val assets = (release["assets"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
@@ -91,19 +98,21 @@ object ReleaseParser {
         )
     }
 
+    /** release.ps1'in yayimladigi etiket bicimi: "android-v1.2.3". */
+    fun isAndroidTag(tag: String?): Boolean = tag?.trim()?.startsWith(ANDROID_TAG_PREFIX, ignoreCase = true) == true
+
     /**
-     * Once sabit ad (GoodbyeDPI-Android.apk), sonra surumlu ad (GoodbyeDPI-Android-1.2.3.apk),
-     * en son herhangi bir .apk. Yuklemesi yarim kalmis dosyalar ("state" != "uploaded") atlanir.
+     * Once sabit ad (GoodbyeDPI-Android.apk), sonra surumlu ad (GoodbyeDPI-Android-1.2.3.apk).
+     * Baska .apk'lar (probe, hata ayiklama derlemesi) hic secilmez. Yuklemesi yarim kalmis
+     * dosyalar ("state" != "uploaded") atlanir.
      */
     internal fun pickAsset(assets: List<JsonObject>): JsonObject? {
         val apks = assets.filter { a ->
-            val name = a.str("name").orEmpty()
             val state = a.str("state")
-            name.endsWith(".apk", ignoreCase = true) && (state == null || state == "uploaded")
+            state == null || state == "uploaded"
         }
         return apks.firstOrNull { it.str("name").equals(PREFERRED_ASSET, ignoreCase = true) }
-            ?: apks.firstOrNull { it.str("name").orEmpty().startsWith(VERSIONED_PREFIX, ignoreCase = true) }
-            ?: apks.firstOrNull()
+            ?: apks.firstOrNull { VERSIONED_ASSET.matches(it.str("name").orEmpty()) }
     }
 
     /** GitHub'in asset "digest" alani: "sha256:<64 hex>". Baska algoritmalar yok sayilir. */

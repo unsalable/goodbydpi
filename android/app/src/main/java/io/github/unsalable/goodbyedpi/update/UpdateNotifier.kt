@@ -35,12 +35,24 @@ internal object UpdateNotifier {
 
     /**
      * Uygulama arka plandayken sistem onay ekranini dogrudan acamiyoruz (Android 10+
-     * arka plan etkinlik kisiti); onay ekrani bildirime dokunulunca acilir.
+     * arka plan etkinlik kisiti); onay ekrani bildirime dokunulunca acilir. Kurulum sonucu
+     * gelene kadar kalir (dokununca kaybolmaz): kullanici onay ekranindan Ana ekrana donerse
+     * oturum hala bekliyor ve baska bir giris yolu yok. [silent]: onay ekrani zaten acildi,
+     * bildirim yalnizca yedek; ses/titresim yok.
      */
-    fun showConfirm(context: Context, confirm: Intent) {
+    fun showConfirm(context: Context, confirm: Intent, silent: Boolean = false) {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val pi = PendingIntent.getActivity(context, ID_CONFIRM, confirm, flags)
-        post(context, ID_CONFIRM, "Güncelleme onay bekliyor", "Kurulumu onaylamak için dokunun.", pi)
+        val launch = Intent(confirm).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pi = PendingIntent.getActivity(context, ID_CONFIRM, launch, flags)
+        post(
+            context, ID_CONFIRM, "Güncelleme onay bekliyor", "Kurulumu onaylamak için dokunun.", pi,
+            autoCancel = false, silent = silent,
+        )
+    }
+
+    /** Kurulum sonuclandi (basari, hata, iptal) ya da oturum birakildi. */
+    fun cancelConfirm(context: Context) {
+        runCatching { NotificationManagerCompat.from(context).cancel(ID_CONFIRM) }
     }
 
     /**
@@ -64,7 +76,15 @@ internal object UpdateNotifier {
         )
     }
 
-    private fun post(context: Context, id: Int, title: String, text: String, tap: PendingIntent?) {
+    private fun post(
+        context: Context,
+        id: Int,
+        title: String,
+        text: String,
+        tap: PendingIntent?,
+        autoCancel: Boolean = true,
+        silent: Boolean = false,
+    ) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -76,8 +96,9 @@ internal object UpdateNotifier {
                 .setSmallIcon(R.drawable.ic_stat_power)
                 .setContentTitle(title)
                 .setContentText(text)
-                .setAutoCancel(true)
+                .setAutoCancel(autoCancel)
                 .setOnlyAlertOnce(true)
+                .setSilent(silent)
                 .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .apply { if (tap != null) setContentIntent(tap) }

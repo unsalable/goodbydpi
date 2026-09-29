@@ -103,6 +103,45 @@ class UpdateCheckerTest {
         assertEquals(CheckResult.Error(UpdateChecker.MSG_OFFLINE, serverAnswered = false), dns)
     }
 
+    private fun desktopPage(n: Int) = (1..n).joinToString(",", "[", "]") { i ->
+        """{"tag_name":"v2.$i.0","draft":false,"prerelease":false,"body":"",
+            "assets":[{"name":"GoodbyeDPI-UI-Setup.exe","browser_download_url":"https://e/s.exe"}]}"""
+    }
+
+    @Test
+    fun followsNextPageUntilAnAndroidReleaseIsFound() {
+        // 1. sayfa yalnizca masaustu; Android surumu 2. sayfada (UPD-5). 3. sayfaya gidilmez.
+        route("/releases", 200, desktopPage(100), mapOf("Link" to """<$base/p2?per_page=100&page=2>; rel="next", <$base/p9>; rel="last""""))
+        route("/p2", 200, fixture(), mapOf("Link" to """<$base/p3?page=3>; rel="next""""))
+        route("/p3", 500, "olmamali")
+        val r = UpdateChecker("$base/releases").check("1.0.0")
+        assertEquals("1.0.1", (r as CheckResult.Found).info.version)
+    }
+
+    @Test
+    fun paginationIsCappedAndForeignNextLinksIgnored() {
+        route("/releases", 200, desktopPage(3), mapOf("Link" to """<$base/p2>; rel="next""""))
+        route("/p2", 200, desktopPage(3), mapOf("Link" to """<$base/p3>; rel="next""""))
+        route("/p3", 200, desktopPage(3), mapOf("Link" to """<$base/p4>; rel="next""""))
+        route("/p4", 200, fixture())
+        assertEquals(CheckResult.NoUpdate, UpdateChecker("$base/releases").check("1.0.0"))
+
+        assertEquals(null, UpdateChecker.nextLink("""<https://evil.example/x>; rel="next"""", "$base/releases"))
+        assertEquals("$base/p2", UpdateChecker.nextLink("""<$base/p1>; rel="prev", <$base/p2>; rel="next"""", "$base/releases"))
+        assertEquals(null, UpdateChecker.nextLink(null, "$base/releases"))
+        assertTrue(UpdateChecker.DEFAULT_API_URL.endsWith("per_page=100"))
+    }
+
+    @Test
+    fun laterPageFailureIsAnError() {
+        route("/releases", 200, desktopPage(2), mapOf("Link" to """<$base/p2>; rel="next""""))
+        route("/p2", 403, "{}", mapOf("X-RateLimit-Remaining" to "0"))
+        assertEquals(
+            CheckResult.Error(UpdateChecker.MSG_RATE_LIMIT, serverAnswered = true),
+            UpdateChecker("$base/releases").check("1.0.0"),
+        )
+    }
+
     @Test
     fun rateLimitHeuristic() {
         assertTrue(UpdateChecker.isRateLimited(429, null))

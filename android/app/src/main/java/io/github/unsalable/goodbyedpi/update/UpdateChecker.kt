@@ -34,10 +34,50 @@ class UpdateChecker(
     private val apiUrl: String = DEFAULT_API_URL,
     private val userAgent: String = "GoodbyeDPI-Android",
 ) {
-    /** Bloklar; ana is parcacigindan cagrilmamali (UpdateManager IO'da cagirir). */
+    /**
+     * Bloklar; ana is parcacigindan cagrilmamali (UpdateManager IO'da cagirir).
+     *
+     * Liste yeniden eskiye geliyor ve depo masaustu surumleriyle ortak (13 gunde 7 masaustu
+     * surumu cikti). Ilk sayfada hic Android surumu yoksa `Link: rel="next"` ile en fazla
+     * [MAX_PAGES] sayfa geriye gidilir; bir sayfada Android surumu bulununca daha eskilerine
+     * bakilmaz (UPD-5). Kimliksiz sinir saatte 60 istek: sayfa sayisi bu yuzden kucuk.
+     */
     fun check(currentVersion: String): CheckResult {
+        var url: String? = apiUrl
+        var found: ReleaseInfo? = null
+        var pages = 0
+        while (url != null && pages < MAX_PAGES) {
+            val page = fetchPage(url, first = pages == 0)
+            pages++
+            when (page) {
+                is Page.Done -> return page.result
+                is Page.Failed -> return page.error
+                is Page.Ok -> {
+                    // Sayfa icindeki en yuksek Android surumu; daha eski sayfalar ondan yeni olamaz.
+                    found = page.info
+                    if (found != null) break
+                    url = page.next
+                }
+            }
+        }
+        return if (found != null && VersionUtil.isNewer(found.version, currentVersion)) {
+            CheckResult.Found(found)
+        } else {
+            CheckResult.NoUpdate
+        }
+    }
+
+    private sealed interface Page {
+        data class Ok(val info: ReleaseInfo?, val next: String?) : Page
+
+        /** Sayfalamayi bitiren kesin sonuc (ornek: 404 = depo/surum yok). */
+        data class Done(val result: CheckResult) : Page
+        data class Failed(val error: CheckResult.Error) : Page
+    }
+
+    private fun fetchPage(pageUrl: String, first: Boolean): Page {
         val conn = try {
-            (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+            (URL(pageUrl).openConnection() as HttpURLConnection).apply {
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS
                 requestMethod = "GET"
@@ -48,7 +88,7 @@ class UpdateChecker(
                 setRequestProperty("User-Agent", userAgent)
             }
         } catch (e: Exception) {
-            return CheckResult.Error(MSG_NETWORK, serverAnswered = false)
+            return Page.Failed(CheckResult.Error(MSG_NETWORK, serverAnswered = false))
         }
 
         return try {
@@ -59,36 +99,52 @@ class UpdateChecker(
                     val info = try {
                         ReleaseParser.pickLatest(body)
                     } catch (e: IllegalArgumentException) {
-                        return CheckResult.Error(MSG_BAD_RESPONSE, serverAnswered = true)
+                        return Page.Failed(CheckResult.Error(MSG_BAD_RESPONSE, serverAnswered = true))
                     }
-                    if (info != null && VersionUtil.isNewer(info.version, currentVersion)) {
-                        CheckResult.Found(info)
-                    } else {
-                        CheckResult.NoUpdate
-                    }
+                    Page.Ok(info, nextLink(conn.getHeaderField("Link"), pageUrl))
                 }
                 isRateLimited(code, conn.getHeaderField("X-RateLimit-Remaining")) ->
-                    CheckResult.Error(MSG_RATE_LIMIT, serverAnswered = true)
+                    Page.Failed(CheckResult.Error(MSG_RATE_LIMIT, serverAnswered = true))
                 // Depo yoksa ya da henuz hic surum yayimlanmadiysa: guncelleme yok say.
-                code == HttpURLConnection.HTTP_NOT_FOUND -> CheckResult.NoUpdate
-                else -> CheckResult.Error("$MSG_SERVER (HTTP $code)", serverAnswered = true)
+                code == HttpURLConnection.HTTP_NOT_FOUND && first -> Page.Done(CheckResult.NoUpdate)
+                else -> Page.Failed(CheckResult.Error("$MSG_SERVER (HTTP $code)", serverAnswered = true))
             }
         } catch (e: Exception) {
             // Hata akisini da kapat: acik kalan baglanti havuzda soket tutar.
             runCatching { conn.errorStream?.close() }
-            CheckResult.Error(networkMessage(e), serverAnswered = false)
+            Page.Failed(CheckResult.Error(networkMessage(e), serverAnswered = false))
         } finally {
             conn.disconnect()
         }
     }
 
     companion object {
-        const val DEFAULT_API_URL = "https://api.github.com/repos/unsalable/goodbydpi/releases?per_page=30"
+        const val DEFAULT_API_URL = "https://api.github.com/repos/unsalable/goodbydpi/releases?per_page=100"
+
+        /** Android surumu aranirken en fazla bu kadar sayfa (100'er surum) okunur. */
+        const val MAX_PAGES = 3
+
+        private val LINK_NEXT = Regex("""<([^>]+)>\s*;\s*rel="?next"?""", RegexOption.IGNORE_CASE)
+
+        /**
+         * GitHub `Link` basligindaki sonraki sayfa. Yalnizca ayni sema ve sunucu: yanit baska bir
+         * adrese yonlendirip istegi oraya tasiyamasin.
+         */
+        internal fun nextLink(header: String?, current: String): String? {
+            val next = header?.let { LINK_NEXT.find(it)?.groupValues?.get(1)?.trim() } ?: return null
+            return try {
+                val a = URL(current)
+                val b = URL(next)
+                next.takeIf { a.protocol == b.protocol && a.host.equals(b.host, ignoreCase = true) && a.port == b.port }
+            } catch (e: Exception) {
+                null
+            }
+        }
 
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
 
-        /** 30 surumluk liste ~100-300 KB; bundan buyugu bozuk/zararli yanit sayilir. */
+        /** 100 surumluk sayfa ~0,3-1 MB; bundan buyugu bozuk/zararli yanit sayilir. */
         private const val MAX_BODY_BYTES = 4 * 1024 * 1024
 
         const val MSG_NETWORK = "Sunucuya ulaşılamadı"

@@ -51,6 +51,7 @@ import io.github.unsalable.goodbyedpi.ui.theme.GdpiTheme
 import io.github.unsalable.goodbyedpi.ui.theme.GoodbyeDpiTheme
 import io.github.unsalable.goodbyedpi.ui.theme.Motion
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.filterNotNull
 
 /** Iki ekran: gezinme kutuphanesine gerek yok, durum tek bir kaydedilebilir deger. */
 enum class Screen { Main, Settings }
@@ -106,11 +107,13 @@ fun GoodbyeDpiApp(vm: MainViewModel) {
         val seenPhase = rememberSaveable { mutableStateOf<PowerPhase?>(null) }
 
         // Guncellemeden sonraki ilk acilis: once tuket, sonra goster ki ekran donunce tekrarlanmasin.
-        val justUpdated by vm.justUpdatedTo.collectAsStateWithLifecycle()
-        LaunchedEffect(justUpdated) {
-            val version = justUpdated ?: return@LaunchedEffect
-            vm.consumeJustUpdated()
-            snackbar.showSnackbar("Güncellendi: sürüm $version")
+        // Anahtarsiz etki: degere anahtarlanan LaunchedEffect tuketince (deger null olunca) kendini
+        // iptal ediyor ve showSnackbar hemen kapaniyordu; mesaj hic gorunmuyordu.
+        LaunchedEffect(vm) {
+            vm.justUpdatedTo.filterNotNull().collect { version ->
+                vm.consumeJustUpdated()
+                snackbar.showSnackbar("Güncellendi: sürüm $version")
+            }
         }
 
         Box(Modifier.fillMaxSize().background(c.bg)) {
