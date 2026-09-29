@@ -237,6 +237,11 @@ class E2E:
         m = re.search(r"ni\{VPN CONNECTED[^}]*\}", vpn_lines[0]) if vpn_lines else None
         return up and owner, (tun.strip().splitlines() or ["tun0 yok"])[0][:120] + " | " + (m.group(0) if m else "VPN agi yok")
 
+    def tun_index(self) -> str | None:
+        """198.18.0.1 adresli arayuzun sira numarasi (yeniden kurulan tun yeni numara alir)."""
+        out = self.adb.sh("ip -o addr show 2>/dev/null | grep 198.18.0.1").strip()
+        return out.split(":")[0].strip() if out else None
+
     def wait_vpn(self, want_up: bool, timeout: float = VPN_UP_TIMEOUT) -> tuple[bool, float, str]:
         t0 = time.time()
         detail = ""
@@ -586,26 +591,46 @@ class E2E:
     def step_kill9(self, r: StepResult):
         if not self.ensure_running(r):
             return
-        pid = self.adb.pidof(self.pkg)
-        r.ev(f"surec {pid} olduruluyor (kill -9)")
-        self.app_sh(f"kill -9 {pid}")
-        t0 = time.time()
-        new_pid = None
-        up = False
-        while time.time() - t0 < RESTART_DEADLINE + 5:
-            new_pid = self.adb.pidof(self.pkg)
-            up, _ = self.vpn_state()
-            if new_pid and new_pid != pid and up:
-                break
-            time.sleep(0.5)
-        secs = time.time() - t0
-        r.expect(bool(new_pid) and new_pid != pid and up and secs <= RESTART_DEADLINE,
-                 f"yeni surec {new_pid}, VPN {secs:.1f} sn'de geri geldi (sinir {RESTART_DEADLINE:.0f} sn)")
-        if not up:
-            # Bilgi: sistem geri getirmediyse arayuzu acmak (recoverIfNeeded) getiriyor mu?
-            self.launch_main()
-            ok, secs2, _ = self.wait_vpn(True, 8)
-            r.ev(f"bilgi: arayuz acilinca kurtarma {'CALISTI' if ok else 'CALISMADI'} ({secs2:.1f} sn)")
+        # Kurtarma arayuz acilmadan gelmeli: on plandaki aktivite surecle birlikte olurse AMS onu
+        # yeniden baslatir ve onAppOpen kurtarirdi. Once ana ekrana donulur, QS paneli kapali.
+        self.adb.sh("input keyevent KEYCODE_HOME")
+        self.adb.sh("cmd statusbar collapse")
+        time.sleep(3)
+        # -9: SIGKILL; -11: yerel cokme (byedpi/hev segfault benzetimi, AMS 'Native crash').
+        for sig in (9, 11):
+            if not self.vpn_state()[0]:
+                r.fail(f"kill -{sig} oncesi VPN kapali")
+                return
+            pid = self.adb.pidof(self.pkg)
+            tun0 = self.tun_index()
+            r.ev(f"surec {pid} olduruluyor (kill -{sig}), tun if{tun0}")
+            self.app_sh(f"kill -{sig} {pid}")
+            t0 = time.time()
+            new_pid = None
+            up = False
+            while time.time() - t0 < RESTART_DEADLINE + 5:
+                # SIGSEGV'de surec debuggerd dokumu bitene kadar (~0.5-1 sn) yasiyor ve eski tun
+                # hala acik: "geri geldi" demek icin eski surec gitmis ve tun yenilenmis olmali.
+                old_alive = self.adb.sh(f"ls -d /proc/{pid} 2>/dev/null").strip() != ""
+                idx = self.tun_index()
+                new_pid = self.adb.pidof(self.pkg)
+                up, _ = self.vpn_state()
+                if not old_alive and idx is not None and idx != tun0 and new_pid and new_pid != pid and up:
+                    break
+                up = False
+                time.sleep(0.5)
+            secs = time.time() - t0
+            r.expect(bool(new_pid) and new_pid != pid and up and secs <= RESTART_DEADLINE,
+                     f"kill -{sig}: yeni surec {new_pid}, VPN {secs:.1f} sn'de geri geldi (sinir {RESTART_DEADLINE:.0f} sn)")
+            top = self.adb.sh("dumpsys activity activities | grep -E 'topResumedActivity|mResumedActivity'")
+            r.expect(self.pkg + "/" not in top, f"kurtarma arayuz acilmadan oldu: {top.strip()[:160]}")
+            if not up:
+                # Bilgi: sistem geri getirmediyse arayuzu acmak (recoverIfNeeded) getiriyor mu?
+                self.launch_main()
+                ok, secs2, _ = self.wait_vpn(True, 8)
+                r.ev(f"bilgi: arayuz acilinca kurtarma {'CALISTI' if ok else 'CALISMADI'} ({secs2:.1f} sn)")
+                return
+            time.sleep(3)
 
     def step_network_toggle(self, r: StepResult):
         if not self.disruptive(r) or not self.ensure_running(r):
@@ -795,7 +820,23 @@ class E2E:
         finally:
             self.adb.sh("cmd uimode night " + ("yes" if "yes" in old else "no"))
 
+    def wait_settled(self, r: StepResult, max_load: float = 4.0, timeout: float = 240) -> None:
+        """Acilistan hemen sonra (always_on/reboot adimlari) sistem yuku 15-20; o sirada olculen
+        jank uygulamaya degil emulatore ait. 1 dk'lik yuk ortalamasi dusene kadar beklenir."""
+        t0 = time.time()
+        load = None
+        while time.time() - t0 < timeout:
+            try:
+                load = float(self.adb.sh("cat /proc/loadavg").split()[0])
+            except (IndexError, ValueError):
+                break
+            if load < max_load:
+                break
+            time.sleep(10)
+        r.ev(f"sistem yuku {load} ({time.time() - t0:.0f} sn beklendi)")
+
     def step_gfxinfo(self, r: StepResult):
+        self.wait_settled(r)
         self.launch_main()
         self.adb.sh(f"dumpsys gfxinfo {self.pkg} reset")
         size = self.adb.sh("wm size").strip().split()[-1]

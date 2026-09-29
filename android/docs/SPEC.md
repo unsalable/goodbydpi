@@ -42,9 +42,10 @@ explain *why*, not *what*.
 * Both native components are vendored C sources (MIT) built with **ndk-build** through AGP
   `externalNativeBuild.ndkBuild`:
   * byedpi — https://github.com/hufrea/byedpi @ `ba532298de7b28cfe854aea83d061369d13ca290`
-  * hev-socks5-tunnel — https://github.com/heiher/hev-socks5-tunnel @ `main` (2.18.0 era) with
+  * hev-socks5-tunnel — https://github.com/heiher/hev-socks5-tunnel @ `d9dca26c` (tag 2.18.0) with
     its submodules vendored as plain files (src/core = hev-socks5-core `ab2a15a8`,
-    third-part/hev-task-system `328f35d9`, third-part/lwip `e22c9d28`, third-part/yaml `9e7614d4`).
+    third-part/hev-task-system `328f35d9`, third-part/lwip `e22c9d28`, third-part/yaml `9e7614d4`;
+    core and yaml differ from the 2.18.0 gitlinks only in docs/license files, see PATCHES.md).
     Git submodules/clones hit Windows MAX_PATH in long paths; download
     `https://codeload.github.com/heiher/<repo>/tar.gz/<sha>` and extract instead.
 * Location: `android/app/src/main/jni/` (`Android.mk`, `Application.mk`, `byedpi/`,
@@ -139,18 +140,22 @@ verify every flag against byedpi's `desync.c`/`extend.c`/`main.c`, and fix this 
 
 | id | Turkish name | byedpi group (Linux semantics) |
 |---|---|---|
-| `default` | Varsayılan | fake + disorder: e.g. `--disorder 1 --fake -1 --ttl 5` (+ `--split 0+sm` if SNI split on) |
+| `default` | Varsayılan | fake + disorder: `--disorder 2 --split 0+hm --fake -1 --ttl 5` |
 | `fixedttl` | Sabit TTL | `--fake -1 --ttl 5` |
 | `disorder` | Ters sıra | `--disorder 2` (desktop: split@2 reversed) |
 | `ttl4` / `ttl3` | Sahte TTL 4 / 3 | `--fake -1 --ttl 4` / `3` |
-| `md5sig` | MD5 imzası | `--fake -1 --md5sig` (kernel may lack TCP_MD5SIG → auto fallback group with TTL) |
-| `md5ttl3` | MD5 + TTL 3 | `--fake -1 --md5sig --ttl 3` |
-| `fakesplit5` | Bölünmüş sahte | fake TTL 5 with the fake itself split, closest equivalent |
-| `zerofake` | Boş sahte | `--fake -1 --ttl 5 --fake-data ':\0\0\0\0'` (verify escape parsing) |
+| `md5sig` | MD5 imzası | `--fake -1 --ttl 5 --md5sig` (kernel without TCP_MD5SIG, e.g. GKI: `--md5sig` omitted, TTL only) |
+| `md5ttl3` | MD5 + TTL 3 | `--fake -1 --ttl 3 --md5sig` (same MD5 rule) |
+| `fakesplit5` | Bölünmüş sahte | `--fake 2 --fake -1 --ttl 5` (one coherent fake cut at byte 2, byedpi patch B8) |
+| `zerofake` | Boş sahte | `--fake -1 --ttl 5 --fake-data ':\x00\x00\x00\x00'` |
 | `split2` | Düz bölme | `--split 2` |
-| `split` | Sadece bölme | `--split 2 --split 0+sm` |
-| `tlsrec` | TLS kayıt bölme (Android'e özel) | `--tlsrec 3+s` (optionally with `--split`) |
+| `split` | Sadece bölme | `--split 2 --split 0+hm` |
+| `tlsrec` | TLS kayıt bölme (Android'e özel) | `--tlsrec 3+s` |
 | `checksum` | (desktop only) | not offered on Android; stored id resolves to `default` |
+
+(Table corrected to the as-built argv; each group is preceded by `--proto=tls,http` or
+`--proto=tls`, and every TLS fake also gets `--fake-sni <fakeSni>`. Verified rows and reasons:
+BYEDPI_NOTES §7.2; what changed and why: §8.)
 
 Common switches:
 * `fragmentHttp` on → `--proto=tls,http` scope for the TCP groups, else `--proto=tls`.
@@ -334,9 +339,10 @@ No update code may crash or block the UI when offline / rate-limited.
 ## 6. Build & packaging
 
 * `android/` is a standalone Gradle project: Gradle wrapper **8.14.3** (already cached on this
-  machine), AGP **8.13.x**, Kotlin **2.2.x** (+ `org.jetbrains.kotlin.plugin.compose`,
-  `plugin.serialization`), JDK 17 toolchain. Compose via the newest BOM that builds with
-  compileSdk 36 on this AGP (step back if a newer one demands more). Version catalog in
+  machine), AGP **8.13.x** (built: 8.13.2), Kotlin **2.2.x** (built: 2.2.21; +
+  `org.jetbrains.kotlin.plugin.compose`, `plugin.serialization`), JDK 17 toolchain. Compose via
+  the newest BOM that builds with compileSdk 36 on this AGP (built: 2026.06.01; 2026.08.00+
+  needs compileSdk 37 + AGP 9) (step back if a newer one demands more). Version catalog in
   `gradle/libs.versions.toml`. `ndkVersion = "29.0.14206865"` (installed).
 * ABIs: `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`. One **universal** release APK.
 * Release: `isMinifyEnabled = true`, `isShrinkResources = true`, R8 full mode, keep rules for
@@ -390,3 +396,182 @@ No update code may crash or block the UI when offline / rate-limited.
   server and break those connections. On the emulator, efficacy is out of scope; plumbing,
   stability and non-fake methods are in scope. Also note: the desktop GoodbyeDPI-UI is running
   on this host (don't touch it), so blocked sites are already unblocked for host traffic.
+
+## 8. Deviations (as built)
+
+State after wave 4 (`0573715`). Sections 0–7 are the original contract; every place where the
+code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NOTES.md`,
+`app/src/main/jni/PATCHES.md`.
+
+### Native (§1, §1.1)
+
+* **byedpi stop wakes an eventfd owned by the glue, not `shutdown(server_fd)`** — the loop
+  closes `server_fd` itself; a late `shutdown()` from another thread could hit a reused fd number.
+* **`NativeBridge` returns specific codes** (`0`, `-1` start, `-2` args, `-3` busy, `-4` exited,
+  `-5` internal) — the watchdog must tell retryable failures from `ByeDpiArgs` bugs.
+* **More native patches than §1.1**: byedpi B4 (upstream bugs: `--pf` byte order, cache expiry,
+  fake mmap leak, >31 groups, 32-bit `load_cache`), B5 `--deny-net`, B6 accept errors / backlog
+  1024 / errno / 64-bit timers, B7 fallback trigger semantics, B8 coherent split fakes; hev P1–P5
+  (sync config check, stale stop flag, tun-EOF busy loop, logger fd, `MSG_MORE` 200 ms handshake
+  delay) — bugs and gaps found during integration; PATCHES.md has the evidence for each.
+
+### Tun / VPN (§1.2)
+
+* **`setMetered(false)` on API 29+** instead of the default — a Q+ VPN is metered by default;
+  `false` inherits the underlying network, so Wi-Fi does not look metered.
+* **`excludeLan` also drops 100.64.0.0/10 and 240.0.0.0/4** (with 224/4 → 224/3) — CGNAT is the
+  carrier's own network with no DPI; 240/4 holds 255.255.255.255, and tunnelled broadcasts would
+  leave through byedpi without `SO_BROADCAST`. Kept routed: `198.18.0.0/15`, `fd00:6764:7069::/64`.
+* **Virtual nets are refused**: byedpi always gets `--deny-net 198.18.0.0/15 --deny-net
+  fd00:6764:7069::/48` (a `--redirect` FROM still wins) — Private DNS probes `198.18.0.53:853`;
+  without it a real SYN went to the ISP and the session hung. With DNS "Kapalı",
+  `198.18.0.53:53` is refused too.
+* **Cross-family DNS**: a profile with only an IPv6 address still redirects the IPv4 resolver
+  (byedpi supports it); the IPv6 resolver is added only if the profile has v6 *and* IPv6 is on.
+* **`setUnderlyingNetworks`**: API 31+ follows `registerBestMatchingNetworkCallback(INTERNET,
+  NOT_VPN)`; below 31 it passes `null` and reads DNS from `registerDefaultNetworkCallback` — on
+  S+ the default callback reports the VPN itself to its owner; "last `onAvailable` wins" picked
+  cellular DNS while on Wi-Fi.
+
+### Engine mapping (§1.3)
+
+* **Base argv adds `-N`** (SOCKS domain requests get reply 08) — a blocking `getaddrinfo` would
+  stall byedpi's single-threaded loop; hev and the connection tester only send IPs.
+* **Preset table corrected** (`default` = disorder 2 + `0+hm` split + fake; `split` uses `0+hm`;
+  `fakesplit5` = `--fake 2 --fake -1`) — `default` mirrors the desktop (split@2 reversed + SNI
+  split; parts must ascend or byedpi cancels them); `+s` cancels the part on plain HTTP, `+h`
+  splits the SNI or the Host.
+* **MD5 on kernels without `TCP_MD5SIG`** (Android GKI): no separate TTL fallback group; patched
+  byedpi sends the fake TTL-only on `ENOPROTOOPT`, and `ByeDpiArgs` probes once and omits
+  `--md5sig` — so `md5sig`≡`fixedttl`, `md5ttl3`≡`ttl3` and fallback chains dedupe them.
+* **`--ttl` is always emitted for fakes**, even when only MD5 is ticked — an unprotected fake
+  reaches the server and breaks the connection.
+* **Voice fakes use `--ttl 64`**, not the method TTL, in three UDP groups (50000-65535,
+  3478-3481, 19294-19344) — the desktop sends them with the real packet's TTL (proven on Turkish
+  ISPs), a low TTL only risks the DPI missing them; byedpi keeps one `--pf` per group.
+* **Fallback layout**: per distinct fallback `--auto=torst,ssl_err <group> --cache-ttl 3600`,
+  then `--timeout 4:0:0:1`; no `redirect` trigger — legitimate cross-domain HTTP redirects would
+  cycle through every group; `:1` lifts the timeout once the server answers (mobile stalls).
+
+### Models, state and controller (§2)
+
+* **ISP lists are fake-first** (e.g. TT `ttl4, disorder, ttl3, default`; Superonline `ttl3,
+  md5sig, disorder, md5ttl3`), not desktop-identical — the desktop "Ters sıra" relies on seqovl,
+  which a kernel socket cannot produce; live desktop tests showed only fake methods working
+  (BYEDPI_NOTES §7.4). Untested on a Turkish line.
+* **`DpiConfig` adds `fakeTtl` and `splitFake`; `splitPosition` is 1..64** (desktop: 0 = none) —
+  byedpi's SNI split is a separate part, so the fixed position must be a real byte offset.
+* **`AppSettings` adds `lastUpdateCheck`, `pendingUpdate`, `dismissedUpdate`** — the last is
+  legacy and unread; update snooze state lives in SharedPreferences `gdpi_update`.
+* **`EngineState.Running` adds `socksPort` and `argv`** — the connection test needs the port,
+  the diagnostics screen shows the argv actually running.
+* **`ServiceController` adds `recoverIfNeeded`, `recoverInBackground` (internal),
+  `EXTRA_CONNECT`, `CONNECT_ALIAS`** — process-death recovery and the tile's connect request.
+* **`SettingsRepository` adds `updateNow()` (non-suspending) and CAS updates; the service writes
+  `wantRunning` with `runBlocking`** — suspending in the single-thread engine queue let a queued
+  action (START during STOP) interleave.
+* **More files than §2 suggests** (`ByeDpiRunner`, `VpnTunBuilder`, `Recovery`, `KeeperService`,
+  `RecoveryJobService`, `RestartPolicy`, `UpdateManager`, `UpdateMemo`, `UpdateJobService`,
+  `DnsWire`, …) — split by responsibility.
+
+### Service & stability (§3)
+
+* **`START_STICKY` does not restart a VPN service on API 36** — the kernel closes the tun, `Vpn`
+  unbinds with `DeadObjectException` and AMS drops the record. Added: `KeeperService` (plain,
+  non-exported START_STICKY service that `Vpn` does not bind; restarted ~1 s after death, then
+  recovers), recovery in `App.onCreate`, and a persisted 15-min `RecoveryJobService` backstop.
+  Background recovery only runs in the boot the engine was armed in (after a reboot
+  `BootReceiver` decides) and never in instrumentation processes.
+* **User stops are honoured** — recovery first checks `ApplicationExitInfo` for
+  `REASON_USER_REQUESTED` newer than the last arm (API 30+, not within 60 s of a package update)
+  or, below 30, a cancelled backstop job; then it clears `wantRunning`. Force stop and "Durdur" in
+  Active apps must not be undone.
+* **Settings changes apply in place instead of a full `RESTART`** — `DpiEngine.reconfigure`
+  swaps only byedpi (same port) when the argv changes, and establishes a new tun while the old fd
+  is still open when routes/addresses/VPN DNS change; name-only changes just relabel. Apps never
+  see the VPN network drop. `RESTART` + `EXTRA_FORCE` still rebuilds fully.
+* **DNS "Kapalı"**: the tun is rebuilt in place (1 s settle) when the underlying network's
+  effective DNS set changes — the old network's resolvers are unreachable on the new one.
+* **Watchdog**: byedpi exit is a thread callback, hev is polled every 20 s (idle CPU); budget
+  as specified; after `Failed` background recovery is disarmed so it does not loop on the error.
+* **`fail()`/`onRevoke` call `stopSelf(lastStartId)`** — a START queued meanwhile keeps the
+  service alive.
+* **The tile's connect request goes through the non-exported `activity-alias .ConnectRequest`**
+  (Recents relaunches ignored) — `MainActivity` is exported; any app could send `EXTRA_CONNECT`.
+
+### UI (§4)
+
+* **Pickers are custom in-window sheets (`GdpiSheet`), not `ModalBottomSheet`** — Material's
+  sheet opens a Dialog window each time (150–200 ms first frame on the emulator).
+* **The Connected halo pulses 3 times, then stays static** — a continuous pulse drew frames
+  forever (611 frames per idle 10 s before, 0 after).
+* **Extra text tokens `successText` / `dangerText` / `accentText`** (light `#047857` / `#B91C1C`
+  / `#4F46E5`, dark = SPEC colours) for small text and glyphs — the SPEC light colours are below
+  4.5:1 on white; fills, rings and dots keep the SPEC palette.
+* **Theme uses `UiModeManager.setApplicationNightMode` (API 31+) + `configChanges="uiMode"`** —
+  no activity recreation; below 31 the starting window follows the system mode.
+* **Notification permission is asked after VPN consent, not together** — two system dialogs at
+  once; a refused consent should not be followed by an unrelated prompt.
+* **Additions**: landscape two-pane main screen; the diagnostics sheet shows the running argv
+  (`describe()` only when disconnected); the licenses list also shows `THIRD-PARTY-NOTICES.txt`
+  (AndroidX, Compose, Kotlin; Apache-2.0).
+* **Connection test resolves names itself** — DNS-over-TCP to `198.18.0.53:53` through the proxy
+  (the selected DNS via `--redirect`), system resolver if refused (DNS "Kapalı"), then SOCKS
+  CONNECT to the IP with SNI/hostname checks on the name; required by `-N`.
+
+### Updates (§5)
+
+* **Release scheme**: tag `android-vX.Y.Z`, `gh release create … --latest=false`, assets
+  `GoodbyeDPI-Android.apk` + `GoodbyeDPI-Android-<ver>.apk`, notes with SHA-256 lines and
+  `versionCode: N` (`tools/release.ps1`) — the desktop updater in the same repo reads
+  `/releases/latest` and must never see the APK.
+* **Query**: `/releases?per_page=100`, following `Link: rel="next"` (same scheme/host/port) for
+  at most 3 pages until a page holds an Android release; only `android-v*` tags and only the two
+  asset names are accepted — the repo is shared with frequent desktop releases, and a stray APK
+  on a desktop `v2.x` would shadow every Android version.
+* **SHA-256**: the asset's GitHub `digest` (`sha256:…`) first, else the 64-hex hash next to the
+  APK name in the notes; with neither, only the package checks guard (package name, higher
+  `versionCode`, same signing certificate) — rejecting a good file on an ambiguous hash is worse.
+* **Installs without a banner tap when `autoUpdate` is on, also in the background**; on Android
+  12+ `UPDATE_PACKAGES_WITHOUT_USER_ACTION` + `USER_ACTION_NOT_REQUIRED` make it silent once the
+  app is its own installer of record; otherwise the system confirm opens if the UI is visible,
+  else a "Güncelleme onay bekliyor" notification — same behaviour as the desktop self-update.
+* **When**: every foreground transition (6 h throttle), after the engine starts, and a persisted
+  JobScheduler job (id 4201, 6 h, 1 h flex, any network); a remembered found version skips the
+  throttle while the user is present — the VPN keeps the process alive for days, so
+  activity-only checks rarely ran.
+* **Snooze / bad versions**: "Daha sonra" or a cancelled confirm = 24 h snooze; a version that
+  fails the package checks or is rejected by the installer is not auto-downloaded again (a
+  manual retry still is) — a broken release must not be fetched on every check.
+
+### Build (§6)
+
+* **Pins stepped back** where newer releases need compileSdk 37 + AGP 9: core-ktx 1.18.0,
+  lifecycle 2.10.0, Compose BOM 2026.06.01; kotlinx.serialization 1.9.0 (1.10 pulls Kotlin 2.3).
+* **Build dirs**: ndk-build staging in `android/.cxx` (`-Pgdpi.cxxDir`), all outputs relocatable
+  with `-Pgdpi.buildDir=C:\t\<name>` — `make.exe` crashes when `NDK_OUT` reaches ~214 chars.
+  Also `-Pgdpi.abi` (single-ABI dev build; `dist` refuses it) and `-Pgdpi.appIdSuffix` (debug).
+* **`dist` also writes `SHA256SUMS.txt`; ignores live in `android/.gitignore`;
+  `localeFilters = tr`** (the UI is Turkish only).
+* **Release signing** uses `android/keystore.properties` → `release.jks`; `release.ps1` refuses
+  to publish unless the certificate SHA-256 is the pinned `b819e563…74b5` — an update signed
+  with another key cannot install over existing installs.
+
+### Testing (§7)
+
+* **UDP smoke runs on the device**: `tools/native/udp_socks_test.c` against an ASan `ciadpi`,
+  not a host Python client — `adb forward` carries TCP only. `smoke.py` also runs tcpdump wire
+  checks, an iptables DPI simulation, `restart_test` and `JniSmoke.java` (R8 APK).
+* **curl uses `--socks5 -4`** (names resolved on the host) because of `-N`.
+* **`tools/e2e.py` finds the tun by `198.18.0.1`, not `tun0`** — an in-place rebuild can bring up
+  `tun1`. Device-wide steps (Wi-Fi, doze, reboot, always-on) need `--allow-disruptive`.
+* **`tools/native/tun_latency.sh`** (manual, root) measures hev session latency (P5).
+
+### Known limitations (accepted)
+
+* **The loopback SOCKS5 port has no authentication** — another local app could relay through our
+  VPN-excluded uid (dodging Data Saver / per-app limits) or detect the bypass. Low impact (needs a
+  hostile app, exposes no data); a fix needs RFC 1929 auth in byedpi, hev, the tester and tools.
+* **TCP half-close is unsupported** (byedpi upstream; BYEDPI_NOTES §10).
+* **Not yet verified**: DPI efficacy on a real Turkish line, the API 24–30 recovery/network
+  paths (JVM tests only) and the 32-bit timer fix (compile only).

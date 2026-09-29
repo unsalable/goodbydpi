@@ -3,6 +3,16 @@
 DPI atlatma için sade, hafif ve animasyonlu bir WPF masaüstü arayüzü.
 Tek düğme, sistem tepsisi, açık/koyu tema, Windows açılışında otomatik başlatma.
 
+## Android
+
+Telefon için ayrı bir Android uygulaması da var (root gerektirmez; VPN + byedpi ile çalışır,
+kendini GitHub'dan günceller). Kurulum, önerilen telefon ayarları, sorun giderme ve derleme:
+[`android/README.md`](android/README.md).
+
+APK'yı [Releases](https://github.com/unsalable/goodbydpi/releases) sayfasında etiketi `android-v`
+ile başlayan sürümlerden `GoodbyeDPI-Android.apk` olarak indirin. Android sürümleri "Latest"
+olarak işaretlenmez; masaüstü güncelleyicisi yalnızca masaüstü sürümlerini görür.
+
 ## Özellikler
 
 - **Kendi DPI motorumuz** — WinDivert üzerine C# ile yazılmış, ayrı bir `goodbyedpi.exe`

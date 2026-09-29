@@ -81,18 +81,19 @@ class SettingsFlowsTest {
         compose.waitForIdle()
 
         // Onerilen yontem ve DNS birlikte uygulanir.
-        assertEquals("disorder", repo.current.method)
+        // Android'de sahte paketli yontem once (IspProfile: fake-first siralama).
+        assertEquals("ttl4", repo.current.method)
         assertEquals("yandex", repo.current.dns)
-        compose.onNodeWithContentDescription("Yöntem: Ters sıra").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Yöntem: Sahte TTL 4").assertIsDisplayed()
 
-        compose.onNodeWithContentDescription("Yöntem: Ters sıra").performClick()
-        compose.onNodeWithText("Sahte TTL 4").assertExists()
+        compose.onNodeWithContentDescription("Yöntem: Sahte TTL 4").performClick()
+        compose.onNodeWithText("Ters sıra").assertExists()
         compose.onNodeWithText("Sahte TTL 3").assertExists()
         compose.onNodeWithText("TLS kayıt bölme").assertDoesNotExist()
-        compose.onNodeWithText("Sahte TTL 4").performClick()
-        compose.waitFor("method=ttl4") { repo.current.method == "ttl4" }
+        compose.onNodeWithText("Ters sıra").performClick()
+        compose.waitFor("method=disorder") { repo.current.method == "disorder" }
         compose.waitForIdle()
-        compose.onNodeWithContentDescription("Yöntem: Sahte TTL 4").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Yöntem: Ters sıra").assertIsDisplayed()
     }
 
     @Test
@@ -282,7 +283,7 @@ class SettingsFlowsTest {
         Espresso.pressBack()
         compose.waitForIdle()
         compose.onNodeWithContentDescription("SAĞLAYICI: Superonline").assertIsDisplayed()
-        compose.onNodeWithContentDescription("YÖNTEM: Ters sıra").assertIsDisplayed()
+        compose.onNodeWithContentDescription("YÖNTEM: Sahte TTL 3").assertIsDisplayed()
 
         // Diskteki dosya da ayni: yeni bir depo ornegi dosyadan okur.
         val file = File(targetContext.filesDir, "settings.json")
