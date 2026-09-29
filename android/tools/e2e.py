@@ -48,6 +48,8 @@ from typing import Callable
 #: Ana ekrandaki guc dugmesi. UI katmani content-description'i "Bağlan" / "Bağlantıyı kes"
 #: (ya da "Güç ...") olarak veriyor; biri degisirse yalnizca burasi guncellenir.
 POWER_DESC_RE = re.compile(r"Güç|Bağlantıyı kes|Bağlan")
+#: Yalnizca "baglan" durumundaki dugme (ensure_running acik baglantiyi kapatmasin).
+CONNECT_DESC_RE = re.compile(r"^Bağlan$")
 #: Ayarlar ekranina giden ust cubuk simgesi.
 SETTINGS_DESC_RE = re.compile(r"Ayarlar")
 #: Servis bileseni ve eylemleri (SPEC 3: START / STOP / RESTART). Runtime katmani farkli
@@ -60,7 +62,10 @@ PROBE_PKG = "io.github.unsalable.goodbyedpi.probe"
 PROBE_ACTIVITY = PROBE_PKG + "/.ProbeActivity"
 
 VIRTUAL_DNS = "198.18.0.53:53"
-PROBE_URLS = ["https://example.com", "https://discord.com", "https://www.cloudflare.com", "http://neverssl.com"]
+# Duz HTTP hedefi: neverssl.com bu agdan VPN'siz de ulasilamiyor (ana makinede curl zaman asimi),
+# o yuzden Firefox'un portal denetim adresi kullaniliyor.
+PROBE_URLS = ["https://example.com", "https://discord.com", "https://www.cloudflare.com",
+              "http://detectportal.firefox.com/success.txt"]
 PROBE_DNS = ["example.com", "discord.com", "roblox.com"]
 HOST_ECHO_PORTS = (443, 4443)  # 443: dusurulmeli, 4443: gecmeli (UDP yolunun calistigi kontrolu)
 
@@ -240,20 +245,50 @@ class E2E:
             time.sleep(0.5)
         return False, time.time() - t0, detail
 
+    _priv_mode: str | None = None
+
+    def priv_mode(self) -> str:
+        """Uygulama verisine erisim yolu: 'run-as' (debug derleme), 'root' (adb root; release
+        derleme de test edilebilsin) ya da 'none'."""
+        if self._priv_mode is None:
+            if "uid=" in self.adb.sh(f"run-as {self.pkg} id"):
+                self._priv_mode = "run-as"
+            elif self.is_root():
+                self._priv_mode = "root"
+            else:
+                self._priv_mode = "none"
+        return self._priv_mode
+
+    def app_sh(self, command: str, stdin: bytes | None = None, check: bool = False) -> str:
+        """Uygulamanin veri klasorunde (cwd = /data/data/<pkg>) komut calistirir."""
+        mode = self.priv_mode()
+        q = command.replace("'", "'\\''")
+        if mode == "run-as":
+            return self.adb.run("shell", f"run-as {self.pkg} sh -c '{q}'", stdin=stdin, check=check)
+        if mode == "root":
+            return self.adb.run("shell", f"sh -c 'cd /data/data/{self.pkg} && {q}'", stdin=stdin, check=check)
+        return ""
+
     def read_settings(self) -> dict:
-        txt = self.adb.sh(f"run-as {self.pkg} cat files/settings.json")
+        txt = self.app_sh("cat files/settings.json")
         try:
             return json.loads(txt)
         except json.JSONDecodeError:
             return {}
 
     def write_settings(self, changes: dict) -> None:
-        """Uygulamayi durdurup settings.json'u birlestirerek yazar (yalnizca debug derlemede)."""
+        """Uygulamayi durdurup settings.json'u birlestirerek yazar (debug: run-as, release: root)."""
         cur = self.read_settings()
         cur.update(changes)
         self.adb.sh(f"am force-stop {self.pkg}")
         data = json.dumps(cur, ensure_ascii=False, indent=2).encode("utf-8")
-        self.adb.run("shell", f"run-as {self.pkg} sh -c 'mkdir -p files && cat > files/settings.json'", stdin=data, check=True)
+        if self.priv_mode() == "root":
+            # root olarak yazilan dosya uygulamaya ait olmali (sahip + SELinux baglami).
+            self.app_sh("mkdir -p files && cat > files/settings.json && o=$(stat -c %u:%g .) && "
+                        "chown $o files files/settings.json && chmod 600 files/settings.json && "
+                        "restorecon -R files", stdin=data, check=True)
+        else:
+            self.app_sh("mkdir -p files && cat > files/settings.json", stdin=data, check=True)
 
     def ui_dump(self) -> ET.Element | None:
         self.adb.sh("uiautomator dump /sdcard/gdpi_ui.xml", timeout=30)
@@ -342,9 +377,10 @@ class E2E:
         pid = self.adb.pidof(self.pkg)
         if not pid:
             return {}
-        status = self.adb.sh(f"run-as {self.pkg} cat /proc/{pid}/status")
+        status = self.app_sh(f"cat /proc/{pid}/status")
         rss = re.search(r"VmRSS:\s+(\d+)", status)
-        fds = self.adb.sh(f"run-as {self.pkg} ls /proc/{pid}/fd").split()
+        threads = re.search(r"Threads:\s+(\d+)", status)
+        fds = self.app_sh(f"ls /proc/{pid}/fd").split()
         top = self.adb.sh(f"top -b -n 1 -p {pid}")
         cpu = None
         for l in top.splitlines():
@@ -355,14 +391,42 @@ class E2E:
                     cpu = float(parts[8])
                 except (IndexError, ValueError):
                     pass
-        return {"pid": pid, "rss_kb": int(rss.group(1)) if rss else None, "fds": len(fds), "cpu": cpu}
+        return {"pid": pid, "rss_kb": int(rss.group(1)) if rss else None, "fds": len(fds),
+                "threads": int(threads.group(1)) if threads else None, "cpu": cpu}
+
+    def cpu_percent(self, pid: int | None, secs: float = 10) -> float | None:
+        """Surecin [secs] boyunca kullandigi CPU (tek cekirdek %), /proc/<pid>/stat utime+stime."""
+        if not pid:
+            return None
+
+        def ticks() -> int | None:
+            st = self.app_sh(f"cat /proc/{pid}/stat")
+            parts = st[st.rfind(")") + 2:].split()
+            try:
+                return int(parts[11]) + int(parts[12])
+            except (IndexError, ValueError):
+                return None
+
+        a = ticks()
+        t0 = time.time()
+        time.sleep(secs)
+        b = ticks()
+        if a is None or b is None:
+            return None
+        return round((b - a) / 100.0 / (time.time() - t0) * 100.0, 1)  # USER_HZ=100
 
     def ensure_running(self, r: StepResult) -> bool:
         up, _ = self.vpn_state()
         if up:
             return True
         self.launch_main()
-        self.tap_desc(POWER_DESC_RE, r)
+        # Arayuz acilinca ServiceController.recoverIfNeeded (wantRunning=true) baglantiyi kendisi
+        # geri getirebiliyor; o zaman dugme "Baglantiyi kes" olur ve koru dokunmak VPN'i kapatir.
+        ok, secs, detail = self.wait_vpn(True, 4)
+        if ok:
+            r.ev(f"arayuz acilinca baglanti kendiliginden geldi ({secs:.1f} sn)")
+            return True
+        self.tap_desc(CONNECT_DESC_RE, r)
         ok, secs, detail = self.wait_vpn(True)
         return r.expect(ok, f"VPN acik ({secs:.1f} sn): {detail}")
 
@@ -383,8 +447,8 @@ class E2E:
         else:
             installed = PROBE_PKG in self.adb.sh(f"pm list packages {PROBE_PKG}")
             r.expect(installed, "probe zaten kurulu (--probe-apk verilmedi)")
-        dbg = self.adb.sh(f"run-as {self.pkg} id")
-        r.expect("uid=" in dbg, "hata ayiklama derlemesi (run-as calisiyor)")
+        self._priv_mode = None
+        r.expect(self.priv_mode() != "none", f"uygulama verisine erisim: {self.priv_mode()} (run-as ya da adb root)")
 
     def step_permissions(self, r: StepResult):
         self.adb.sh(f"appops set {self.pkg} ACTIVATE_VPN allow")
@@ -398,8 +462,10 @@ class E2E:
     def step_settings(self, r: StepResult):
         # Test icin: otomatik guncelleme kapali (GitHub'a gitmesin), yerel ag da tun'dan gecsin
         # (10.0.2.2'deki yankilayiciya giden UDP tun'a girmeli), DNS yonlendirmesi Yandex:1253.
+        # Yontem: emulatorde sahte paket (TTL) yontemleri slirp yuzunden baglanti bozabilir
+        # (SPEC "Emulator caveat"); tesisat testleri sahtesiz bir yontemle yapilir.
         self.write_settings({"autoUpdate": False, "excludeLan": False, "dns": "yandex",
-                             "startOnBoot": True, "autoConnect": False})
+                             "startOnBoot": True, "autoConnect": False, "method": self.args.method})
         s = self.read_settings()
         r.expect(s.get("excludeLan") is False and s.get("dns") == "yandex", "settings.json yazildi")
 
@@ -412,7 +478,7 @@ class E2E:
         with UdpEcho() as echo:
             if not echo.ok:
                 r.skip("127.0.0.1:443/4443 UDP baglanamadi")
-            d = self.run_probe(r, "baseline", urls=PROBE_URLS[:2], dns=PROBE_DNS[:1],
+            d = self.run_probe(r, "baseline", urls=PROBE_URLS, dns=PROBE_DNS[:1],
                                udp=["77.88.8.8:1253"], quic=[f"10.0.2.2:{p}" for p in HOST_ECHO_PORTS],
                                timeout_ms=4000)
         if not d:
@@ -424,9 +490,11 @@ class E2E:
         r.expect(all(q.values()) and q, f"VPN'siz UDP 443/4443 yankisi geliyor: {q}")
 
     def step_start_ui(self, r: StepResult):
-        self.adb.sh(f"am force-stop {self.pkg}")
+        # wantRunning=true kalmissa arayuz acilinca kendisi baglanir (recoverIfNeeded) ve
+        # dokunma baglantiyi keserdi; adim "kullanici dugmeye basti" yolunu sinamali.
+        self.write_settings({"wantRunning": False})
         self.launch_main()
-        if not self.tap_desc(POWER_DESC_RE, r):
+        if not self.tap_desc(CONNECT_DESC_RE, r):
             return
         ok, secs, detail = self.wait_vpn(True)
         r.expect(ok, f"arayuzden baglandi, VPN {secs:.1f} sn'de acik: {detail}")
@@ -518,7 +586,7 @@ class E2E:
             return
         pid = self.adb.pidof(self.pkg)
         r.ev(f"surec {pid} olduruluyor (kill -9)")
-        self.adb.sh(f"run-as {self.pkg} kill -9 {pid}")
+        self.app_sh(f"kill -9 {pid}")
         t0 = time.time()
         new_pid = None
         up = False
@@ -531,6 +599,11 @@ class E2E:
         secs = time.time() - t0
         r.expect(bool(new_pid) and new_pid != pid and up and secs <= RESTART_DEADLINE,
                  f"yeni surec {new_pid}, VPN {secs:.1f} sn'de geri geldi (sinir {RESTART_DEADLINE:.0f} sn)")
+        if not up:
+            # Bilgi: sistem geri getirmediyse arayuzu acmak (recoverIfNeeded) getiriyor mu?
+            self.launch_main()
+            ok, secs2, _ = self.wait_vpn(True, 8)
+            r.ev(f"bilgi: arayuz acilinca kurtarma {'CALISTI' if ok else 'CALISMADI'} ({secs2:.1f} sn)")
 
     def step_network_toggle(self, r: StepResult):
         if not self.disruptive(r) or not self.ensure_running(r):
@@ -602,9 +675,13 @@ class E2E:
                 r.fail(f"soak probe {i} basarisiz")
             i += 1
             time.sleep(max(0, min(30, end - time.time())))
-        # Bosta CPU: probe olmadan 10 sn bekleyip tekrar olc.
+        # Bosta CPU: uygulama arka planda (ana ekrandaki "bagli" halesi surekli cizim yapiyor,
+        # o arayuz maliyeti; burada motorun bosta maliyeti olculur), probe yok, 10 sn'lik
+        # /proc/<pid>/stat farki (top -n 1'in tek ornegi guvenilmez).
+        self.adb.sh("input keyevent KEYCODE_HOME")
         time.sleep(10)
         idle = self.proc_sample()
+        idle["cpu"] = self.cpu_percent(idle.get("pid"), 10)
         r.ev(f"bosta: {idle}")
         (self.out / "soak.json").write_text(json.dumps({"samples": samples, "idle": idle}, indent=2), encoding="utf-8")
         valid = [s for s in samples if s.get("rss_kb")]
@@ -628,36 +705,67 @@ class E2E:
         r.expect(ok and new_pid and new_pid != pid,
                  f"MY_PACKAGE_REPLACED sonrasi VPN geri geldi ({secs:.1f} sn, pid {pid} -> {new_pid}): {detail}")
 
+    def reboot_and_wait(self, r: StepResult) -> bool:
+        """Yeniden baslatir; adbd onceden root idiyse yine root yapar (release derlemede ayar
+        dosyasina erisim root'a bagli)."""
+        was_root = self.is_root()
+        self.adb.run("reboot", timeout=60)
+        ok = self.adb.wait_boot(240)
+        if ok and was_root and not self.is_root():
+            self.adb.run("root", timeout=30)
+            time.sleep(3)
+            self.adb.run("wait-for-device", timeout=60)
+        self._priv_mode = None
+        return r.expect(ok, "cihaz acildi")
+
     def step_reboot(self, r: StepResult):
         if not self.disruptive(r) or not self.ensure_running(r):
             return
         s = self.read_settings()
         r.expect(s.get("startOnBoot") is True and s.get("wantRunning") is True, "startOnBoot ve wantRunning acik")
-        self.adb.run("reboot", timeout=60)
-        r.expect(self.adb.wait_boot(240), "cihaz acildi")
+        if not self.reboot_and_wait(r):
+            return
         ok, secs, detail = self.wait_vpn(True, 90)
         r.expect(ok, f"acilistan sonra VPN kendiliginden acildi ({secs:.1f} sn): {detail}")
 
     def step_always_on(self, r: StepResult):
+        """Her zaman acik VPN. Vpn sinifi always_on_vpn_app ayarini yalnizca kullanici
+        baslarken okuyor (calisirken 'settings put' etkisiz, kabukta bunun icin komut yok):
+        ayar + yeniden baslatma. wantRunning=false yazilir ki acilista BootReceiver degil
+        sistem baslatsin; logcat'te action=android.net.VpnService aranir. Sonra kilit (lockdown)
+        modunda probe trafigi ve uygulamanin kendi uid'inin dogrudan erisimi denenir."""
         if not self.disruptive(r):
             return
         old_app = self.adb.sh("settings get secure always_on_vpn_app").strip()
         old_lock = self.adb.sh("settings get secure always_on_vpn_lockdown").strip()
         try:
-            self.adb.sh(f"am force-stop {self.pkg}")
-            self.wait_vpn(False, 10)
-            self.adb.sh(f"settings put secure always_on_vpn_lockdown 0")
+            self.write_settings({"wantRunning": False})
+            self.adb.sh("settings put secure always_on_vpn_lockdown 1")
             self.adb.sh(f"settings put secure always_on_vpn_app {self.pkg}")
-            ok, secs, detail = self.wait_vpn(True, 30)
-            r.expect(ok, f"her zaman acik VPN sistemi servisi baslatti ({secs:.1f} sn): {detail}")
+            if not self.reboot_and_wait(r):
+                return
+            ok, secs, detail = self.wait_vpn(True, 60)
+            r.expect(ok, f"her zaman acik VPN acilista servisi baslatti ({secs:.1f} sn): {detail}")
+            log = self.adb.run("logcat", "-d", "-s", "GdpiVpnService:*")
+            r.expect("action=android.net.VpnService" in log, "baslatan sistem (SERVICE_INTERFACE eylemi)")
+            d = self.run_probe(r, "lockdown", urls=PROBE_URLS[:2], dns=PROBE_DNS[:1], udp=[VIRTUAL_DNS])
+            if d:
+                r.expect(d["fail"] == 0, "kilit modunda tun uzerinden trafik calisiyor")
+            uid = self.adb.sh(f"stat -c %u /data/data/{self.pkg}").strip()
+            if self.is_root() and uid.isdigit():
+                out = self.adb.sh(f"su {uid} sh -c 'echo | nc -w 4 1.1.1.1 443 && echo OWN_OK'")
+                r.expect("OWN_OK" in out, "kilit modunda uygulamanin kendi trafigi (byedpi, guncelleyici) muaf")
         finally:
-            self.adb.sh("settings put secure always_on_vpn_app " + (old_app if old_app not in ("", "null") else "''"))
             if old_app in ("", "null"):
                 self.adb.sh("settings delete secure always_on_vpn_app")
+            else:
+                self.adb.sh(f"settings put secure always_on_vpn_app {old_app}")
             if old_lock in ("", "null"):
                 self.adb.sh("settings delete secure always_on_vpn_lockdown")
             else:
                 self.adb.sh(f"settings put secure always_on_vpn_lockdown {old_lock}")
+            # Bellekteki her zaman acik durumu ancak yeniden baslatmayla temizlenir.
+            self.reboot_and_wait(StepResult("always_on-restore"))
 
     def _screenshot(self, name: str) -> Path:
         png = self.adb.run("exec-out", "screencap", "-p", binary=True, timeout=30)
@@ -792,6 +900,8 @@ def main() -> int:
     ap.add_argument("--soak-minutes", type=float, default=10)
     ap.add_argument("--max-jank", type=float, default=10.0, help="izin verilen janky kare yuzdesi")
     ap.add_argument("--service-action-prefix", default=DEFAULT_ACTION_PREFIX)
+    ap.add_argument("--method", default="disorder",
+                    help="settings adiminda yazilacak yontem (emulatorde sahtesiz: disorder/split2/tlsrec)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     if args.list:
