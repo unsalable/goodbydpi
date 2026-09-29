@@ -41,4 +41,21 @@ class RestartPolicy(
     private fun prune(now: Long) {
         while (attempts.isNotEmpty() && now - attempts.first() >= windowMs) attempts.removeFirst()
     }
+
+    companion object {
+        /** Butce bitince hata metnine eklenen cumle. */
+        const val GIVE_UP_SUFFIX = "Otomatik yeniden bağlanma 5 denemede başarısız oldu."
+
+        /**
+         * Son hatanin nedeni ile [GIVE_UP_SUFFIX]'i tek metinde birlestirir. Nedenler cogu zaman
+         * noktayla bitiyor ama hepsi degil ("VPN izni yok", eski/ic metinler); iki cumle arada
+         * nokta olmadan yapisik gorunuyordu (e2e E2E-V6-2).
+         */
+        fun giveUpMessage(reason: String): String {
+            val r = reason.trim()
+            if (r.isEmpty()) return GIVE_UP_SUFFIX
+            val sep = if (r.last() in ".!?") " " else ". "
+            return r + sep + GIVE_UP_SUFFIX
+        }
+    }
 }

@@ -196,7 +196,8 @@ class DpiEngine(
             proxy?.stop()
             Log.w(TAG, "yerinde guncelleme basarisiz, motor durdu", t)
             if (t is StartException) throw t
-            throw StartException("Motor yeniden yapılandırılamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
+            // Ic istisna metni (Ingilizce/ASCII) kullaniciya gosterilmez; ayrinti yukaridaki gunlukte.
+            throw StartException("Motor yeniden yapılandırılamadı.", retryable = true, cause = t)
         }
     }
 
@@ -238,7 +239,9 @@ class DpiEngine(
         val pfd = try {
             tun.establish(cfg)
         } catch (t: Throwable) {
-            throw StartException("VPN arayüzü kurulamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
+            // Sistem istisnasinin metni kullaniciya gitmez (Failed durumu ve bildirim); servis
+            // StartException'i nedeniyle (cause) birlikte gunluge yaziyor.
+            throw StartException("VPN arayüzü kurulamadı.", retryable = true, cause = t)
         }
         return pfd ?: throw StartException("VPN izni yok", retryable = false)
     }
@@ -260,7 +263,9 @@ class DpiEngine(
         } catch (t: Throwable) {
             if (hevStarted) runCatching { TProxy.TProxyStopService() }
             if (t is StartException) throw t
-            throw StartException("Tünel başlatılamadı: ${t.message ?: t.javaClass.simpleName}", retryable = true, cause = t)
+            // Ornek: hev.yml yazilamadi (check mesaji ASCII, ic ayrinti). Kullaniciya duz bir
+            // cumle; ayrinti servisin gunlugunde cause olarak (e2e E2E-V6-2).
+            throw StartException("Tünel başlatılamadı.", retryable = true, cause = t)
         }
     }
 

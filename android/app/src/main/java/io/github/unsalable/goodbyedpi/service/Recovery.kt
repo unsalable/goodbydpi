@@ -35,7 +35,9 @@ import kotlin.math.abs
  *    ve periyodik is 15-34 dk uzakta; JobScheduler bu cokme cezasina tabi degil (e2e E2E-F1:
  *    zorla calistirilan is VPN'i 1,3 sn'de geri getirdi). Ust uste [RecoveryPolicy.MAX_STREAK]
  *    kurtarmadan sonra vazgecilir: arka plan yolu kapatilir ve "Baglanti koptu" bildirimi
- *    cikar (dokununca baglanir); deterministik bir cokme dongusu pili tuketmesin.
+ *    cikar (dokununca baglanir); deterministik bir cokme dongusu pili tuketmesin. Sayaca
+ *    yalnizca cokmeye benzeyen olumler girer (API 30+ cikis nedeni; LMK/OEM oldurmesi girmez),
+ *    motor 10 dk kesintisiz calisinca ya da kullanici arayuzu/karoyu acinca sayac sifirlanir.
  *
  * Arka plan kurtarmasi yalnizca [arm] ile kurulup [disarm] ile kaldirilmamissa calisir
  * ([backgroundArmed]): kullanici durdurmasi, izin geri alinmasi ve kalici hata (fail) onu
@@ -97,6 +99,27 @@ internal object Recovery {
     }
 
     /**
+     * Kullanici (arayuz, karo, acilis, her zaman acik VPN) baglanmak istedi ve servis istegi
+     * aldi: arka plan yolunu hemen acar, bekciyi ve isleri KURMADAN (onlar ilk basarili motor
+     * baslatmasinda [arm] ile). Neden: ilk baslatma yeniden denenebilir bir hatayla geri
+     * cekilmedeyken surec olurse bgArmed hala eski durdurmadan kalma false'tu ve yapiskan
+     * yeniden baslatma / App.onCreate kullanicinin acik istegini geri getirmiyordu
+     * (REC-STICKY-UNARMED). Zaman damgasi da yenilenir: bundan onceki bir durmaya zorla artik
+     * sayilmaz, istek bu acilisa ait. Kalici hata (fail) yine [disarm] eder.
+     */
+    fun markStartRequested(context: Context) {
+        val app = context.applicationContext
+        // Zaten kurulu olsa da damga yenilenir: once durmaya zorla, sonra dogrudan Baglan
+        // denirse o eski cikis bu yeni istegi "kullanici durdurdu" diye iptal etmesin.
+        prefs(app).edit(commit = true) {
+            putLong(KEY_ARMED_AT, System.currentTimeMillis())
+            putInt(KEY_ARMED_BOOT, bootCount(app))
+            putLong(KEY_ARMED_ELAPSED, SystemClock.elapsedRealtime())
+            putBoolean(KEY_BG_ARMED, true)
+        }
+    }
+
+    /**
      * Kullanici durdurdu / izin geri alindi / kalici hata: kurtarma katmanlarini kaldirir ve
      * arka plan yolunu kapatir. KEY_ARMED_AT kalir: userStoppedAfterArm "durdurma motor
      * kurulduktan sonra mi" sorusunu ona gore cevapliyor.
@@ -134,12 +157,27 @@ internal object Recovery {
     /**
      * Arka plan kurtarmasi motoru baslatmak uzere: ust uste sayaci ilerletir ve kontrol isini
      * kurar. Sinir asildiysa vazgecer ([giveUp]) ve false doner; cagiran baslatmamali.
+     *
+     * Yalnizca cokmeye benzeyen olumler sayilir ([RecoveryPolicy.countsTowardGiveUp]): vazgecme
+     * deterministik bir yerel cokme dongusu icin. LMK / OEM oldurmesi (dusuk RAM'li telefonda
+     * oyun oynarken 10 dk'da bir) sayilsaydi gunluk kullanimda bir saatte otomatik yeniden
+     * baglanma kalici olarak kapanirdi (REC-STREAK-NONCRASH).
      */
     fun beginBackgroundRecovery(context: Context): Boolean {
         val app = context.applicationContext
         val p = prefs(app)
         val prev = readStreak(p)
-        val next = RecoveryPolicy.nextStreak(prev, SystemClock.elapsedRealtime(), bootCount(app))
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val nowBoot = bootCount(app)
+        val exitReason = deathReasonSince(app, prev, nowElapsed, nowBoot)
+        if (!RecoveryPolicy.countsTowardGiveUp(exitReason)) {
+            // Sayac ve son kurtarma ani degismez (araya giren bir LMK cokme dongusunu
+            // sifirlamasin); tek bir emniyet kontrolu yeter.
+            scheduleCheck(app, RecoveryPolicy.checkDelayMs(1))
+            Log.i(TAG, "arka plan kurtarmasi: cikis nedeni $exitReason cokme degil, ust uste sayilmaz (sayac ${prev.count})")
+            return true
+        }
+        val next = RecoveryPolicy.nextStreak(prev, nowElapsed, nowBoot)
         if (RecoveryPolicy.shouldGiveUp(next)) {
             giveUp(app, prev.count)
             return false
@@ -152,6 +190,31 @@ internal object Recovery {
         scheduleCheck(app, RecoveryPolicy.checkDelayMs(next.count))
         Log.i(TAG, "arka plan kurtarmasi ${next.count}/${RecoveryPolicy.MAX_STREAK}")
         return true
+    }
+
+    /**
+     * API 30+: bu kurtarmaya yol acan surec olumunun ApplicationExitInfo nedeni. Yalnizca son
+     * kurulumdan (arm / kullanici baslatmasi) ve onceki kurtarmadan SONRAki cikis gecerli; daha
+     * eskiyse bu kurtarmanin olumu henuz kaydedilmemis ya da hic olum yok: null (bilinmiyor,
+     * sayilir).
+     */
+    private fun deathReasonSince(app: Context, prev: RecoveryPolicy.Streak, nowElapsed: Long, nowBoot: Int): Int? {
+        val exit = lastExit(app) ?: return null
+        val sameBoot = prev.boot < 0 || nowBoot < 0 || prev.boot == nowBoot
+        val prevAge = nowElapsed - prev.lastElapsed
+        val prevWall = if (prev.count > 0 && sameBoot && prevAge >= 0) System.currentTimeMillis() - prevAge else 0L
+        val since = maxOf(prevWall, prefs(app).getLong(KEY_ARMED_AT, 0L))
+        return if (exit.timestampMs > since) exit.reason else null
+    }
+
+    /**
+     * Motor bu surecte [RecoveryPolicy.WATCH_MS] boyunca kesintisiz calisti: son kurtarma
+     * tuttu, sayac sifirlanir. DpiVpnService'in saglik dongusunden (20 sn) cagrilir; sayac
+     * yoksa yalnizca bellekteki bir anahtar sorgusu. Kontrol isinin zamanlamasina guvenilmez:
+     * surec izleme penceresinin hemen ardindan olurse son kontrol hic calismayabilir.
+     */
+    fun noteEngineUptime(context: Context, runningMs: Long) {
+        if (RecoveryPolicy.recoveryHeld(runningMs)) resetBackgroundStreak(context)
     }
 
     /** Kullanici kendisi baglandi (arayuz, karo, acilis): onceki arka plan kurtarmalari sayilmaz. */
@@ -177,7 +240,12 @@ internal object Recovery {
         if (state !is EngineState.Running && state != EngineState.Starting) return
         if (!backgroundArmed(app)) return
         val delay = RecoveryPolicy.watchDelayMs(readStreak(prefs(app)), SystemClock.elapsedRealtime(), bootCount(app))
-            ?: return
+        if (delay == null) {
+            // Izleme penceresi bitti ve motor ayakta: son kurtarma tuttu (saglik dongusu de
+            // ayni seyi motorun kesintisiz calisma suresine gore yapiyor).
+            if (state is EngineState.Running) resetBackgroundStreak(app)
+            return
+        }
         scheduleCheck(app, delay)
     }
 
@@ -341,8 +409,13 @@ internal object RecoveryPolicy {
     /** Kurtarmadan sonra motor ayakta olsa da bu sure boyunca kontrol isi surer. */
     const val WATCH_MS = 10 * 60_000L
 
-    /** Kontrol isinin en erken ve en gec calismasi arasindaki pay (JobInfo overrideDeadline). */
-    const val CHECK_DEADLINE_SLACK_MS = 90_000L
+    /**
+     * Kontrol isinin en erken ve en gec calismasi arasindaki pay (JobInfo overrideDeadline).
+     * Kisa tutulur: kisitsiz is emulatorde (ACTIVE kova, sarjda) minLatency'de degil son
+     * tarihte calisti (e2e E2E-V6-1); AMS cezasindan sonra her cokmenin kurtarmasi
+     * checkDelay + bu kadar surebilir.
+     */
+    const val CHECK_DEADLINE_SLACK_MS = 30_000L
 
     private const val CHECK_BASE_MS = 30_000L
     private const val CHECK_MAX_MS = 8 * 60_000L
@@ -360,6 +433,39 @@ internal object RecoveryPolicy {
     }
 
     fun shouldGiveUp(next: Streak): Boolean = next.count > MAX_STREAK
+
+    // ApplicationExitInfo.REASON_* (API 30+); JVM testi Android sinifini yuklemesin diye burada.
+    const val REASON_UNKNOWN = 0
+    const val REASON_EXIT_SELF = 1
+    const val REASON_SIGNALED = 2
+    const val REASON_LOW_MEMORY = 3
+    const val REASON_CRASH = 4
+    const val REASON_CRASH_NATIVE = 5
+    const val REASON_ANR = 6
+    const val REASON_INITIALIZATION_FAILURE = 7
+    const val REASON_EXCESSIVE_RESOURCE_USAGE = 9
+    const val REASON_OTHER = 13
+
+    /**
+     * Uygulamanin kendi hatasina benzeyen cikislar: yerel/Java cokme, ANR, kendi kendine cikis
+     * (yerel kodda exit), baslatma hatasi, asiri kaynak kullanimi; UNKNOWN da temkinli sayilir.
+     * Bunlar tekrarlanirsa deterministik bir dongu olabilir.
+     */
+    private val CRASH_LIKE = setOf(
+        REASON_UNKNOWN, REASON_EXIT_SELF, REASON_CRASH, REASON_CRASH_NATIVE, REASON_ANR,
+        REASON_INITIALIZATION_FAILURE, REASON_EXCESSIVE_RESOURCE_USAGE,
+    )
+
+    /**
+     * Bu kurtarma ust uste sayaca girer mi? null: neden bilinmiyor (API 30 alti, kayit yok ya da
+     * olum henuz kaydedilmemis) -> eski davranis, sayilir. LOW_MEMORY, SIGNALED (kill -9, OEM
+     * gorev olduruculeri), OTHER vb. disaridan gelen oldurmeler sayilmaz: kurtarma bunlarda
+     * ise yariyor, vazgecmek yalnizca DPI engellerini geri getirirdi.
+     */
+    fun countsTowardGiveUp(exitReason: Int?): Boolean = exitReason == null || exitReason in CRASH_LIKE
+
+    /** Motor bu kadar kesintisiz calistiysa son kurtarma tutmustur (izleme penceresi kadar). */
+    fun recoveryHeld(runningMs: Long): Boolean = runningMs >= WATCH_MS
 
     /** n'inci kurtarmadan sonraki kontrol: 30 sn, 1, 2, 4, 8 dk (ustel, 8 dk'da sabit). */
     fun checkDelayMs(count: Int): Long {
@@ -385,4 +491,36 @@ internal object RecoveryPolicy {
      */
     fun jobCancelledByForceStop(jobArmed: Boolean, jobPending: Boolean, sameBoot: Boolean, updatedSinceArm: Boolean): Boolean =
         jobArmed && !jobPending && sameBoot && !updatedSinceArm
+}
+
+/**
+ * Ayni surecte arka arkaya gelen kurtarma isteklerini (App.onCreate + bekci + karo + arayuz)
+ * tek baslatmaya indirir. Saf (saat disaridan), JVM'de sinanir.
+ *
+ * Damga yalnizca baslatma gercekten kabul edilince yazilir: eskiden once damga yaziliyor, sonra
+ * arka plan yolu vazgeciyordu (giveUp); 5 sn icinde acilan arayuz "zaten baslatildi" cevabi
+ * alip hicbir sey yapmiyordu, VPN kapali kaliyordu (REC-DEDUPE-GIVEUP).
+ */
+internal class RecoveryDedupe(private val windowMs: Long) {
+    enum class Decision {
+        /** Yeni baslatma: cagiran servisi baslatsin. */
+        BEGIN,
+
+        /** Pencere icinde zaten bir baslatma istendi. */
+        DUPLICATE,
+
+        /** [tryBegin]'in admit'i reddetti (vazgecildi); damga yazilmadi. */
+        REFUSED,
+    }
+
+    private var lastAt = 0L
+
+    /** [admit] kilit icinde calisir: iki yol ayni anda sayaci ilerletmesin. */
+    @Synchronized
+    fun tryBegin(now: Long, admit: () -> Boolean): Decision {
+        if (lastAt != 0L && now - lastAt in 0 until windowMs) return Decision.DUPLICATE
+        if (!admit()) return Decision.REFUSED
+        lastAt = now
+        return Decision.BEGIN
+    }
 }

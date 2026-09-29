@@ -48,4 +48,15 @@ class RestartPolicyTest {
         assertEquals(1_000L, p.next(2))
         assertEquals(1, p.attemptsIn(2))
     }
+
+    @Test
+    fun giveUpMessageSeparatesSentences() {
+        val suffix = RestartPolicy.GIVE_UP_SUFFIX
+        // E2E-V6-2: neden noktasizsa iki cumle yapisik kalmasin.
+        assertEquals("VPN izni yok. $suffix", RestartPolicy.giveUpMessage("VPN izni yok"))
+        assertEquals("Tünel başlatılamadı. $suffix", RestartPolicy.giveUpMessage("Tünel başlatılamadı."))
+        assertEquals("Neden? $suffix", RestartPolicy.giveUpMessage("Neden? "))
+        assertEquals(suffix, RestartPolicy.giveUpMessage(""))
+        assertEquals(suffix, RestartPolicy.giveUpMessage("   "))
+    }
 }

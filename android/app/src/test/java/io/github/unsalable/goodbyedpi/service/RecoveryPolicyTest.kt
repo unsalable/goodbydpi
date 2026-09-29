@@ -1,5 +1,7 @@
 package io.github.unsalable.goodbyedpi.service
 
+import android.app.ApplicationExitInfo
+import io.github.unsalable.goodbyedpi.service.RecoveryDedupe.Decision
 import io.github.unsalable.goodbyedpi.service.RecoveryPolicy.Exit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -123,5 +125,66 @@ class RecoveryPolicyTest {
         assertNull(RecoveryPolicy.watchDelayMs(s, 1_000_000L + RecoveryPolicy.WATCH_MS, 7))
         assertNull(RecoveryPolicy.watchDelayMs(s, 1_030_000L, 8))
         assertNull(RecoveryPolicy.watchDelayMs(none, 1_030_000L, 7))
+    }
+
+    @Test
+    fun reasonConstantsMatchSdk() {
+        // Derleme zamani sabitleri (javac satir ici yazar): JVM testinde Android sinifi yuklenmez.
+        assertEquals(ApplicationExitInfo.REASON_UNKNOWN, RecoveryPolicy.REASON_UNKNOWN)
+        assertEquals(ApplicationExitInfo.REASON_EXIT_SELF, RecoveryPolicy.REASON_EXIT_SELF)
+        assertEquals(ApplicationExitInfo.REASON_SIGNALED, RecoveryPolicy.REASON_SIGNALED)
+        assertEquals(ApplicationExitInfo.REASON_LOW_MEMORY, RecoveryPolicy.REASON_LOW_MEMORY)
+        assertEquals(ApplicationExitInfo.REASON_CRASH, RecoveryPolicy.REASON_CRASH)
+        assertEquals(ApplicationExitInfo.REASON_CRASH_NATIVE, RecoveryPolicy.REASON_CRASH_NATIVE)
+        assertEquals(ApplicationExitInfo.REASON_ANR, RecoveryPolicy.REASON_ANR)
+        assertEquals(ApplicationExitInfo.REASON_INITIALIZATION_FAILURE, RecoveryPolicy.REASON_INITIALIZATION_FAILURE)
+        assertEquals(ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE, RecoveryPolicy.REASON_EXCESSIVE_RESOURCE_USAGE)
+        assertEquals(ApplicationExitInfo.REASON_USER_REQUESTED, RecoveryPolicy.REASON_USER_REQUESTED)
+        assertEquals(ApplicationExitInfo.REASON_OTHER, RecoveryPolicy.REASON_OTHER)
+    }
+
+    @Test
+    fun onlyCrashLikeExitsCountTowardGiveUp() {
+        // REC-STREAK-NONCRASH: LMK / OEM / kill -9 oldurmeleri vazgecmeye itmez.
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_LOW_MEMORY))
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_SIGNALED))
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_OTHER))
+        assertFalse(RecoveryPolicy.countsTowardGiveUp(14)) // FREEZER
+        // Yerel cokme dongusu (e2e kill -11 -> CRASH_NATIVE) sayilir.
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_CRASH_NATIVE))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_CRASH))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_ANR))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_EXIT_SELF))
+        // Bilinmiyor (API 30 alti / kayit yok): eski davranis, temkinli sayilir.
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(null))
+        assertTrue(RecoveryPolicy.countsTowardGiveUp(RecoveryPolicy.REASON_UNKNOWN))
+    }
+
+    @Test
+    fun recoveryHeldAfterWatchWindow() {
+        assertFalse(RecoveryPolicy.recoveryHeld(0L))
+        assertFalse(RecoveryPolicy.recoveryHeld(RecoveryPolicy.WATCH_MS - 1))
+        assertTrue(RecoveryPolicy.recoveryHeld(RecoveryPolicy.WATCH_MS))
+    }
+
+    @Test
+    fun deadlineSlackStaysShort() {
+        // E2E-V6-1: is pratikte son tarihte calisiyor; 5. kurtarmadan sonraki kontrol <= 8,5 dk.
+        assertTrue(RecoveryPolicy.CHECK_DEADLINE_SLACK_MS <= 30_000L)
+        assertTrue(RecoveryPolicy.checkDelayMs(5) + RecoveryPolicy.CHECK_DEADLINE_SLACK_MS <= 8 * min + 30_000L)
+    }
+
+    @Test
+    fun dedupeCollapsesBurstButNotAfterRefusal() {
+        val d = RecoveryDedupe(5_000L)
+        var admitted = 0
+        // REC-DEDUPE-GIVEUP: arka plan yolu vazgecti -> damga yok, hemen ardindan arayuz baglanir.
+        assertEquals(Decision.REFUSED, d.tryBegin(1_000L) { false })
+        assertEquals(Decision.BEGIN, d.tryBegin(1_500L) { admitted++; true })
+        // Ayni surecte bekci/karo 5 sn icinde: tek baslatma, admit (sayac) hic cagrilmaz.
+        assertEquals(Decision.DUPLICATE, d.tryBegin(3_000L) { admitted++; true })
+        assertEquals(Decision.DUPLICATE, d.tryBegin(6_499L) { admitted++; true })
+        assertEquals(1, admitted)
+        assertEquals(Decision.BEGIN, d.tryBegin(6_500L) { true })
     }
 }

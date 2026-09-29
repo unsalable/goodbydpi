@@ -32,8 +32,7 @@ object ServiceController {
     /** Ayni surecte arka arkaya gelen kurtarma istekleri (App + bekci + karo) tek baslatma olsun. */
     private const val RECOVERY_DEDUPE_MS = 5_000L
 
-    @Volatile
-    private var lastRecoveryAt = 0L
+    private val recoveryDedupe = RecoveryDedupe(RECOVERY_DEDUPE_MS)
 
     /**
      * Bu surec bir enstrumantasyon testi mi? Testler byedpi'yi surec icinde kendileri
@@ -150,6 +149,11 @@ object ServiceController {
         recover(context, background = true, source = source)
 
     private fun recover(context: Context, background: Boolean, source: String): Boolean {
+        // Arayuz/karo acildi: kullanici burada. Soguk surecte App.onCreate'in arka plan
+        // kurtarmasi motoru coktan baslatmis (durum Starting) ya da sayaci ilerletmis olabilir;
+        // o da ust uste "gozetimsiz" kurtarma sayilip kullaniciyi vazgecmeye itmesin
+        // (REC-DEDUPE-GIVEUP). Durum denetiminden ONCE: aksi halde Starting'de hic sifirlanmaz.
+        if (!background) runCatching { Recovery.resetBackgroundStreak(context.applicationContext) }
         if (EngineStateHolder.state.value != EngineState.Stopped) return false
         if (background && isInstrumentationProcess) {
             Log.i(TAG, "$source: enstrumantasyon sureci, arka plan kurtarmasi atlandi")
@@ -170,16 +174,15 @@ object ServiceController {
         }
         val prepared = runCatching { VpnService.prepare(app) == null }.getOrDefault(false)
         if (!prepared) return false
-        synchronized(this) {
-            val now = SystemClock.elapsedRealtime()
-            if (lastRecoveryAt != 0L && now - lastRecoveryAt < RECOVERY_DEDUPE_MS) return true
-            lastRecoveryAt = now
+        // Arka plan: ust uste cokme dongusunde vazgecer (bildirim + disarm), damga yazilmaz ve
+        // hemen ardindan acilan arayuz yine baglanir; aksi halde kontrol isini kurar.
+        val decision = recoveryDedupe.tryBegin(SystemClock.elapsedRealtime()) {
+            !background || Recovery.beginBackgroundRecovery(app)
         }
-        if (background) {
-            // Ust uste cokme dongusunde vazgecer (bildirim + disarm); aksi halde kontrol isini kurar.
-            if (!Recovery.beginBackgroundRecovery(app)) return false
-        } else {
-            Recovery.resetBackgroundStreak(app)
+        when (decision) {
+            RecoveryDedupe.Decision.DUPLICATE -> return true
+            RecoveryDedupe.Decision.REFUSED -> return false
+            RecoveryDedupe.Decision.BEGIN -> Unit
         }
         Log.i(TAG, "$source: son istek acikti ama motor yok, baglanti geri getiriliyor")
         return start(app, reportFailure = !background) == null

@@ -187,6 +187,9 @@ class DpiVpnService : VpnService() {
     private fun startByUser() {
         Notifications.cancelFailure(this)
         persistWantRunning(true)
+        // Arka plan yolu ilk basarili baslatmayi beklemeden acik: geri cekilmedeyken surec
+        // olurse yapiskan yeniden baslatma ve App.onCreate bu istegi geri getirebilsin.
+        runCatching { Recovery.markStartRequested(this) }.onFailure { Log.w(TAG, "markStartRequested", it) }
         policy.reset()
         if (engine.isRunning && engine.checkHealth() == null) {
             // Zaten bagli (ornek: karo iki kez, her zaman acik + kullanici): yalnizca durumu
@@ -320,7 +323,7 @@ class DpiVpnService : VpnService() {
     private fun scheduleRetry(reason: String) {
         val wait = policy.next(SystemClock.elapsedRealtime())
         if (wait == null) {
-            fail("$reason Otomatik yeniden bağlanma 5 denemede başarısız oldu.")
+            fail(RestartPolicy.giveUpMessage(reason))
             return
         }
         Log.i(TAG, "watchdog: $wait ms sonra yeniden denenecek")
@@ -452,12 +455,20 @@ class DpiVpnService : VpnService() {
             while (isActive) {
                 delay(HEALTH_INTERVAL_MS)
                 checkHealth()
+                noteUptime()
             }
         }
     }
 
     private fun checkHealth() {
         engine.checkHealth()?.let { onEngineDied(it) }
+    }
+
+    /** Motor izleme penceresi boyunca ayakta kaldiysa son arka plan kurtarmasi tutmustur. */
+    private fun noteUptime() {
+        if (!engine.isRunning) return
+        val up = SystemClock.elapsedRealtime() - engine.sinceElapsed
+        runCatching { Recovery.noteEngineUptime(this, up) }.onFailure { Log.w(TAG, "noteEngineUptime", it) }
     }
 
     /**

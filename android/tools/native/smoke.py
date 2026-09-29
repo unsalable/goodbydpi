@@ -217,8 +217,11 @@ def ok_code(code):
 class Capture:
     def __init__(self, adb, name):
         self.adb, self.file = adb, f"{DEV_DIR}/{name}.pcap"
+        # --immediate-mode: libpcap TPACKET_V3 ile paketleri blok dolunca ya da ~1 sn'lik blok
+        # zaman asiminda teslim ediyor; curl'den 0.3 sn sonra gelen SIGINT o bloktakileri
+        # yaziya gecirmeden kapatiyordu (dosyada yalnizca SYN kalir, kablo denetimi rastgele FAIL).
         script = write_script(adb, f"cap_{name}.sh",
-                              f"tcpdump -i any -U -nn -s 0 -w {self.file} 'tcp port 443' > /dev/null 2>&1 &\n"
+                              f"tcpdump -i any --immediate-mode -U -nn -s 0 -w {self.file} 'tcp port 443' > /dev/null 2>&1 &\n"
                               f"echo $! > {self.file}.pid")
         adb.sh(f"rm -f {self.file}; sh {script}")
         time.sleep(0.8)

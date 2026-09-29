@@ -540,7 +540,8 @@ Measurements:
    * Builds: top-level `jni/` 4 ABIs 0 warnings, every LOAD `Align 0x4000`; standalone
      `byedpi-jni` 4 ABIs 0 warnings, only export `JNI_OnLoad`; tools x86_64 0 warnings.
    * `smoke.py` (full): 73 checks, 0 FAIL, 8 EXPECTED (one earlier run had two wire rows capture no
-     packets — a tcpdump start race; the rerun passed all). `smoke.py --quick --apk <debug apk>`:
+     packets; the cause was later found to be libpcap's TPACKET_V3 block buffering, not a start
+     race, and `Capture` now runs tcpdump with `--immediate-mode`). `smoke.py --quick --apk <debug apk>`:
      68 checks, 0 FAIL, 13/13 JNI. The curl calls now use `--socks5 -4` because the proxy runs with
      `-N`.
    * New rows: `fakesplit5 coherent fake` (`ttl5/2B ttl5/455B`, 2nd segment starts `01 01 c5`);

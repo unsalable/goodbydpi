@@ -480,7 +480,9 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   unbinds with `DeadObjectException` and AMS drops the record. Added: `KeeperService` (plain,
   non-exported START_STICKY service that `Vpn` does not bind; restarted ~1 s after death, then
   recovers), recovery in `App.onCreate`, and a persisted 15-min `RecoveryJobService` backstop.
-  Background recovery only runs while armed (`arm()` on every engine start; `disarm()` on user
+  Background recovery only runs while armed (`arm()` on every engine start, and the flag alone
+  already when the service accepts a user/boot/always-on START, so a process death during the
+  first start's retry backoff is still recovered; `disarm()` on user
   stop, revoke and `fail()` clears an explicit flag, so a later process birth in the same boot,
   e.g. the 6-hourly update job, does not reopen a failed VPN), in the boot the engine was armed
   in (after a reboot `BootReceiver` decides) and never in instrumentation processes. The same
@@ -489,15 +491,29 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **Crash loops: one-shot check job + give-up** — a second native crash within AMS's crash
   window makes AMS delay the keeper restart by 30-60 min. Every background recovery therefore
   also schedules a non-persisted `RecoveryJobService` run (`CHECK_JOB_ID`, min latency 30 s,
-  1, 2, 4, then 8 min per consecutive recovery, deadline +90 s); JobScheduler is not subject to
-  the crash penalty. If the engine is up, the check keeps watching (every >= 1 min) for 10 min
-  after the last recovery. Recoveries less than 15 min apart count as consecutive; the 6th in a
+  1, 2, 4, then 8 min per consecutive recovery, deadline +30 s); JobScheduler is not subject to
+  the crash penalty. An unconstrained job was seen to run at its deadline rather than its min
+  latency (emulator, ACTIVE bucket), so after the AMS penalty a crash is recovered within
+  checkDelay + 30 s (1, 1.5, 2.5, 4.5, 8.5 min for n = 1..5). If the engine is up, the check
+  keeps watching (every >= 1 min) for 10 min after the last recovery. Only crash-like deaths
+  count toward the give-up (API 30+ `ApplicationExitInfo` reason `CRASH`, `CRASH_NATIVE`,
+  `ANR`, `EXIT_SELF`, `INITIALIZATION_FAILURE`, `EXCESSIVE_RESOURCE_USAGE` or `UNKNOWN`; no
+  record, API < 30 or no death newer than the last arm/recovery also counts); `LOW_MEMORY`,
+  `SIGNALED` (kill -9, OEM task killers), `OTHER` etc. are recovered without counting — the
+  give-up exists for a deterministic native crash loop, and LMK kills every ~10 min on a low-RAM
+  phone would otherwise disable auto-reconnect within an hour. The count also resets once the
+  engine has run 10 min without interruption (service health loop, and a check job that finds
+  it Running after the watch window). Counted recoveries less than 15 min apart are
+  consecutive; the 6th in a
   row is not attempted: background recovery is disarmed, the stale foreground record AMS keeps
   for the dead service (its "Bağlı" notification stayed up) is released by starting the service
   with `ACTION_REFRESH_NOTIFICATION` (no engine -> leave foreground, stop), and an alerts
   notification "Bağlantı koptu"
   (tap: `.ConnectRequest` + `EXTRA_CONNECT`) is posted. A user/tile/boot start
-  resets the count.
+  resets the count, and so does opening the UI or the tile panel even while a background start
+  from the same cold process is already under way. The in-process dedupe of recovery requests
+  (5 s) only records a start that was actually issued: a give-up in `App.onCreate` does not make
+  the UI's recovery a moment later a silent no-op.
 * **User stops are honoured** — recovery first checks `ApplicationExitInfo` for
   `REASON_USER_REQUESTED` newer than the last arm (API 30+, not within 60 s of a package update)
   or, below 30, a cancelled backstop job; then it clears `wantRunning`. Force stop and "Durdur" in
@@ -585,7 +601,10 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 
 * **UDP smoke runs on the device**: `tools/native/udp_socks_test.c` against an ASan `ciadpi`,
   not a host Python client — `adb forward` carries TCP only. `smoke.py` also runs tcpdump wire
-  checks, an iptables DPI simulation, `restart_test` and `JniSmoke.java` (R8 APK).
+  checks, an iptables DPI simulation, `restart_test` and `JniSmoke.java` (R8 APK). tcpdump runs
+  with `--immediate-mode`: on-device libpcap 1.10.5 uses TPACKET_V3 and otherwise hands packets
+  over only when a ring block fills or its ~1 s timeout expires, so the SIGINT right after curl
+  dropped them (wire rows failed at random with only the SYN captured).
 * **curl uses `--socks5 -4`** (names resolved on the host) because of `-N`.
 * **`tools/e2e.py` finds the tun by `198.18.0.1`, not `tun0`** — an in-place rebuild can bring up
   `tun1`. Device-wide steps (Wi-Fi, doze, reboot, always-on) need `--allow-disruptive`.
