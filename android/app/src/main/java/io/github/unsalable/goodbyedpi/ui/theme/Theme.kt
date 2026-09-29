@@ -85,12 +85,20 @@ private fun animatedColors(target: GdpiColors): GdpiColors {
     val success by animateColorAsState(target.success, ThemeSpec, label = "success")
     val danger by animateColorAsState(target.danger, ThemeSpec, label = "danger")
     val track by animateColorAsState(target.track, ThemeSpec, label = "track")
+    val successText by animateColorAsState(target.successText, ThemeSpec, label = "successText")
+    val dangerText by animateColorAsState(target.dangerText, ThemeSpec, label = "dangerText")
+    val accentText by animateColorAsState(target.accentText, ThemeSpec, label = "accentText")
     // Nesne yalnizca bir renk gercekten degisince yenilenir; bosta her kurulumda ayni ornek.
-    return remember(bg, surface, surfaceAlt, stroke, text, muted, accent, accentSoft, accentAlt, success, danger, track) {
+    return remember(
+        bg, surface, surfaceAlt, stroke, text, muted, accent, accentSoft, accentAlt, success, danger, track,
+        successText, dangerText, accentText,
+    ) {
         GdpiColors(
             bg = bg, surface = surface, surfaceAlt = surfaceAlt, stroke = stroke, text = text,
             muted = muted, accent = accent, accentSoft = accentSoft, accentAlt = accentAlt,
-            success = success, danger = danger, track = track, isDark = target.isDark,
+            success = success, danger = danger, track = track,
+            successText = successText, dangerText = dangerText, accentText = accentText,
+            isDark = target.isDark,
         )
     }
 }

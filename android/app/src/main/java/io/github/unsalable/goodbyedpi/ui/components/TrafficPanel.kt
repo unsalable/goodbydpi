@@ -84,7 +84,7 @@ fun TrafficPanel(traffic: StateFlow<TrafficStats>, modifier: Modifier = Modifier
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TrafficCell("↑", "Gönderilen", formatRate(ui.upPerSec), formatBytes(ui.upTotal), c.accent, Modifier.weight(1f))
-        TrafficCell("↓", "Alınan", formatRate(ui.downPerSec), formatBytes(ui.downTotal), c.success, Modifier.weight(1f))
+        TrafficCell("↓", "Alınan", formatRate(ui.downPerSec), formatBytes(ui.downTotal), c.successText, Modifier.weight(1f))
     }
 }
 

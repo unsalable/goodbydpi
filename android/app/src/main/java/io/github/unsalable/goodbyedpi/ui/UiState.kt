@@ -107,14 +107,22 @@ data class ConnectionUi(
     val detail: String,
     /** Calisirken byedpi'nin yerel portu; baglanti testi bunun uzerinden gider. */
     val socksPort: Int?,
+    /**
+     * Kapanirken dugme bir sey yapmaz (MainViewModel.onPowerClick Stopping'i yok sayar);
+     * erisilebilirlikte de "devre disi" gorunsun, "Baglaniyor" diye okunmasin.
+     */
+    val stopping: Boolean = false,
 ) {
+    /** Guc dugmesinin erisilebilirlik durumu: ekrandaki baslikla ayni, uc noktasiz. */
+    val stateLabel: String get() = title.trimEnd('…')
+
     companion object {
         const val HINT_OFF = "Bağlanmak için düğmeye dokun"
 
         fun from(state: EngineState, settings: AppSettings): ConnectionUi = when (state) {
             EngineState.Stopped -> ConnectionUi(PowerPhase.Off, "Kapalı", HINT_OFF, null)
             EngineState.Starting -> ConnectionUi(PowerPhase.Connecting, "Bağlanıyor…", "Motor başlatılıyor", null)
-            EngineState.Stopping -> ConnectionUi(PowerPhase.Connecting, "Durduruluyor…", "Bağlantı kapatılıyor", null)
+            EngineState.Stopping -> ConnectionUi(PowerPhase.Connecting, "Durduruluyor…", "Bağlantı kapatılıyor", null, stopping = true)
             is EngineState.Failed -> ConnectionUi(
                 PowerPhase.Failed,
                 "Bağlantı kurulamadı",
@@ -148,6 +156,13 @@ data class ConnTestUi(
         val Idle = ConnTestUi(running = false, results = emptyList(), viaProxy = false)
     }
 }
+
+/** Alt cubuk mesaji; [actionLabel] varsa yaninda bir dugme ("Geri al") cikar ve [onAction] calisir. */
+class UiMessage(
+    val text: String,
+    val actionLabel: String? = null,
+    val onAction: (() -> Unit)? = null,
+)
 
 /** Aktivitenin yerine getirmesi gereken tek seferlik istekler. */
 sealed interface UiEvent {

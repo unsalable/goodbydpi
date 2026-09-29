@@ -18,6 +18,7 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -39,6 +40,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -46,17 +48,21 @@ import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
@@ -139,7 +145,8 @@ fun GhostButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    color: Color = GdpiTheme.colors.accent,
+    // accentText: SPEC vurgusu (#6366F1) acik yuzeyde 14 sp metin icin 4.5:1'in altinda kaliyor.
+    color: Color = GdpiTheme.colors.accentText,
     enabled: Boolean = true,
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -405,10 +412,15 @@ fun GdpiTextField(
     keyboardType: KeyboardType = KeyboardType.Text,
     textAlign: TextAlign = TextAlign.Start,
     enabled: Boolean = true,
+    /** Odak alandan ayrilinca (klavyede "Tamam" da odagi birakir); yazilani kaydetme ani. */
+    onFocusLost: (() -> Unit)? = null,
 ) {
     val c = GdpiTheme.colors
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    val focusManager = LocalFocusManager.current
+    val focusLost by rememberUpdatedState(onFocusLost)
+    val wasFocused = remember { booleanArrayOf(false) }
     val border by animateColorAsState(
         when {
             isError -> c.danger
@@ -427,10 +439,19 @@ fun GdpiTextField(
         cursorBrush = SolidColor(c.accent),
         interactionSource = interaction,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
+        // "Tamam" klavyeyi kapatir ve odagi birakir; boylece odak kaybi uzerinden kaydedilir.
+        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
         modifier = modifier
             .heightIn(min = 48.dp)
             .enabledAlpha(enabled)
-            .semantics { if (label != null) contentDescription = label },
+            .onFocusChanged { state ->
+                if (wasFocused[0] && !state.isFocused) focusLost?.invoke()
+                wasFocused[0] = state.isFocused
+            }
+            .semantics {
+                if (label != null) contentDescription = label
+                if (isError) error("Geçersiz değer")
+            },
         decorationBox = { inner ->
             Box(
                 modifier = Modifier
@@ -550,24 +571,29 @@ fun <T> SegmentedChoice(
     val c = GdpiTheme.colors
     val index = options.indexOfFirst { it.first == selected }.coerceAtLeast(0)
     val position by animateFloatAsState(index.toFloat(), Motion.spring(), label = "segment")
+    // Yukseklik icerikten gelir (en az 44 dp): buyuk yazi boyutunda sabit 44 dp etiketi dikeyde
+    // kesiyordu, uzun etiket ("Bos (sifir bayt)") de yatayda uc noktasiz kirpiliyordu.
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .height(44.dp)
+            .heightIn(min = 44.dp)
             .clip(FieldShape)
             .background(c.surfaceAlt)
             .padding(4.dp),
     ) {
         val segment = maxWidth / options.size
-        Box(
-            Modifier
-                .fillMaxHeight()
-                .width(segment)
-                .graphicsLayer { translationX = position * segment.toPx() }
-                .shadow(1.dp, RoundedCornerShape(9.dp))
-                .background(if (c.isDark) c.stroke else Color.White, RoundedCornerShape(9.dp)),
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+        // Kayan secili zemin: disaridaki kutu satirin boyunu alir, icteki dilim ona gore dolar.
+        Box(Modifier.matchParentSize()) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .width(segment)
+                    .graphicsLayer { translationX = position * segment.toPx() }
+                    .shadow(1.dp, RoundedCornerShape(9.dp))
+                    .background(if (c.isDark) c.stroke else Color.White, RoundedCornerShape(9.dp)),
+            )
+        }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.SpaceEvenly) {
             options.forEachIndexed { i, (value, label) ->
                 val isSelected = i == index
                 val textColor by animateColorAsState(if (isSelected) c.text else c.muted, Motion.soft(), label = "segText")
@@ -575,11 +601,20 @@ fun <T> SegmentedChoice(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .heightIn(min = 36.dp)
                         .clip(RoundedCornerShape(9.dp))
-                        .selectable(selected = isSelected, role = Role.RadioButton) { onSelect(value) },
+                        .selectable(selected = isSelected, role = Role.RadioButton) { onSelect(value) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(label, style = GdpiType.button, color = textColor, maxLines = 1)
+                    Text(
+                        label,
+                        style = GdpiType.button,
+                        color = textColor,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
         }

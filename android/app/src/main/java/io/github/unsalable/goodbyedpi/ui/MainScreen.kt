@@ -36,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,8 +46,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
@@ -118,56 +124,102 @@ fun MainScreen(
     onUpdateLater: () -> Unit,
     onOpenInstallPermission: () -> Unit,
     modifier: Modifier = Modifier,
+    seenPhase: MutableState<PowerPhase?> = remember { mutableStateOf(null) },
 ) {
     var picker by rememberSaveable { mutableStateOf<Picker?>(null) }
+
+    val powerAndStatus: @Composable (compact: Boolean) -> Unit = { compact ->
+        // widthIn once, fillMaxWidth sonra: tersi (fillMaxWidth().widthIn) genisligi once tam
+        // ekrana sabitliyor ve 480 dp siniri hic uygulanmiyordu.
+        Column(
+            modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Hale dugmenin disina tasiyor; ust bosluk onu kesmesin diye genis. Yatay ekranda
+            // (compact) yukseklik dar: sutun ortalandigi icin hale yine de kesilmiyor.
+            Spacer(Modifier.height(if (compact) 20.dp else 44.dp))
+            PowerButton(
+                phase = connection.phase,
+                onClick = onPower,
+                stateLabel = connection.stateLabel,
+                enabled = !connection.stopping,
+                seenPhase = seenPhase,
+            )
+            Spacer(Modifier.height(if (compact) 20.dp else 40.dp))
+            StatusBlock(connection)
+        }
+    }
+    val trafficPanel: @Composable () -> Unit = {
+        AnimatedVisibility(
+            visible = connection.phase == PowerPhase.Connected,
+            enter = fadeIn(Motion.fadeIn()) + expandVertically(Motion.spring()),
+            exit = fadeOut(Motion.fadeOut()) + shrinkVertically(Motion.spring()),
+            label = "traffic",
+        ) {
+            TrafficPanel(traffic, Modifier.padding(top = 20.dp).widthIn(max = 400.dp))
+        }
+    }
+    val bannerAndChips: @Composable () -> Unit = {
+        Column(Modifier.widthIn(max = 480.dp).fillMaxWidth().padding(top = 24.dp, bottom = 16.dp)) {
+            UpdateBanner(
+                state = updateState,
+                onUpdate = onUpdate,
+                onLater = onUpdateLater,
+                onOpenPermission = onOpenInstallPermission,
+                modifier = Modifier.padding(bottom = 12.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SelectionChip("SAĞLAYICI", settings.isp.name, Modifier.weight(1f)) { picker = Picker.Isp }
+                SelectionChip("YÖNTEM", settings.method.name, Modifier.weight(1f)) { picker = Picker.Method }
+                SelectionChip("DNS", settings.dns.name, Modifier.weight(1f)) { picker = Picker.Dns }
+            }
+        }
+    }
 
     Column(modifier.fillMaxSize()) {
         TopBar(isDark = isDark, onToggleTheme = onToggleTheme, onOpenSettings = onOpenSettings)
 
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val viewport = maxHeight
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .heightIn(min = viewport)
-                    .padding(horizontal = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = PowerLayout,
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().widthIn(max = 480.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    // Hale dugmenin disina tasiyor; ust bosluk onu kesmesin diye genis.
-                    Spacer(Modifier.height(44.dp))
-                    PowerButton(phase = connection.phase, onClick = onPower)
-                    Spacer(Modifier.height(40.dp))
-                    StatusBlock(connection)
-                }
-
-                AnimatedVisibility(
-                    visible = connection.phase == PowerPhase.Connected,
-                    enter = fadeIn(Motion.fadeIn()) + expandVertically(Motion.spring()),
-                    exit = fadeOut(Motion.fadeOut()) + shrinkVertically(Motion.spring()),
-                    label = "traffic",
-                ) {
-                    TrafficPanel(traffic, Modifier.padding(top = 20.dp).widthIn(max = 400.dp))
-                }
-
-                Column(Modifier.fillMaxWidth().widthIn(max = 480.dp).padding(top = 24.dp, bottom = 16.dp)) {
-                    UpdateBanner(
-                        state = updateState,
-                        onUpdate = onUpdate,
-                        onLater = onUpdateLater,
-                        onOpenPermission = onOpenInstallPermission,
-                        modifier = Modifier.padding(bottom = 12.dp),
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SelectionChip("SAĞLAYICI", settings.isp.name, Modifier.weight(1f)) { picker = Picker.Isp }
-                        SelectionChip("YÖNTEM", settings.method.name, Modifier.weight(1f)) { picker = Picker.Method }
-                        SelectionChip("DNS", settings.dns.name, Modifier.weight(1f)) { picker = Picker.Dns }
+            if (maxWidth > maxHeight && maxWidth >= 560.dp) {
+                // Yatay ekran: tek sutunda dugme + durum ekrana sigmiyor, ayrinti satiri ve cipler
+                // kaydirma gerektiriyordu. Solda dugme ve durum, sagda trafik, serit ve cipler.
+                Row(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .heightIn(min = viewport)
+                            .padding(bottom = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) { powerAndStatus(true) }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .heightIn(min = viewport)
+                            .padding(start = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        trafficPanel()
+                        bannerAndChips()
                     }
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .heightIn(min = viewport)
+                        .padding(horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = PowerLayout,
+                ) {
+                    powerAndStatus(false)
+                    trafficPanel()
+                    bannerAndChips()
                 }
             }
         }
@@ -286,7 +338,7 @@ private fun StatusBlock(connection: ConnectionUi) {
         label = "dot",
     )
     val detailColor by animateColorAsState(
-        if (connection.phase == PowerPhase.Failed) c.danger else c.muted,
+        if (connection.phase == PowerPhase.Failed) c.dangerText else c.muted,
         Motion.soft(),
         label = "detailColor",
     )
@@ -304,10 +356,19 @@ private fun StatusBlock(connection: ConnectionUi) {
                 Text(title, style = GdpiType.status, color = c.text)
             }
         }
+        // Ayrinti satiri canli bolge: TalkBack baglanmayi ya da hata nedenini kendiliginden okur.
+        // Baslik okunmaz (dugmenin durum metni zaten degisiyor, iki kez duyulmasin). Anlam tek
+        // dugumde: gecis sirasinda eski ve yeni metin birlikte okunmasin.
         AnimatedContent(
             targetState = connection.detail,
             transitionSpec = refresh,
-            modifier = Modifier.padding(top = 6.dp).widthIn(max = 340.dp),
+            modifier = Modifier
+                .padding(top = 6.dp)
+                .widthIn(max = 340.dp)
+                .clearAndSetSemantics {
+                    text = AnnotatedString(connection.detail)
+                    liveRegion = LiveRegionMode.Polite
+                },
             label = "statusDetail",
         ) { detail ->
             Text(
