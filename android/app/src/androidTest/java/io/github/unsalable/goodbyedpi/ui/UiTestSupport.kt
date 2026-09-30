@@ -8,6 +8,7 @@ import io.github.unsalable.goodbyedpi.data.SettingsRepository
 import io.github.unsalable.goodbyedpi.model.AppSettings
 import io.github.unsalable.goodbyedpi.service.EngineState
 import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.QuickTileState
 import kotlinx.coroutines.runBlocking
 import org.junit.rules.ExternalResource
 import java.io.File
@@ -23,12 +24,15 @@ internal val repo: SettingsRepository
  * SettingsRepository ornegi de sifirlanir, yani testler birbirinin secimlerini gormez.
  * Otomatik guncelleme kapali: ag erisimi olan bir denetim testte serit cikarmasin.
  * Bildirim izni "soruldu" sayilir: sistem izin penceresi testin onune gecmesin.
+ * Hizli ayarlar karosu da "soruldu" sayilir: ilk Running'den 1,5 sn sonra acilan sistem
+ * penceresi (1.0.1) odagi aliyor, sonraki testler pencere odagi bekleyip dusuyordu.
  */
 class FreshSettingsRule : ExternalResource() {
     override fun before() {
         runBlocking { repo.update { AppSettings(autoUpdate = false) } }
         targetContext.getSharedPreferences(MainViewModel.UI_PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(MainViewModel.KEY_NOTIF_ASKED, true).commit()
+        QuickTileState.markPrompted(targetContext)
         EngineStateHolder.set(EngineState.Stopped)
     }
 

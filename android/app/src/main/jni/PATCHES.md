@@ -256,7 +256,7 @@ are patched since B6/B8).
 
 Every hunk is marked `/* gdpi: ... */` or `// gdpi`. Everything guarded by `#ifdef BYEDPI_LIB`
 is library-only; the other hunks also apply to the test CLI (`ciadpi`). Regenerate the full diff
-with `diff -u <pristine tarball> app/src/main/jni/byedpi`; it has about 310 changed lines and
+with `diff -u <pristine tarball> app/src/main/jni/byedpi`; it has about 380 changed lines and
 upstream whitespace is preserved.
 
 ### B1 — library mode (`BYEDPI_LIB`), restartable in-process
@@ -311,8 +311,8 @@ upstream whitespace is preserved.
 | `main.c` | long-only option `deny-net` (val `OPT_DENY_NET` = 0x12), `parse_deny_net()` (`inet_pton` v4 or v6 without brackets, `/0..32` or `/0..128`, repeatable), help text, freed in `clear_params` |
 | `proxy.c` | `deny_dst()` (prefix match after v4-mapped un-mapping). `redirect_tcp()` now returns -1 when the destination is not a `--redirect` FROM and lies in a denied net: SOCKS5 CONNECT gets reply `02` (not allowed) at once, SOCKS4/HTTP CONNECT get their error reply. `on_udp_tunnel`: such a datagram is dropped like `--drop-udp` (the association stays unbound) |
 
-Why: the tun's own blocks (198.18.0.0/15, fd00:6764:7069::/48) are only meaningful for the virtual
-DNS address. Android's Private DNS (opportunistic DoT) probes `198.18.0.53:853`; byedpi used to open a
+Why: the tun's own blocks (198.18.0.0/15, fd00:6764:7069::/48, and since 1.0.2 the global-scope tun
+address block 2001:db8:6764:7069::/64) are only meaningful for the virtual DNS address. Android's Private DNS (opportunistic DoT) probes `198.18.0.53:853`; byedpi used to open a
 real connection to it on the underlying network (a SYN to the ISP, a session hanging until the
 connect timeout). Contract C2: every other virtual destination fails fast.
 
@@ -344,6 +344,32 @@ meaning. `struct eval` gets `restore_fake_base`: `send_fake` stores the mapping 
 `del_event` and the leak check in `desync()` `munmap` the base instead of the (possibly offset)
 `restore_fake` pointer. That also removes the old `--fake-offset` unaligned-`munmap` leak.
 
+### B9 — smart-mode cache hardening (`extend.c`, `proxy.c`; v1.0.2 plan P2)
+
+The Google/YouTube-on-mobile investigation found two ways an **unblocked** IP:port got pinned to a
+fake fallback group for `--cache-ttl` (1 h). The fake then reached a nearby server (in-ISP GGC; the
+emulator's slirp delivers every fake the same way) and broke the site. With `autoFallback` off it
+stayed broken for the whole hour, and no "unreach" was ever logged. Both were reproduced with the
+smart layout for Turkcell Mobil against 142.251.157.119:443 before the fix. See BYEDPI_NOTES §5.1 for
+the before/after table.
+
+| hunk | change | why |
+|---|---|---|
+| `on_fin` + new `cache_unpin()` | when the **client** closes (or resets) before the server's first byte (the `mark` path without `fake_abort`), there is no `on_trigger`. If the connection runs in a fallback group (`dp->detect != 0`) and the IP:port entry still points at that group, the entry goes back to the head of the chain (`dp_mask = 0`, `detect = 0`, `dp = params.dp`, log `unpin ip: …`). A server-side FIN on the `mark` path and `fake_abort` trigger as before | upstream counted any client close before the answer as `ssl_err` and wrote the next group into the cache. A slow mobile link where the app gives up, a user cancel, or a browser dropping a spare socket all look like that, so it is not evidence of DPI. Silent DPI drops are still caught by `TCP_USER_TIMEOUT` (unacked ClientHello, B7) and RSTs by `on_torst`. Weak evidence therefore never moves an entry *forward*; it can only move it back. The cost of a false alarm is one re-detection, and a pin to a broken group recovers at once instead of after an hour |
+| `on_response` | if the response is a TLS failure (`ClientHello` answered by no ServerHello, or `neq_tls_sid`) but no later group reacts to `ssl_err`, and the current group itself has `DETECT_TLS_ERR` (a fallback, so it came from the cache or a trigger), `on_trigger(DETECT_TLS_ERR, …, client_alive=0)` runs. It finds no next group, so the existing "unreach" path resets the entry to the head. The connection is not replayed and gets the response as before | upstream returned without doing anything, so the entry kept pointing at the group that had just failed, for 1 h. `on_torst`, the `on_fin` mark path and `check_tls_hs_alert` already reached "unreach" in the last group; only this `ssl_err` path did not. The primary/static group (`detect == 0`) has no entry to reset, so it is left alone |
+| `proxy.c:create_conn` | `TCP_SYNCNT` 1 → 2 | one SYN retry gave the upstream connect about 3 s (1 + 2 s). Two lost SYNs in a row, or an RTT above 3 s on a congested cellular link, failed connections that would succeed without the VPN; measured with netem 3200 ms, every connect failed at 3.06 s. With 2 retries the budget is about 7 s (1 + 2 + 4). Trade-off: for a really dead destination (a silently dropping IP, or broken IPv6 egress if the P0 gate ever lets it through), the app sees the RST after about 7 s instead of 3 s. lwIP has already accepted the handshake, so the app's own move to the next address waits that long too. That is still far below Android's own ~127 s without the VPN. No group uses `DETECT_CONNECT`, so the fallback chain is unaffected |
+
+**Alternative considered for the `ssl_err` gap: "cache a group only after its first successful server
+round".** It was rejected for three reasons:
+- The no-replay paths (`fake_abort`, the round-2 TLS alert, and every trigger with a dead client)
+  exist to write the fallback for the *next* connection. There is no successful round to wait for,
+  so the design would need a tentative cache state plus the same failure detection anyway.
+- "Success" cannot be defined for silent failures.
+- It would change the semantics that the `fake reached tls1.2 server` smoke rows verify.
+
+Resetting on a failure that has no successor keeps upstream's cache model and adds only the missing
+edge.
+
 ### Decided not to patch
 
 - **TCP half-close** (`recv()==0` → full close in `extend.c:tcp_recv_hook`/`on_fin`). Supporting
@@ -371,3 +397,6 @@ The details and the real results are in `android/docs/BYEDPI_NOTES.md` §9. In s
   and deny-net checks, smoke rows `fake reached tls1.2 server (abort|alert)`, `timeout with stall
   (client-first|server-first)`, `mid-life RST keeps primary`, `fakesplit5 coherent fake`, and
   `tun_latency.sh` for P5. Results in BYEDPI_NOTES §9.
+- B9 additions: smoke rows `cache: client abort: direct group no save`, `client abort in fallback
+  unpins` and `last fallback fails: unreach`. All three FAIL on the pre-B9 build and PASS after it.
+  The Google reproduction (`abort`/`stall` × fallbacks on/off) is in BYEDPI_NOTES §5.1.

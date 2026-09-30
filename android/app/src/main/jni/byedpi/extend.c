@@ -428,6 +428,26 @@ static int on_torst(struct poolhd *pool, struct eval *val)
 }
 
 
+/* gdpi: IP:port kaydi hala bu baglantinin (yedek) grubunu gosteriyorsa onu
+ * zincirin basina dondur; "unreach" ile ayni sonuc, ama yeni bir kayit
+ * olusturmaz ve baska bir baglantinin bu arada yazdigi (calisan) grubu
+ * ezmez. Zayif kanit icin: kaydi yalnizca geri alir, asla ileri tasimaz. */
+static void cache_unpin(struct eval *remote)
+{
+    struct eval *client = remote->pair;
+    struct elem_i *e = cache_get(&remote->addr);
+    if (!e || e->dp != client->dp) {
+        return;
+    }
+    INIT_ADDR_STR((remote->addr));
+    LOG(LOG_S, "unpin ip: %s, id=%d (client closed before server answer)\n",
+        ADDR_STR, client->dp->id);
+    e->dp_mask = 0;
+    e->detect = 0;
+    e->dp = params.dp;
+}
+
+
 static int on_fin(struct poolhd *pool, struct eval *val)
 {
     bool is_client = val->flag != FLAG_CONN;
@@ -444,6 +464,26 @@ static int on_fin(struct poolhd *pool, struct eval *val)
     bool fake_abort = is_client && val && val->pair->tls_fake
         && val->pair->round_count <= 1 && val->round_count == 1;
     if (!val || !((val->pair->mark || fake_abort) && val->round_count <= 1)) {
+        return -1;
+    }
+    /* gdpi: sunucu henuz cevap vermeden ISTEMCI kapatti (mark yolu, sahteye
+     * cevap yok). Upstream bunu ssl_err sayip IP:port'u --cache-ttl (1 sa)
+     * boyunca sonraki gruba yaziyordu. Oysa bu DPI'nin kaniti degil: yavas
+     * mobil hatta uygulama zaman asimi, kullanicinin iptali, tarayicinin
+     * gereksiz soketi kapatmasi hep boyle gorunur. Akilli modda dogrudan
+     * gruptaki engelsiz bir Google IP'si boylece sahte gruba sabitleniyor,
+     * sahte yakin sunucuya (GGC) ulasinca site bir saat kirik kaliyordu
+     * (autoFallback kapaliyken; emulatorde olculdu). Sessiz DPI dusurmesini
+     * TCP_USER_TIMEOUT (--timeout, onaylanmayan ClientHello) zaten yakalar,
+     * RST'yi on_torst. Bu yuzden istemci kapanisi kaydi asla ileri tasimaz;
+     * baglanti bir yedek gruptaysa (onbellekten ya da tetikle gelmis) kaydi
+     * zincirin basina geri alir: yanlis alarmda bedel bir tekrar tespitidir,
+     * kirik bir sabitlemede ise site bir saat beklemeden duzelir. Sunucu
+     * tarafindan gelen FIN (mark yolu) ve fake_abort eskisi gibi tetikler. */
+    if (is_client && !fake_abort) {
+        if (val->pair->dp && val->pair->dp->detect) {
+            cache_unpin(val);
+        }
         return -1;
     }
     if (fake_abort) {
@@ -497,6 +537,27 @@ static int on_response(struct poolhd *pool, struct eval *val,
     }
     if (dp) {
         return on_trigger(dp->detect, pool, val, 1);
+    }
+    /* gdpi: ssl_err tespit edildi ama ardinda ssl_err ile tetiklenen grup
+     * kalmadi (zincirin sonu ya da autoFallback kapali). Upstream burada hicbir
+     * sey yapmiyordu: bu baglanti bir yedek gruptaysa IP:port kaydi --cache-ttl
+     * (1 sa) boyunca o basarisiz grubu gostermeye devam ediyor, "unreach"
+     * hic calismiyordu. Akilli modda bir takilma ile sahte gruba gecen engelsiz
+     * Google IP'si, sahte yakin sunucuya ulastigi icin her istekte kiriliyordu
+     * (emulatorde olculdu). Artik on_torst/on_fin'in son gruptaki davranisi
+     * gibi on_trigger cagrilir: sonraki grup olmadigi icin "unreach" yolu
+     * kaydi zincirin basina dondurur, sonraki baglanti dogrudan/birincil
+     * gruptan baslar. Yalnizca kendisi ssl_err ile tetiklenen (yedek) grupta:
+     * birincil/statik grupta sifirlanacak bir kayit yoktur. client_alive=0:
+     * tekrar oynatma yok, bu baglanti eskisi gibi gelen cevapla devam eder.
+     * Neden "yalnizca ilk basarili turdan sonra onbellege yaz" degil:
+     * fake_abort/uyari yollarinda tekrar oynatma yok, yedek zaten sonraki
+     * baglanti icin yazilmali; basari da sessiz basarisizlikta tanimsiz. */
+    struct desync_params *cur = val->pair->dp;
+    if (cur && (cur->detect & DETECT_TLS_ERR)
+            && ((is_tls_chello(req, qn) && !is_tls_shello(resp, sn))
+                || neq_tls_sid(req, qn, resp, sn))) {
+        on_trigger(DETECT_TLS_ERR, pool, val, 0);
     }
     return -1;
 }

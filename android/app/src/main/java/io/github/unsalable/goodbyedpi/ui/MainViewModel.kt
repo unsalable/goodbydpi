@@ -16,6 +16,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.unsalable.goodbyedpi.data.SettingsRepository
 import io.github.unsalable.goodbyedpi.diag.ConnectionTester
+import io.github.unsalable.goodbyedpi.diag.DeviceInfoCollector
+import io.github.unsalable.goodbyedpi.diag.DiagReport
 import io.github.unsalable.goodbyedpi.diag.SiteResult
 import io.github.unsalable.goodbyedpi.engine.ByeDpiArgs
 import io.github.unsalable.goodbyedpi.engine.EngineConfig
@@ -32,6 +34,8 @@ import io.github.unsalable.goodbyedpi.model.selectedDns
 import io.github.unsalable.goodbyedpi.model.selectedMethod
 import io.github.unsalable.goodbyedpi.service.EngineState
 import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.Ipv6Status
+import io.github.unsalable.goodbyedpi.service.Ipv6StatusHolder
 import io.github.unsalable.goodbyedpi.service.ServiceController
 import io.github.unsalable.goodbyedpi.service.TrafficStats
 import io.github.unsalable.goodbyedpi.update.UpdateManager
@@ -71,6 +75,8 @@ class MainViewModel(
     val traffic: StateFlow<TrafficStats> = EngineStateHolder.traffic,
     val updateState: StateFlow<UpdateState> = UpdateManager.state,
     val justUpdatedTo: StateFlow<String?> = UpdateManager.justUpdatedTo,
+    /** Tunelin IPv6 durumu (servis doldurur); baglanti testi ve tani raporu okur. */
+    private val ipv6Status: StateFlow<Ipv6Status> = Ipv6StatusHolder.status,
 ) : AndroidViewModel(app) {
 
     private val context: Context get() = getApplication()
@@ -377,8 +383,20 @@ class MainViewModel(
                 Log.w(TAG, "Baglanti testi calismadi", e)
                 ConnectionTester.DEFAULT_HOSTS.map { SiteResult(it, false, null, "Test çalıştırılamadı") }
             }
-            _connTest.value = ConnTestUi(running = false, results = results, viaProxy = port != null)
+            _connTest.value = ConnTestUi(running = false, results = results, viaProxy = port != null, ipv6 = knownIpv6())
         }
+    }
+
+    /**
+     * Servisin bildirdigi IPv6 durumu; servis hic bildirmediyse (ilk deger) null. Bilinmeyen durum
+     * "tunel IPv6 sunuyor" gibi yorumlanir: IPv6 hatasi o zaman kirmizi gorunur, gizlenmez.
+     * Motor calisiyorsa servis durumu mutlaka yazmistir (publish Running'den hemen sonra
+     * publishIpv6 cagirir). IPv6'siz agda yazilan durum UNKNOWN'a esit cikar ve StateFlow esit
+     * degeri degistirmedigi icin kimlik hala UNKNOWN kalir; bu yuzden yalniz kimlige bakmak tam da
+     * duzeltmenin hedefi olan agda (mobil veri, IPv6 yok) bilinen durumu "bilinmiyor" sayiyordu.
+     */
+    private fun knownIpv6(): Ipv6Status? = ipv6Status.value.takeIf {
+        it !== Ipv6Status.UNKNOWN || engineState.value is EngineState.Running
     }
 
     // ----------------------------------------------------------- guncelleme
@@ -391,14 +409,37 @@ class MainViewModel(
     // ------------------------------------------------------------- tani
 
     /**
-     * Hakkinda > Tanilama. Motor calisiyorsa gercekten calisan komut satiri (baglanan port,
-     * otomatik yedek yontemin sectigi yontem dahil); kapaliysa su anki ayarlarla
-     * calistirilacak komut, bunu belirten bir notla.
+     * Hakkinda > Tanilama: sorun bildiriminde kopyalanan rapor. Cihaz/Android surumu, ag turu ve
+     * operator, alttaki agin adres turleri (IP yazilmaz), ozel DNS, tunelin IPv6 durumu, ayarlar,
+     * motorun komut satiri (calisiyorsa gercekten calisan; kapaliysa su anki ayarlarla
+     * calistirilacak olan) ve son baglanti testinin aile bazli sonuclari. Google/YouTube gibi
+     * sorunlar ancak bu bilgilerin hepsi bir aradayken tek raporda ayirt edilebiliyor.
      */
-    fun diagnostics(): String = try {
-        diagnosticsText(engineState.value, repo.current)
-    } catch (e: Exception) {
-        "Komut satırı oluşturulamadı: ${e.message}"
+    fun diagnostics(): String {
+        val state = engineState.value
+        val s = repo.current
+        val engine = try {
+            diagnosticsText(state, s)
+        } catch (e: Exception) {
+            "Komut satırı oluşturulamadı: ${e.message}"
+        }
+        return try {
+            val test = _connTest.value
+            DiagReport.build(
+                device = DeviceInfoCollector.collect(context),
+                running = state is EngineState.Running,
+                ipv6 = knownIpv6(),
+                settingsLine = settingsLine(s),
+                engineText = engine,
+                tests = test.results,
+                testsViaProxy = test.viaProxy,
+                testRunning = test.running,
+                testsIpv6 = test.ipv6,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Tani raporu olusturulamadi", e)
+            engine
+        }
     }
 
     companion object {
@@ -416,13 +457,21 @@ class MainViewModel(
             return buildString {
                 if (running != null && running.argv.isNotEmpty()) {
                     appendLine("Çalışan komut:")
-                    appendLine(formatArgv(running.argv))
+                    appendLine(formatArgv(redactCustomDns(running.argv)))
                     appendLine()
                     appendLine("Yöntem: ${running.methodName}")
                     appendLine("DNS: ${running.dnsName}")
                 } else {
+                    val cfg = EngineConfig.from(s)
                     appendLine(if (running != null) "Şu anki ayarlarla komut:" else "Bağlı değil; bağlanınca çalışacak komut:")
-                    appendLine(ByeDpiArgs.describe(EngineConfig.from(s)))
+                    // Port baglanirken bos bir port olarak secilir; ayarlardaki 0 raporda yanlis
+                    // yapilandirma gibi okunuyordu. Motor calisiyorsa (argv'si bos) kendi portu.
+                    val port = running?.socksPort?.toString() ?: PORT_AT_CONNECT
+                    appendLine(formatArgv(withPort(redactCustomDns(ByeDpiArgs.build(cfg)), port)))
+                    // Bu komut alttaki aga gore daraltilmamis: servis IPv6'yi ancak baglaninca ag
+                    // gercekten IPv6 ile cikabiliyorsa acar (Ipv6Gate). Not olmadan rapor, IPv6'siz
+                    // agda hic calismayacak IPv6 DNS yonlendirmesini "calisacak" diye gosteriyordu.
+                    if (cfg.ipv6) appendLine("(IPv6 bölümü bağlanınca ağda çalışan IPv6 yoksa çıkarılır.)")
                     appendLine()
                     appendLine("Yöntem: ${s.selectedMethod().name}")
                     appendLine("DNS: ${s.selectedDns().name}")
@@ -430,6 +479,47 @@ class MainViewModel(
                 append("Sağlayıcı: ${s.ispProfile().name}")
             }
         }
+
+        /** Motor bolumunde olmayan, soruna yon veren ayarlar (saglayici/yontem/DNS motor bolumunde). */
+        internal fun settingsLine(s: AppSettings): String =
+            "Ayarlar: akıllı mod ${DiagReport.onOff(s.smartMode)}" +
+                " · otomatik yedek yöntem ${DiagReport.onOff(s.autoFallback)}" +
+                " · yerel ağı hariç tut ${DiagReport.onOff(s.excludeLan)}" +
+                " · IPv6 ${DiagReport.onOff(s.ipv6)}"
+
+        /**
+         * Kullanicinin kendi girdigi DNS sunucusunun adresini komut satirindan cikarir: ev sunucusu
+         * ya da kendi genel IP'si olabilir ve rapor paylasiliyor. Yerlesik profillerin (Cloudflare,
+         * Yandex) adresleri kalir: kimlik tasimaz, sorun ayirmada ise yarar.
+         */
+        internal fun redactCustomDns(argv: List<String>): List<String> =
+            argv.mapIndexed { i, a -> if (i > 0 && argv[i - 1] == "--redirect") redactRedirectTarget(a) else a }
+
+        private fun redactRedirectTarget(rule: String): String {
+            val eq = rule.indexOf('=')
+            if (eq < 0) return rule
+            val to = rule.substring(eq + 1)
+            val (addr, rest) = if (to.startsWith("[")) {
+                val close = to.indexOf(']')
+                if (close < 0) return rule
+                to.substring(1, close) to to.substring(close + 1)
+            } else {
+                val colon = to.lastIndexOf(':')
+                if (colon < 0) to to "" else to.substring(0, colon) to to.substring(colon)
+            }
+            if (addr.lowercase() in BUILT_IN_DNS_ADDRS) return rule
+            return rule.substring(0, eq + 1) + CUSTOM_DNS_PLACEHOLDER + rest
+        }
+
+        private val BUILT_IN_DNS_ADDRS: Set<String> =
+            DnsProfile.builtIn.flatMap { listOfNotNull(it.v4Addr, it.v6Addr) }.map { it.lowercase() }.toSet()
+
+        internal const val CUSTOM_DNS_PLACEHOLDER = "<özel-DNS>"
+
+        internal const val PORT_AT_CONNECT = "<bağlanınca-seçilir>"
+
+        private fun withPort(argv: List<String>, port: String): List<String> =
+            argv.mapIndexed { i, a -> if (i > 0 && argv[i - 1] == "-p") port else a }
 
         /** ByeDpiArgs.describe ile ayni bicim: "ciadpi" + bosluk/tirnak iceren argumanlar tirnakli. */
         internal fun formatArgv(argv: List<String>): String {

@@ -155,7 +155,47 @@ class UiLogicTest {
         val off = MainViewModel.diagnosticsText(EngineState.Stopped, s)
         assertTrue(off, off.startsWith("Bağlı değil"))
         assertTrue(off.contains("ciadpi -i 127.0.0.1"))
+        // Port baglanirken secilir: "-p 0" yanlis yapilandirma gibi okunuyordu.
+        assertTrue(off, off.contains("-p ${MainViewModel.PORT_AT_CONNECT} "))
+        assertFalse(off, off.contains("-p 0"))
+        // Calisiyor ama argv bos: calisan port.
+        val noArgv = MainViewModel.diagnosticsText(running.copy(argv = emptyList()), s)
+        assertTrue(noArgv, noArgv.contains("-p 39889 "))
         assertEquals("ciadpi -p 1", MainViewModel.formatArgv(listOf("ciadpi", "-p", "1")))
+    }
+
+    @Test
+    fun diagnostics_disconnectedCommandSaysTheIpv6PartDependsOnTheNetwork() {
+        // Bagli degilken komut agin IPv6'sina gore daraltilamaz: IPv6 yonlendirmesi IPv6'siz agda
+        // hic calismayacak. Not bunu soylemeli; IPv6 kapaliyken not ve IPv6 yonlendirmesi yok.
+        val s = AppSettings().migrate()
+        val off = MainViewModel.diagnosticsText(EngineState.Stopped, s)
+        assertTrue(off, off.contains("--redirect [fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253"))
+        assertTrue(off, off.contains("(IPv6 bölümü bağlanınca ağda çalışan IPv6 yoksa çıkarılır.)"))
+        val v4 = MainViewModel.diagnosticsText(EngineState.Stopped, s.copy(ipv6 = false))
+        assertFalse(v4, v4.contains("IPv6 bölümü") || v4.contains("fd00:6764:7069::53"))
+    }
+
+    @Test
+    fun diagnostics_hidesCustomDnsAddressesButKeepsPresets() {
+        val argv = listOf(
+            "ciadpi", "-i", "127.0.0.1",
+            "--redirect", "198.18.0.53:53=192.168.1.10:5353",
+            "--redirect", "[fd00:6764:7069::53]:53=[2a01:db8:1234::53]:53",
+            "--deny-net", "198.18.0.0/15",
+        )
+        val red = MainViewModel.redactCustomDns(argv)
+        assertEquals("198.18.0.53:53=${MainViewModel.CUSTOM_DNS_PLACEHOLDER}:5353", red[4])
+        assertEquals("[fd00:6764:7069::53]:53=${MainViewModel.CUSTOM_DNS_PLACEHOLDER}:53", red[6])
+        // Sanal adresler ve digerleri aynen.
+        assertEquals(argv.filterIndexed { i, _ -> i != 4 && i != 6 }, red.filterIndexed { i, _ -> i != 4 && i != 6 })
+        // Yerlesik profiller (Yandex, Cloudflare) kalir.
+        val preset = listOf("--redirect", "198.18.0.53:53=77.88.8.8:1253", "--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253")
+        assertEquals(preset, MainViewModel.redactCustomDns(preset))
+
+        val running = EngineState.Running(0, "x", "Ev DNS", 1, argv)
+        val text = MainViewModel.diagnosticsText(running, AppSettings().migrate())
+        assertFalse(text, text.contains("192.168.1.10") || text.contains("2a01:db8:1234"))
     }
 
     @Test

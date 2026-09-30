@@ -17,6 +17,7 @@ import io.github.unsalable.goodbyedpi.model.methodChoices
 import io.github.unsalable.goodbyedpi.model.selectedDns
 import io.github.unsalable.goodbyedpi.model.selectedMethod
 import io.github.unsalable.goodbyedpi.service.EngineState
+import io.github.unsalable.goodbyedpi.service.Ipv6Status
 
 // Arayuzun okudugu durum nesneleri. Hepsi degismez: Compose bir alan degismedikce ilgili
 // bileseni yeniden kurmaz. Listeler kendi sarmalayicilarinda; List arayuzu tek basina
@@ -153,6 +154,11 @@ data class ConnTestUi(
     val results: List<SiteResult>,
     /** Son test calisan vekil uzerinden mi yapildi (yoksa dogrudan mi)? */
     val viaProxy: Boolean,
+    /**
+     * Test bittigi andaki tunel IPv6 durumu; bilinmiyorsa null. IPv6 satirinin rengi buna bagli:
+     * tunel IPv6 sunmuyorsa IPv6 hatasi uygulamalari etkilemez (gri, nedeniyle).
+     */
+    val ipv6: Ipv6Status? = null,
 ) {
     companion object {
         val Idle = ConnTestUi(running = false, results = emptyList(), viaProxy = false)

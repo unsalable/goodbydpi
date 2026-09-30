@@ -3,18 +3,30 @@ package io.github.unsalable.goodbyedpi.probe
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.view.ViewGroup
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
@@ -28,6 +40,8 @@ import kotlin.random.Random
  *       [--es dns host1,host2]
  *       [--es udp 198.18.0.53:53,77.88.8.8:1253] [--es qname example.com]
  *       [--es quic 1.1.1.1:443,www.google.com:443]
+ *       [--es tcp www.google.com:443,discord.com:443]
+ *       [--es web https://www.google.com/search?q=test,https://m.youtube.com]
  *       [--es tag ADIM]
  *
  * Her istek/sorgu icin logcat'e (etiket GDPI_PROBE) tek satirlik JSON, sonunda
@@ -39,6 +53,16 @@ import kotlin.random.Random
  *          (yanit gelmezse ok=false,"error":"timeout")
  *   quic : {"kind":"quic","target":"1.1.1.1:443","ok":true,"versionNegotiation":true,"ms":30}
  *          (--drop-udp 443 etkinken ok=false,"error":"timeout" beklenir)
+ *   tcp  : {"kind":"tcp","target":"www.google.com:443","ok":true,"order":["142.250.1.1",..,"2a00::1"],
+ *           "family":"v4","connected":..,"attempts":[{"addr":..,"ok":true,"local":"198.18.0.1","ms":3}],"ms":40}
+ *          getAllByName sirasi (netd RFC 6724) ve HttpURLConnection gibi sirayla baglanma.
+ *   web  : {"kind":"web","url":..,"ok":false,"errorCode":-6,"error":"net::ERR_CONNECTION_RESET","ms":812}
+ *          {"kind":"web","url":..,"ok":true,"title":"test - Google Search","httpStatus":null,"ms":1400}
+ *          android.webkit.WebView = Chromium ag yigini (Chrome / Cronet ile ayni adres siralamasi ve
+ *          Happy Eyeballs). HttpURLConnection IPv4'u one aliyor, Chromium ise tun IPv6 sunuyorsa
+ *          IPv6'yi; 1.0.1'de Google/YouTube hatasi yalnizca bu yolla gorundu. ok = ana belgede ag
+ *          hatasi yok (HTTP 4xx/5xx, orn. Google'in robot sayfasi 429, ag hatasi sayilmaz).
+ *          Istekler sirayla ve ana is parcaciginda; her URL icin yeni WebView, onbellek kapali.
  */
 class ProbeActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,7 +81,7 @@ class ProbeActivity : Activity() {
         // Istekler uzun surebilir; etkinlik is bitene kadar acik kalir, sonra kendini kapatir.
         Thread({
             try {
-                runProbe(spec, out)
+                runProbe(this, spec, out)
             } catch (t: Throwable) {
                 Log.e(TAG, "DONE {\"ok\":false,\"error\":${JSONObject.quote(t.toString())}}")
             } finally {
@@ -76,6 +100,8 @@ internal data class ProbeSpec(
     val dns: List<String>,
     val udp: List<String>,
     val quic: List<String>,
+    val tcp: List<String>,
+    val web: List<String>,
     val qname: String,
     val parallel: Int,
     val repeat: Int,
@@ -91,6 +117,8 @@ internal data class ProbeSpec(
                 dns = list("dns"),
                 udp = list("udp"),
                 quic = list("quic"),
+                tcp = list("tcp"),
+                web = list("web"),
                 qname = intent?.getStringExtra("qname")?.trim()?.ifEmpty { null } ?: "example.com",
                 parallel = (intent?.getIntExtra("parallel", 4) ?: 4).coerceIn(1, 256),
                 repeat = (intent?.getIntExtra("repeat", 1) ?: 1).coerceIn(1, 1000),
@@ -101,7 +129,7 @@ internal data class ProbeSpec(
     }
 }
 
-private fun runProbe(spec: ProbeSpec, out: File) {
+private fun runProbe(activity: Activity, spec: ProbeSpec, out: File) {
     val started = System.nanoTime()
     val tasks = ArrayList<Callable<JSONObject>>()
     repeat(spec.repeat) {
@@ -109,11 +137,13 @@ private fun runProbe(spec: ProbeSpec, out: File) {
         spec.dns.forEach { h -> tasks += Callable { dnsProbe(h) } }
         spec.udp.forEach { t -> tasks += Callable { udpDnsProbe(t, spec.qname, spec.timeoutMs.coerceAtMost(5_000)) } }
         spec.quic.forEach { t -> tasks += Callable { quicProbe(t, spec.timeoutMs.coerceAtMost(5_000)) } }
+        spec.tcp.forEach { t -> tasks += Callable { tcpProbe(t, spec.timeoutMs) } }
     }
-    Log.i(ProbeActivity.TAG, "START {\"tasks\":${tasks.size},\"parallel\":${spec.parallel},\"tag\":${JSONObject.quote(spec.tag)}}")
+    val webCount = spec.web.size * spec.repeat
+    Log.i(ProbeActivity.TAG, "START {\"tasks\":${tasks.size + webCount},\"parallel\":${spec.parallel},\"tag\":${JSONObject.quote(spec.tag)}}")
 
     val pool = Executors.newFixedThreadPool(spec.parallel.coerceAtMost(tasks.size.coerceAtLeast(1)))
-    val results = try {
+    val pooled = try {
         pool.invokeAll(tasks).map { f ->
             try {
                 f.get()
@@ -125,6 +155,11 @@ private fun runProbe(spec: ProbeSpec, out: File) {
         pool.shutdown()
         pool.awaitTermination(5, TimeUnit.SECONDS)
     }
+    // WebView ana is parcacigina bagli; paralel yuklemeler birbirinin baglanti havuzunu ve DNS
+    // onbellegini paylasirdi, sirayla calistirilir.
+    val web = ArrayList<JSONObject>()
+    repeat(spec.repeat) { spec.web.forEach { u -> web += webProbe(activity, u, spec.timeoutMs) } }
+    val results = pooled + web
 
     val arr = JSONArray()
     results.forEach { r ->
@@ -135,7 +170,7 @@ private fun runProbe(spec: ProbeSpec, out: File) {
     }
     val ok = results.count { it.optBoolean("ok") }
     val byKind = JSONObject()
-    for (kind in listOf("http", "dns", "udp", "quic", "error")) {
+    for (kind in listOf("http", "dns", "udp", "quic", "tcp", "web", "error")) {
         val of = results.filter { it.optString("kind") == kind }
         if (of.isEmpty()) continue
         byKind.put(kind, JSONObject().put("total", of.size).put("ok", of.count { it.optBoolean("ok") }))
@@ -280,6 +315,144 @@ private fun quicProbe(target: String, timeoutMs: Int): JSONObject {
         r.put("ok", false).put("error", e.javaClass.simpleName + ": " + (e.message ?: ""))
     }
     return r.put("ms", (System.nanoTime() - start) / 1_000_000)
+}
+
+/**
+ * host:port -> getAllByName sirasi (netd'nin RFC 6724 siralamasi) ve platform HttpURLConnection
+ * gibi sirayla baglanma: ilk basarili adres, her denemenin suresi/hatasi ve yerel (kaynak) adres.
+ * Tun'un IPv6 sunup sunmadigini ve Java uygulamalarinin hangi aileyi sectigini gosterir.
+ */
+private fun tcpProbe(target: String, timeoutMs: Int): JSONObject {
+    val r = JSONObject().put("kind", "tcp").put("target", target)
+    val start = System.nanoTime()
+    try {
+        val host = target.substringBeforeLast(':')
+        val port = target.substringAfterLast(':').toInt()
+        val t0 = System.nanoTime()
+        val addrs = InetAddress.getAllByName(host)
+        r.put("dnsMs", (System.nanoTime() - t0) / 1_000_000)
+        r.put("order", JSONArray(addrs.map { it.hostAddress }))
+        val attempts = JSONArray()
+        for (a in addrs) {
+            val t1 = System.nanoTime()
+            val s = Socket()
+            try {
+                s.connect(InetSocketAddress(a, port), timeoutMs)
+                attempts.put(
+                    JSONObject().put("addr", a.hostAddress).put("ok", true)
+                        .put("local", s.localAddress.hostAddress).put("ms", (System.nanoTime() - t1) / 1_000_000),
+                )
+                r.put("ok", true).put("connected", a.hostAddress).put("family", if (a is Inet6Address) "v6" else "v4")
+                break
+            } catch (e: Exception) {
+                attempts.put(
+                    JSONObject().put("addr", a.hostAddress).put("ok", false)
+                        .put("error", e.javaClass.simpleName + ": " + (e.message ?: ""))
+                        .put("ms", (System.nanoTime() - t1) / 1_000_000),
+                )
+            } finally {
+                runCatching { s.close() }
+            }
+        }
+        r.put("attempts", attempts)
+        if (!r.has("ok")) r.put("ok", false)
+    } catch (e: Exception) {
+        r.put("ok", false).put("error", e.javaClass.simpleName + ": " + (e.message ?: ""))
+    }
+    return r.put("ms", (System.nanoTime() - start) / 1_000_000)
+}
+
+/**
+ * Tek bir sayfayi android.webkit.WebView ile yukler. WebView, Chrome ile ayni Chromium ag
+ * yiginini (adres siralamasi, Happy Eyeballs, HTTP/2) kullanir; 1.0.1'deki "tun IPv6 sunuyor,
+ * ag IPv6 tasimiyor" hatasi HttpURLConnection'da gorunmedi (o IPv4'u one aliyor), Chrome'da
+ * ERR_CONNECTION_RESET / ERR_QUIC_PROTOCOL_ERROR olarak gorundu. Bu tur ayni yolu otomatik
+ * olcer, Chrome'un ilk acilis sozlesmesi ekranina takilmadan.
+ *
+ * Sonuc: ana belgede ag hatasi (onReceivedError, isForMainFrame) varsa ok=false + errorCode +
+ * aciklama ("net::ERR_..."); yoksa ok=true + sayfa basligi. HTTP hata kodlari (ornegin
+ * Google'in robot dogrulamasi 429) ag hatasi degildir, yalnizca httpStatus olarak yazilir.
+ */
+private fun webProbe(activity: Activity, url: String, timeoutMs: Int): JSONObject {
+    val r = JSONObject().put("kind", "web").put("url", url)
+    val main = Handler(Looper.getMainLooper())
+    val done = CountDownLatch(1)
+    val start = System.nanoTime()
+    val holder = arrayOfNulls<WebView>(1)
+
+    // Geri cagrilar ana is parcaciginda gelir, zaman asimi bu is parcaciginda; r'ye yazma ve
+    // okuma r uzerinde kilitli, ilk gelen sonuc kazanir.
+    fun finish(fill: JSONObject.() -> Unit) {
+        synchronized(r) {
+            if (done.count == 0L) return
+            r.fill()
+            r.put("ms", (System.nanoTime() - start) / 1_000_000)
+            done.countDown()
+        }
+    }
+
+    main.post {
+        try {
+            val w = WebView(activity)
+            holder[0] = w
+            w.settings.javaScriptEnabled = true
+            w.settings.domStorageEnabled = true
+            // Onceki yuklemenin onbellegi hatayi gizlemesin: her sayfa agdan gelsin.
+            w.settings.cacheMode = WebSettings.LOAD_NO_CACHE
+            w.clearCache(true)
+            var netError: Pair<Int, String>? = null
+            var httpStatus: Int? = null
+            w.webViewClient = object : WebViewClient() {
+                override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                    if (request.isForMainFrame && netError == null) {
+                        netError = error.errorCode to error.description.toString()
+                    }
+                }
+
+                override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                    if (request.isForMainFrame) httpStatus = response.statusCode
+                }
+
+                override fun onPageFinished(view: WebView, finishedUrl: String) {
+                    val err = netError
+                    val status = httpStatus
+                    val title = view.title.orEmpty()
+                    finish {
+                        put("finalUrl", finishedUrl)
+                        if (status != null) put("httpStatus", status)
+                        if (err != null) {
+                            put("ok", false).put("errorCode", err.first).put("error", err.second)
+                        } else {
+                            put("ok", true).put("title", title)
+                        }
+                    }
+                }
+            }
+            activity.addContentView(
+                w,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+            )
+            w.loadUrl(url)
+        } catch (t: Throwable) {
+            finish { put("ok", false).put("error", t.javaClass.simpleName + ": " + (t.message ?: "")) }
+        }
+    }
+
+    if (!done.await(timeoutMs.toLong(), TimeUnit.MILLISECONDS)) {
+        finish { put("ok", false).put("error", "timeout") }
+    }
+    // WebView ana is parcaciginda birakilir; sonraki yukleme temiz bir gorunumle baslasin.
+    val released = CountDownLatch(1)
+    main.post {
+        holder[0]?.let { w ->
+            runCatching { w.stopLoading() }
+            (w.parent as? ViewGroup)?.removeView(w)
+            runCatching { w.destroy() }
+        }
+        released.countDown()
+    }
+    released.await(5, TimeUnit.SECONDS)
+    return synchronized(r) { JSONObject(r.toString()) }
 }
 
 internal fun buildDnsQuery(id: Int, qname: String): ByteArray {

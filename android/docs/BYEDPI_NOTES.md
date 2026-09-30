@@ -162,6 +162,10 @@ internal object NativeBridge {
      not answered yet). The app sees one successful connection.
    * If no next group exists, the IP:port is marked "unreach": the cache is reset to group 0, and
      the current connection is closed. HTTP data already received is passed through.
+   * Patch B9: an `ssl_err` in the **last** group (or with `autoFallback` off) also reaches
+     "unreach" now. Before B9, upstream left the entry on the failed group for `--cache-ttl`. A
+     **client** close before the server's first byte is no longer a trigger. It only un-pins an
+     entry that points at the connection's fallback group (§5.1).
 5. **UDP** (`extend.c:udp_hook`): on the association's first datagram, byedpi takes the first
    **static** group whose `check_l34(SOCK_DGRAM, dst)` passes:
    * `--proto=udp` or no proto;
@@ -276,6 +280,64 @@ Timing guidance:
 * The cache is per proxy run. Every engine restart (settings change) starts it empty.
 * Only first-round failures move an IP:port to the fallback (patch B7); a reset or timeout in a
   connection that already got its second server round just closes that connection.
+* The upstream connect has about 7 s (`TCP_SYNCNT` 2, patch B9; upstream 1 gave about 3 s). A
+  destination that silently drops SYNs costs the app about 7 s before the RST.
+
+### 5.1 Cache poisoning in smart mode and patch B9 (emulator-5554, 2026-09-30)
+
+The events that move an entry, after B9:
+
+| event | before B9 (upstream) | after B9 |
+|---|---|---|
+| server RST / `ETIMEDOUT` (`TCP_USER_TIMEOUT`) in round ≤ 1 | next group (`save`) or "unreach" | unchanged |
+| server FIN before its first byte (`mark`) | next group or "unreach" | unchanged |
+| server answered the fake, client closes (`fake_abort`) / TLS alert in round 2 | next group or "unreach" | unchanged |
+| **client** closes/resets before the server's first byte | treated as `ssl_err`: **next group for 1 h** | no trigger; if the connection runs in a fallback group, its entry goes back to the head (`unpin ip`) |
+| `ssl_err` response (no ServerHello, `neq_tls_sid`) and a later `ssl_err` group exists | next group + replay | unchanged |
+| `ssl_err` response in the **last** group (or `autoFallback` off) | nothing: **the entry stays on the failed group for 1 h** | "unreach": the entry goes back to the head, no replay |
+
+Reproduction: the scratch script `cachetest.py`, which is the investigator's `abort.py`/`stall.py`
+with a choosable binary. It runs `ciadpi -x 1` in the smart layout for Turkcell Mobil (voice groups
+0-2, direct group 3, `default` 4, and with fallbacks `disorder` 5 and `ttl3` 6), host curl via
+`--socks5 --resolve www.google.com:443:142.251.157.119`.
+* **abort:** netem 1500 ms only towards that IP (`prio` + `u32` filter), `curl -m 2.5` gives up
+  after the ClientHello was forwarded.
+* **stall:** `iptables DROP` of the shell uid's ≥ 200-byte packets to that IP for 6 s.
+* Then 4 × `/search?q=test`.
+
+| case | before B9 | after B9 |
+|---|---|---|
+| abort, fallbacks off | `save id=4`; 4/4 later requests fail (curl exit 35: the fake reaches Google via slirp, like a GGC) | no `save`; 4/4 200, all in group 3 |
+| abort, fallbacks on | `save id=4`, then `save id=5`; 4/4 200 via disorder (slower) | no `save`; 4/4 200 in group 3 |
+| stall, fallbacks off | `save id=4` (a real 6 s stall looks like a DPI drop); 4/4 later requests fail, no "unreach" | `save id=4`, the replayed request fails and hits "unreach"; 4/4 later requests 200 in group 3 |
+| stall, fallbacks on | `save 4 → 5`, 200 via disorder | unchanged (legitimate: 4 failed, 5 works) |
+
+Deterministic smoke rows (host servers, no root):
+* `cache: client abort: direct group no save`: the host TLS server never answers `SILENT_SNI`.
+* `cache: client abort in fallback unpins`: fake → split 1 → split 2. The fake is answered, so
+  `fake_abort` pins 1. The client aborts in 1, and the next connection starts at 0 again. Before
+  B9 the entry moved on to 2.
+* `cache: last fallback fails: unreach`: the echo server returns the ClientHello, which is not a
+  ServerHello. Group 0 → 1 → "unreach", and the next connection starts at 0. Before B9 it started
+  at 1.
+
+All three rows FAIL on the pre-B9 build and PASS after it:
+
+| row | pre-B9 result |
+|---|---|
+| `client abort: direct group no save` | `saves ['1']; groups ['0','1']` |
+| `client abort in fallback unpins` | `saves ['1','2']; groups ['0','1','2']` |
+| `last fallback fails: unreach` | `saves ['1']; groups ['0','1','1']` |
+
+The third row uses `--timeout 4:0:0:1` like the app. Without it, `mark` survives the first
+response, and upstream's client-close trigger masked the gap.
+
+What still costs time: a real stall longer than 4 s on the direct group still pins the IP to the
+method group for an hour. It cannot be told apart from a silent DPI drop. That is harmless when the
+fake does not reach the server. When it does reach the server, the method group fails with
+`ssl_err`: the next fallback takes over, or, without one, the entry is reset (row 3 above). A
+silent failure in the **last** group is still not detected, because `TCP_USER_TIMEOUT` is only
+armed when a `torst` successor exists (B7).
 
 ## 6. `--redirect` and `--drop-udp` (our patches)
 
@@ -303,8 +365,9 @@ Timing guidance:
   later datagrams go to that destination whatever their header says. This is fine, because hev opens
   one association per UDP flow (HEV_NOTES §4).
 * **`--deny-net`** (patch B5):
-  * `ByeDpiArgs` always passes `--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48` (the tun's
-    own blocks). A `--redirect` FROM inside them still wins (checked first).
+  * `ByeDpiArgs` always passes `--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48 --deny-net
+    2001:db8:6764:7069::/64` (the tun's own blocks; the last one holds the global-scope tun IPv6
+    address used since 1.0.2). A `--redirect` FROM inside them still wins (checked first).
   * TCP: reply `02` in a few ms (`tcp_deny_virtual_v4`: 9 ms, `…_v6`: 5 ms); hev resets the app's
     connection at once. This is what Android's Private DNS probe of `198.18.0.53:853` now gets,
     instead of a real SYN to the ISP. With DNS "Kapalı" there is no redirect, so `198.18.0.53:53` is
@@ -392,8 +455,9 @@ selected method becomes the first fallback.
 ```
 -i 127.0.0.1 -p <port> -c 2048 -b 16384 -N
 [DNS active]   --redirect 198.18.0.53:53=<v4>:<port>
-               [--redirect [fd00:6764:7069::53]:53=[<v6>]:<port>]     (only if the profile has v6)
-               --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48   (always)
+               [--redirect [fd00:6764:7069::53]:53=[<v6>]:<port>]     (profile has v6 AND effective IPv6 on)
+               --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48
+               --deny-net 2001:db8:6764:7069::/64                        (always)
 [blockQuic]    --drop-udp 443
 [voiceFake]    --proto=udp --pf=50000-65535 --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none
                --proto=udp --pf=3478-3481   --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none
@@ -525,7 +589,9 @@ Why this is correct in byedpi (code, `extend.c`, and verified below):
 * **Cache**: the working group is stored per destination IP:port (`cache_add` in `on_trigger`) for
   the method group's `--cache-ttl` (1 h); later connections start in it (`connect_hook` →
   `cache_get`), unblocked IPs never get an entry. "unreach" (every group failed) resets the entry
-  to the head, so the next connection starts direct again.
+  to the head, so the next connection starts direct again. Since patch B9 (§5.1), an app giving
+  up before the server answers no longer counts as a block, and a method group that fails with
+  `ssl_err` and has no successor ends in "unreach" instead of staying cached for an hour.
 * **Group count** grows by one (≤ 3 voice + 1 direct + 1 method + ≤ 3 ISP alternatives +
   catch-all = 9 ≪ 64).
 
@@ -686,6 +752,30 @@ Measurements:
        is the probe's cold start). DROP: first 7.3 s (4 s `--timeout`), then 0.8-1.06 s. The same
        with `discord.com` as the string and Genel fallbacks: 200 4/4, first request 0.68 s in a
        parallel run (example.com 0.60 s).
+
+7. **Patch B9 (smart-mode cache hardening), emulator-5554, 2026-09-30.**
+   * **Builds:**
+     * Top-level `jni/`, 4 ABIs: 0 warnings, every LOAD `Align 0x4000`.
+     * Standalone `byedpi-jni`, 4 ABIs: 0 warnings. The only export is `JNI_OnLoad`. Sizes:
+       81 024 B (arm64-v8a), 57 980 B (armeabi-v7a), 83 472 B (x86_64), 78 084 B (x86).
+     * Tools, x86_64: 0 warnings.
+   * **Full `smoke.py --apk <debug apk, x86_64>`:** 95 checks, 0 FAIL, 9 EXPECTED, 13/13 JNI.
+     * The 3 new `cache` rows pass (§5.1).
+     * `restart_test` passes 589 checks and the ASan build 585 (fds 8 → 8).
+     * The earlier rows are unchanged, except for timing noise: in the full runs,
+       `full layout example.com (http)` came back EXPECTED 400 instead of 200. That is the slirp
+       race between the fake and the real HTTP request. HTTP never reaches the B9 code (`mark` is
+       0 and the primary group has `detect == 0`). An A/B check of the same three URLs on one
+       proxy, 4 × with each binary, gave 200/200/200 with `saves ['4','4','4']` for both. A
+       `--quick` run of the B9 build gave 63 checks, 0 FAIL, 8 EXPECTED, with HTTP 200.
+     * One full run hit a single `recv: Software caused connection abort` (ECONNABORTED, a socket
+       destroyed by the system while the emulator had just been restarted) in `timeout 3s /
+       cache hit`. The rerun passed.
+   * **The pre-B9 build**, same host servers (`--quick`): the 3 `cache` rows FAIL, as expected.
+   * **ASan:** `ciadpi_asan` ran all three cache scenarios repeatedly (unpin ×2, unreach ×5):
+     it stayed alive with no ASan report.
+   * **Google reproduction:** see §5.1. Before B9, abort and stall with fallbacks off each broke
+     4/4 later requests. After B9 they gave 4/4 200 from the direct group.
 
 ## 10. Known limitations / decisions
 

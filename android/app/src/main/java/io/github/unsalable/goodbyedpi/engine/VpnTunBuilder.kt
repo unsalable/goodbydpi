@@ -34,6 +34,9 @@ class VpnTunBuilder(
         // hev dis fd'de mtu'yu okuma tamponu olarak kullaniyor; ikisi ayni olmali.
         b.setMtu(HevConfig.MTU)
         b.addAddress(HevConfig.TUN_IPV4, 32)
+        // config.ipv6 burada ayar DEGIL, Ipv6Gate'ten gecmis hali (EngineConfig.withUnderlyingV6):
+        // IPv6 adresi/yolu yoksa Android VPN tablosuna "unreachable default" koyar, getaddrinfo
+        // AAAA dondurmez ve IPv6 baglantilari 1 ms'de reddedilir (lwIP once kabul etmez).
         if (config.ipv6) b.addAddress(HevConfig.TUN_IPV6, 128)
 
         VpnRoutes.ipv4(config.excludeLan).forEach { b.addRoute(it.host, it.prefix) }

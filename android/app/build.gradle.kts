@@ -11,8 +11,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-val appVersionName = "1.0.1"
-val appVersionCode = 2
+val appVersionName = "1.0.2"
+val appVersionCode = 3
 
 // Dagitilan tek APK tum ABI'leri tasir. Gelistirirken tek ABI derlemek (ornek:
 // -Pgdpi.abi=x86_64) yerel kodun derleme suresini dortte birine indiriyor.

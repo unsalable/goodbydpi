@@ -113,9 +113,9 @@ rules for both classes.) 16 KB page alignment for all `.so` (Android 15+).
 | item | value |
 |---|---|
 | tun IPv4 | `198.18.0.1/32` (hev `tunnel.ipv4: 198.18.0.1`) |
-| tun IPv6 | `fd00:6764:7069::1/128` (hev `tunnel.ipv6`) |
+| tun IPv6 | `2001:db8:6764:7069::1/128` (hev `tunnel.ipv6`), **only when the effective IPv6 is on**: setting `ipv6` AND the underlying network has a global (2000::/3) address and an IPv6 default route AND the reachability probe passed (see §8 "IPv6 gate") |
 | virtual DNS v4 | `198.18.0.53` → byedpi `--redirect 198.18.0.53:53=<dns v4>:<port>` |
-| virtual DNS v6 | `fd00:6764:7069::53` (only if the DNS profile has an IPv6 address) |
+| virtual DNS v6 | `fd00:6764:7069::53` (only if the DNS profile has an IPv6 address and the effective IPv6 is on) |
 | MTU | 8500 (hev default; tun is terminated by lwIP) |
 | routes | `0.0.0.0/0` and `::/0`; if "Yerel ağı hariç tut" is on (default), route the complement of private/link-local/multicast ranges (10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10?, 224/4, fc00::/7, fe80::/10, ff00::/8) while still covering 198.18.0.0/15 — compute with a unit-tested CIDR complement (on API 33+ `excludeRoute` may be used instead, but one code path is preferable) |
 | DNS "Kapalı" (off) | do not redirect: add the underlying network's DNS servers (`LinkProperties.dnsServers` of the active non-VPN network) to the VPN so queries still flow through the tun; if none, fall back to 1.1.1.1 |
@@ -312,8 +312,10 @@ Mirror the desktop look & feel (see `src/GoodbyeDpiUI/MainWindow.xaml`, `Themes/
   animated expand/collapse, "Önerilene dön"), DNS (+ Yeni DNS, custom editor with IPv4/port,
   IPv6/port, validation message), GENEL (Otomatik bağlan, Açılışta başlat, Otomatik güncelle,
   Otomatik yedek yöntem, Yerel ağı hariç tut, IPv6), ARKA PLAN (Pil optimizasyonu, Her zaman açık
-  VPN), BAĞLANTI TESTİ (runs `ConnectionTester` against discord.com, roblox.com, example.com via
-  the running proxy or direct, shows per-site ✓/✗ + ms), HAKKINDA (sürüm, GitHub, lisanslar).
+  VPN), BAĞLANTI TESTİ (runs `ConnectionTester` against www.google.com, www.youtube.com,
+  discord.com, roblox.com, www.instagram.com, example.com via the running proxy or direct; per
+  site ✓/✗ plus a per-family line `IPv4: ✓ 312 ms · IPv6: ✗ …`), HAKKINDA (sürüm, GitHub,
+  lisanslar, Tanılama report).
 * Pickers are modal bottom sheets with animated selection indicator; list items show name +
   one-line description/summary (like the desktop dropdown second line).
 * Motion: `spring(dampingRatio≈0.8, stiffness≈400)` style everywhere; `AnimatedContent`,
@@ -381,7 +383,9 @@ No update code may crash or block the UI when offline / rate-limited.
 * **`:probe` app** (debug-only helper, separate package `io.github.unsalable.goodbyedpi.probe`,
   NOT shipped): on `am start … --es urls a,b,c --ei parallel N` performs HTTPS/HTTP requests and
   DNS lookups (so its traffic goes THROUGH the VPN), logs a machine-readable result line per URL
-  to logcat tag `GDPI_PROBE` and writes `files/probe.json`.
+  to logcat tag `GDPI_PROBE` and writes `files/probe.json`. Also `--es udp`, `quic`, `tcp`
+  (getAllByName order + sequential connects) and `web` (android.webkit.WebView = the Chromium
+  network stack; main-frame `onReceivedError` code/description or the page title).
 * **E2E on emulator** (`android/tools/e2e.ps1` or `.py`): install, `appops set <pkg>
   ACTIVATE_VPN allow`, `pm grant … POST_NOTIFICATIONS`, start via UI (uiautomator) and via
   intent/tile, verify tun0 + `dumpsys connectivity` VPN, probe requests OK (TCP+DNS+UDP DNS
@@ -425,11 +429,70 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   carrier's own network with no DPI; 240/4 holds 255.255.255.255, and tunnelled broadcasts would
   leave through byedpi without `SO_BROADCAST`. Kept routed: `198.18.0.0/15`, `fd00:6764:7069::/64`.
 * **Virtual nets are refused**: byedpi always gets `--deny-net 198.18.0.0/15 --deny-net
-  fd00:6764:7069::/48` (a `--redirect` FROM still wins) — Private DNS probes `198.18.0.53:853`;
+  fd00:6764:7069::/48 --deny-net 2001:db8:6764:7069::/64` (a `--redirect` FROM still wins) — Private DNS probes `198.18.0.53:853`;
   without it a real SYN went to the ISP and the session hung. With DNS "Kapalı",
   `198.18.0.53:53` is refused too.
 * **Cross-family DNS**: a profile with only an IPv6 address still redirects the IPv4 resolver
   (byedpi supports it); the IPv6 resolver is added only if the profile has v6 *and* IPv6 is on.
+* **IPv6 gate (1.0.2)** — the tun offers IPv6 only when it really works on the underlying network.
+  Up to 1.0.1 it always added the ULA `fd00:6764:7069::1`, `::/0` and the v6 virtual DNS. On the many
+  Turkish mobile lines without IPv6 (APNIC: TT Mobil ~1%, Turkcell ~14%, Vodafone TR ~54% IPv6)
+  Chrome/Cronet (Chrome, Google, YouTube) then connected to dual-stack hosts over IPv6: lwIP completes
+  the handshake locally, byedpi cannot reach the v6 upstream, the app gets a RST /
+  `ERR_QUIC_PROTOCOL_ERROR` and never falls back to IPv4 (Discord/Roblox have no AAAA, so they worked).
+  Now (`engine/Ipv6Gate.kt`, `service/Ipv6Probe.kt`, `DpiVpnService`):
+  * gate = a 2000::/3 address (ULA, fe80, the emulator's fec0 do not count) AND an IPv6 default route
+    in the underlying `LinkProperties`;
+  * probe = TLS handshake over the underlying network (`Network.bindSocket`) to
+    `[2001:4860:4860::8888]:443`, then `[2606:4700:4700::1111]:443`, 2.5 s each (connect + handshake);
+    any failure = unusable (fail closed). No SNI (IP literal, so SNI-based DPI cannot break it), chain
+    validated, no hostname check. A handshake, not a bare TCP connect, because the server's first
+    flight (certificate, several KB) must arrive: a v6 path-MTU blackhole (CPE that clamps MSS for
+    IPv4 only or drops ICMPv6 Packet Too Big) passes SYN/SYN-ACK but stalls full-size packets.
+    Cached per network + global address set (`Ipv6ProbeCache`): a failure is dropped after 5 min
+    and retried by the health loop (the old `false` holds meanwhile); a success goes stale after
+    10 min and is re-probed in the background while IPv6 stays on (so a v6 upstream that breaks
+    later with addresses/route intact is turned off within ~10 min instead of never). A failure on
+    top of a success is stored only when it repeats (`confirmFails` = 2, the second probe comes
+    from the next health tick, ~20 s): with a single failure a 5 s signal dip on a working
+    dual-stack network cost two full engine swaps (v6 off, then on 5 min later), each dropping
+    every connection. With no earlier success (new network, new start) one failure counts at once
+    (fail closed). A stale success is trusted only on the network it was measured on; it is
+    dropped (fresh probe, IPv4 until it passes) on a new start (waits up to 2 s like a first
+    start), on a switch from another network, and when the setting goes off -> on (while the
+    setting is off nothing is probed, so the success only ages). Re-run when `onAvailable` /
+    `onLinkPropertiesChanged` changes the address set. Runs only while the setting is on;
+  * effective `EngineConfig.ipv6` = setting && gate && probe (`withUnderlyingV6`), used for the tun,
+    hev YAML, the v6 `--redirect` and `tunKey`. When it flips the tun is rebuilt in place (1 s settle,
+    never on `onLost`). Turning IPv6 **on** waits for the current network's probe (an IPv4 tun is
+    rebuilt at most once per switch); turning it **off** does not wait: a tun that offers IPv6 on a
+    new network whose probe is still running (address + route but a broken v6 upstream) would
+    give Chrome/YouTube RSTs for the ~5-6 s the probe takes. Cost: one extra rebuild when the new
+    network's IPv6 works;
+  * start seeds `false`; if the network looks IPv6-capable the first start waits up to 2 s for the probe,
+    otherwise it starts IPv4-only and rebuilds once the probe passes;
+  * when on, the tun address is the global-scope `2001:db8:6764:7069::1` (documentation prefix, never a
+    real destination): with the ULA, RFC 6724 made apps prefer IPv4 and moved Google to the carrier's
+    shared CGNAT IPv4 on IPv6-capable SIMs. Without the gate this address is harmful (apps prefer v6
+    and get reset; a Google fetch took 26 s), so it is never used without it;
+  * when off, Android installs `unreachable default` for IPv6 in the VPN table: getaddrinfo returns A
+    records only and IPv6 literals fail in ~1 ms (measured);
+  * `Ipv6StatusHolder` publishes setting / gate parts / probe / tun state for the settings row ("Şu an:
+    …") and diagnostics. There is deliberately no "force IPv6" option. Debug builds only:
+    `DebugIpv6Receiver` (`--es probe pass|fail|real`) forces the probe result and
+    (`--es ipv6 on|off`) writes the setting like the switch, for emulator tests. The emulator
+    only has fec0 addresses, so the gate stays closed and no instrumented test reaches
+    `tunV6=true`; the IPv6-tun path is checked by hand (debug build, adb root):
+    `adb shell ip -6 addr add 2001:db8:77::5/64 dev wlan0`, connect, `am broadcast -n
+    <pkg>/io.github.unsalable.goodbyedpi.service.DebugIpv6Receiver --es probe pass` -> logcat
+    `ipv6: ... tun=true` and `ip -6 addr` shows `2001:db8:6764:7069::1` on the tun; then `--es ipv6
+    off` -> `tun=false` within ~1.5 s (the fa74257 regression) and `--es ipv6 on` -> back; `--es
+    probe fail` -> `tun=false`; finally `--es probe real` and `ip -6 addr del ...`;
+  * the settings observer compares the **un-narrowed** config (`EngineConfig.settingsChanges`) and
+    narrows with `withUnderlyingV6` only when applying. It used to narrow inside the flow: the first
+    value was stored narrowed to `false` before the probe finished, so after the probe opened IPv6 the
+    user's "IPv6 off" looked equal to it and was dropped (the tun kept offering IPv6 until the next
+    network change). The `ipv6` observer also calls `maybeRefreshTun`.
 * **`setUnderlyingNetworks`**: API 31+ follows `registerBestMatchingNetworkCallback(INTERNET,
   NOT_VPN)`; below 31 it passes `null` and reads DNS from `registerDefaultNetworkCallback` — on
   S+ the default callback reports the VPN itself to its owner; "last `onAvailable` wins" picked
@@ -614,6 +677,44 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **Connection test resolves names itself** — DNS-over-TCP to `198.18.0.53:53` through the proxy
   (the selected DNS via `--redirect`), system resolver if refused (DNS "Kapalı"), then SOCKS
   CONNECT to the IP with SNI/hostname checks on the name; required by `-N`.
+* **Connection test is per address family (1.0.2)** — A and AAAA are asked separately on the
+  same DNS connection, and the first IPv4 and the first IPv6 address are tried in parallel
+  (`SiteResult.v4` / `v6` / `dns`, added with defaults so old callers compile). The tester runs in
+  the VPN-excluded app, so this is the only way it can show what tun apps face: in 1.0.1 IPv4
+  worked and IPv6 did not, and only the Chromium-based apps (Chrome, Google, YouTube) pick IPv6.
+  Colour rule (`ConnTestText`): an IPv6 failure is a red ✗ when the tun offers IPv6 or the service
+  has not reported `Ipv6StatusHolder` yet (unknown = assume offered); when the tun does not offer
+  IPv6 it reads "kullanılmıyor (ağda IPv6 yok / IPv6 ayarı kapalı / …)" in grey without ✗ (the
+  exception summary stays in the report); a grey ✗ in a direct test. In a direct test a system
+  resolver answer with 0 AAAA shows "bilinmiyor", not "kayıt yok": Android's resolver does not ask
+  AAAA on a network without IPv6. The explanation is shown once under the list
+  (`ConnTestText.notAskedNote`), not on every row (it wrapped all six rows to two lines).
+  Google is checked with `GET /search?q=test` (429 or a 3xx to `/sorry/` = "robot doğrulaması",
+  still reachable), YouTube with `GET /generate_204` (only 204 passes); others accept any status.
+  Browser User-Agent and Accept-Language, since Google serves captchas to obvious bots more
+  readily. A Google answer without a captcha is **not** proof there is none: the report adds
+  "tarayıcıda robot doğrulaması yine de çıkabilir" (measured: Chrome got `/sorry/` from the same IP
+  while the single cookieless test request got 200).
+* **Tanılama is a copyable report** (`DiagReport`, `DeviceInfoCollector`): app/Android version,
+  model, transport + `networkOperatorName` (no permission; labelled "SIM operatörü … (etkin ağ
+  değil)" unless the transport is cellular, so a Wi-Fi problem is not blamed on the SIM's carrier),
+  the underlying network's address
+  *kinds* (global / ULA / CGNAT / 464XLAT…, never the addresses; `activeNetwork` is the
+  underlying network because our uid is excluded from the VPN) and v6 default route, Private DNS
+  (API 28+; only a known public provider's domain is kept (dns.google, Cloudflare, AdGuard,
+  NextDNS, Control D, Quad9, Mullvad, ...) and each label left of it becomes `*` unless it is a
+  generic word like `dns`/`family`, since personal profiles such as `<id>.dns.nextdns.io` carry
+  an account ID; any other hostname, e.g. a self-hosted `dns.<name>.dev`, is shown as
+  `<kişisel ad, gizlendi>`),
+  the tun's address kinds, `Ipv6Status`, the remaining settings, the engine section
+  (argv; a custom DNS server's address in `--redirect` becomes `<özel-DNS>`, the built-in
+  presets' addresses stay; when disconnected the argv is not narrowed by the IPv6 gate, so a note
+  says the IPv6 part is dropped on a network without working IPv6) and the last test's per-family
+  lines with DNS counts, HTTP status and an exception
+  summary (class names, errno, SOCKS reply; known SOCKS replies are Turkish with the English
+  key kept, e.g. `SOCKS: vekil hedefe bağlanamadı / general failure`; messages with digits are
+  dropped, `probeDetail` is IP-redacted). When disconnected the argv's `-p` reads
+  `<bağlanınca-seçilir>` (the port is picked at connect; `0` looked like a misconfiguration). The card scrolls; Kopyala stays visible.
 
 ### Updates (§5)
 
@@ -664,6 +765,15 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **curl uses `--socks5 -4`** (names resolved on the host) because of `-N`.
 * **`tools/e2e.py` finds the tun by `198.18.0.1`, not `tun0`** — an in-place rebuild can bring up
   `tun1`. Device-wide steps (Wi-Fi, doze, reboot, always-on) need `--allow-disruptive`.
+* **`chromium_web` e2e step + `--ipv4-only-underlying`** — the HttpURLConnection probe sorts IPv4
+  first and never saw the 1.0.1 Google/YouTube failure; the step loads Google search,
+  m.youtube.com and wikipedia.org in a WebView (probe `web` kind, Chromium stack) and fails on
+  any main-frame `net::ERR_*` (HTTP 429 captcha pages are not errors). `--ipv4-only-underlying`
+  sets `net.ipv6.conf.{wlan0,eth0}.disable_ipv6=1` (root) before the steps and restores the old
+  values in a `finally`. Verified against 1.0.1's runtime on emulator-5554: all three URLs
+  `ERR_CONNECTION_RESET` with the ULA tun (both on the default fec0-only network and IPv4-only);
+  PASS with only `ipv6=false` changed. Chrome itself is not used because its first-run terms
+  screen needs a user decision.
 * **`tools/native/tun_latency.sh`** (manual, root) measures hev session latency (P5).
 
 ### Known limitations (accepted)

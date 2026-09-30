@@ -548,7 +548,17 @@ int create_conn(struct poolhd *pool,
         return -1;
     }
     #ifdef __linux__
-    int syn_count = 1;
+    /* gdpi: 1 -> 2. Upstream'in tek SYN tekrari baglantiya ~3 sn (1 + 2 sn)
+     * taniyordu: kotu mobil hatta art arda iki SYN kaybi ya da 3 sn'yi asan
+     * RTT (tampon sismesi) VPN'siz basarili olacak her baglantiyi dusuruyordu
+     * (emulatorde netem 3200 ms: tum baglantilar 3.06 sn'de "unreach").
+     * 2 ile ~7 sn (1 + 2 + 4). Bedel: gercekten olu bir IP'de (sessizce
+     * dusuren hedef, calismayan IPv6 cikisi) uygulama RST'yi 3 yerine 7 sn
+     * sonra gorur; lwIP el sikismayi hemen kabul ettigi icin uygulamanin
+     * kendi yedek adresine gecisi de o kadar gecikir. VPN'siz Android'in
+     * varsayilani (~127 sn) yaninda yine kisa; DETECT_CONNECT (--auto=conn)
+     * kullanmiyoruz, yedek zinciri etkilenmez. */
+    int syn_count = 2;
     if (setsockopt(sfd, IPPROTO_TCP,
             TCP_SYNCNT, (char *)&syn_count, sizeof(syn_count))) {
         uniperror("setsockopt TCP_SYNCNT");

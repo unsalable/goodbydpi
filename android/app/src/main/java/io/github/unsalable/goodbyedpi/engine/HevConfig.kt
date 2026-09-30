@@ -15,7 +15,13 @@ object HevConfig {
     /** Builder.setMtu ile AYNI olmali: hev dis fd'de mtu'yu okuma tamponu boyu olarak kullanir. */
     const val MTU = 8500
     const val TUN_IPV4 = "198.18.0.1"
-    const val TUN_IPV6 = "fd00:6764:7069::1"
+    /**
+     * Kuresel kapsamli (2001:db8::/32, belgeleme blogu: gercek bir hedef olamaz). ULA (fd00::)
+     * kaynakla RFC 6724 IPv4'u one aliyordu: IPv6'li hatta (Vodafone, bazi Turkcell) Google
+     * ortak CGNAT IPv4'e kayiyordu. Bu adres YALNIZCA Ipv6Gate + erisim denemesi gecince
+     * kullanilir; IPv6'siz agda uygulamalari IPv6'ya yoneltip RST'ye goturur (olculdu: 26 sn).
+     */
+    const val TUN_IPV6 = "2001:db8:6764:7069::1"
 
     const val TASK_STACK_SIZE = 28672
     const val TCP_BUFFER_SIZE = 8192

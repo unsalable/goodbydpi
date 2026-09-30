@@ -163,7 +163,11 @@ class ConnectionTesterTest {
             assertFalse(r.ok)
             assertEquals(ERR_CONNECT, r.error)
             assertEquals(listOf("1:198.18.0.53:53", "1:10.9.8.7:443"), proxy.requests())
-            assertEquals(listOf("discord.com/A"), proxy.dnsQueries())
+            // Ayni DNS baglantisinda A sonra AAAA (bos): IPv6 denenmez, "kayit yok".
+            assertEquals(listOf("discord.com/A", "discord.com/AAAA"), proxy.dnsQueries())
+            assertEquals(DnsInfo(1, 0, DnsSource.SELECTED), r.dns)
+            assertEquals(ERR_CONNECT, r.v4?.error)
+            assertNull(r.v6)
         }
     }
 
@@ -177,7 +181,12 @@ class ConnectionTesterTest {
             val ms = (System.nanoTime() - started) / 1_000_000
             assertFalse(r.ok)
             assertEquals(ERR_CONNECT, r.error)
-            assertEquals(listOf("1:198.18.0.53:53", "1:127.0.0.1:443"), proxy.requests())
+            // localhost sistemde ::1 de donebilir; IPv6 denemesi paralel, sirasi belirsiz.
+            val reqs = proxy.requests()
+            assertEquals("1:198.18.0.53:53", reqs.first())
+            assertTrue(reqs.toString(), "1:127.0.0.1:443" in reqs)
+            assertTrue("vekile ad gitmemeli: $reqs", reqs.none { it.startsWith("3:") })
+            assertEquals(DnsSource.SYSTEM, r.dns?.source)
             assertTrue("reddedilen DNS adimi beklememeli ($ms ms)", ms < 1_500)
         }
     }
@@ -204,6 +213,133 @@ class ConnectionTesterTest {
             assertEquals(listOf("v6only.example/A", "v6only.example/AAAA"), proxy.dnsQueries())
             assertEquals("4:2001:0:0:0:0:0:0:1:443", proxy.requests().last())
         }
+    }
+
+    @Test
+    fun socksPathTestsBothFamiliesSeparately() = runBlocking {
+        val v6 = ByteArray(16).also { it[0] = 0x2a; it[1] = 0x00; it[15] = 5 }
+        FakeSocks(dnsAnswer = { _, type ->
+            if (type == DnsWire.TYPE_A) {
+                FakeDns.Reply(a = listOf(byteArrayOf(10, 0, 0, 1), byteArrayOf(10, 0, 0, 2)))
+            } else {
+                FakeDns.Reply(aaaa = listOf(v6))
+            }
+        }).use { proxy ->
+            val r = ConnectionTester.run(proxy.port, listOf("www.google.com"), 2_000).single()
+            assertEquals(DnsInfo(2, 1, DnsSource.SELECTED), r.dns)
+            // Her aileden yalnizca ilk adres denenir.
+            val reqs = proxy.requests()
+            assertEquals(reqs.toString(), 3, reqs.size)
+            assertTrue(reqs.toString(), "1:10.0.0.1:443" in reqs && "4:2a00:0:0:0:0:0:0:5:443" in reqs)
+            assertFalse(r.v4!!.ok)
+            assertFalse(r.v6!!.ok)
+            assertEquals(ERR_CONNECT, r.v6!!.error)
+            // Birincil sonuc IPv4'tur; rapor ayrintisi IP icermez.
+            assertEquals(r.v4!!.error, r.error)
+            val detail = r.v6!!.errorDetail!!
+            assertTrue(detail, detail.startsWith("SocketException"))
+            assertFalse(detail, detail.contains("2a00"))
+        }
+    }
+
+    @Test
+    fun socksPathKeepsIpv4WhenAaaaQueryFails() = runBlocking {
+        FakeSocks(dnsAnswer = { _, type ->
+            if (type == DnsWire.TYPE_A) FakeDns.Reply(a = listOf(byteArrayOf(10, 0, 0, 1))) else FakeDns.Reply(rcode = 2)
+        }).use { proxy ->
+            val r = ConnectionTester.run(proxy.port, listOf("example.com"), 2_000).single()
+            assertEquals(DnsInfo(1, 0, DnsSource.SELECTED), r.dns)
+            assertEquals(listOf("1:198.18.0.53:53", "1:10.0.0.1:443"), proxy.requests())
+        }
+    }
+
+    // ------------------------------------------------ HTTP kurallari (Google / YouTube)
+
+    @Test
+    fun hostSpecificChecks() {
+        assertEquals(ConnectionTester.HttpCheck.GOOGLE_SEARCH, ConnectionTester.checkFor("www.google.com"))
+        assertEquals(ConnectionTester.HttpCheck.GOOGLE_SEARCH, ConnectionTester.checkFor("google.com.tr"))
+        assertEquals(ConnectionTester.HttpCheck.YOUTUBE_204, ConnectionTester.checkFor("www.youtube.com"))
+        assertEquals(ConnectionTester.HttpCheck.YOUTUBE_204, ConnectionTester.checkFor("m.youtube.com"))
+        assertEquals(ConnectionTester.HttpCheck.ANY, ConnectionTester.checkFor("discord.com"))
+        assertEquals(ConnectionTester.HttpCheck.ANY, ConnectionTester.checkFor("notgoogle.com"))
+        assertEquals("/search?q=test", ConnectionTester.HttpCheck.GOOGLE_SEARCH.path)
+        assertEquals("/generate_204", ConnectionTester.HttpCheck.YOUTUBE_204.path)
+    }
+
+    @Test
+    fun googleCaptchaAndYoutube204() {
+        val g = ConnectionTester.HttpCheck.GOOGLE_SEARCH
+        fun h(c: ConnectionTester.HttpCheck, status: Int, location: String? = null) =
+            ConnectionTester.evaluate(c, ConnectionTester.Head(status, location), 10)
+        assertTrue(h(g, 429).let { it.ok && it.captcha })
+        assertTrue(h(g, 302, "https://www.google.com/sorry/index?continue=x").captcha)
+        assertFalse(h(g, 302, "https://www.google.com.tr/search?q=test").captcha)
+        assertFalse(h(g, 200).captcha)
+        assertEquals(200, h(g, 200).httpStatus)
+
+        val y = ConnectionTester.HttpCheck.YOUTUBE_204
+        assertTrue(h(y, 204).ok)
+        val bad = h(y, 200)
+        assertFalse(bad.ok)
+        assertEquals("Beklenmeyen yanıt (HTTP 200)", bad.error)
+        assertTrue(h(ConnectionTester.HttpCheck.ANY, 403).ok)
+    }
+
+    @Test
+    fun readHeadParsesStatusAndLocation() {
+        fun head(s: String) = ConnectionTester.readHead(s.byteInputStream(Charsets.US_ASCII))
+        assertEquals(
+            ConnectionTester.Head(302, "https://www.google.com/sorry/index"),
+            head("HTTP/1.1 302 Found\r\nContent-Type: text/html\r\nLocation:  https://www.google.com/sorry/index\r\n\r\nbody"),
+        )
+        assertEquals(ConnectionTester.Head(204, null), head("HTTP/1.1 204 No Content\r\n\r\n"))
+        assertEquals(ConnectionTester.Head(200, null), head("HTTP/1.0 200 OK\n"))
+        assertTrue(runCatching { head("") }.exceptionOrNull() is EOFException)
+        assertEquals(ERR_CONNECT, d(runCatching { head("SSH-2.0-x\r\n\r\n") }.exceptionOrNull()!!))
+    }
+
+    @Test
+    fun errorDetailHasClassesErrnoAndSocksReplyButNoAddresses() {
+        assertEquals(
+            "SocketException (SOCKS: ağa ulaşılamıyor / network unreachable)",
+            ConnectionTester.errorDetail(SocketException("SOCKS: Network unreachable")),
+        )
+        val reset = SSLHandshakeException("Read error: ssl=0x7b: I/O error")
+            .apply { initCause(SocketException("recvfrom failed: ECONNRESET (Connection reset by peer)")) }
+        assertEquals(
+            "SSLHandshakeException/SocketException ECONNRESET (recvfrom failed: ECONNRESET (Connection reset by peer))",
+            ConnectionTester.errorDetail(reset),
+        )
+        assertEquals(
+            "SocketException (SOCKS: vekilden bozuk cevap / malformed reply)",
+            ConnectionTester.errorDetail(SocketException("Malformed reply from SOCKS server")),
+        )
+        // 1.0.1 raporunda Ingilizce kalan iki metin (IPv6'siz mobil veri / bozuk IPv6 yolu).
+        assertEquals(
+            "SocketException (SOCKS: vekil hedefe bağlanamadı / general failure)",
+            ConnectionTester.errorDetail(SocketException("SOCKS server general failure")),
+        )
+        assertEquals(
+            "SocketException (SOCKS: bağlantı reddedildi / connection refused)",
+            ConnectionTester.errorDetail(SocketException("SOCKS: Connection refused")),
+        )
+        assertEquals("SOCKS: vekil izin vermedi / not allowed", ConnectionTester.socksReply("SOCKS: Connection not allowed by ruleset"))
+        // Bilinmeyen cevap ozgun haliyle; SOCKS'suz mesaj ceviriye girmez.
+        assertEquals("SOCKS: Something new", ConnectionTester.socksReply("SOCKS: Something new"))
+        assertEquals(null, ConnectionTester.socksReply("Connection refused"))
+        val withIp = ConnectException(
+            "failed to connect to /100.64.12.34 (port 443) from /10.0.0.2 after 3000ms: isConnected failed: EHOSTUNREACH",
+        )
+        assertEquals("ConnectException EHOSTUNREACH", ConnectionTester.errorDetail(withIp))
+    }
+
+    @Test
+    fun defaultHostsCoverDualStackAndV4OnlySites() {
+        assertEquals(
+            listOf("www.google.com", "www.youtube.com", "discord.com", "roblox.com", "www.instagram.com", "example.com"),
+            ConnectionTester.DEFAULT_HOSTS,
+        )
     }
 
     @Test

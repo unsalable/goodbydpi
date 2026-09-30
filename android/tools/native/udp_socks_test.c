@@ -545,10 +545,12 @@ int main(int argc, char **argv)
     {
         struct s5addr dot = a4("198.18.0.53", 853);
         struct s5addr other6 = a6("fd00:6764:7069::99", 80);
-        int codes[2];
-        double ms[2];
-        const struct s5addr *dsts[2] = { &dot, &other6 };
-        for (int i = 0; i < 2; i++) {
+        /* tun'un kuresel kapsamli adres blogu (HevConfig.TUN_IPV6): gercek hedef degil */
+        struct s5addr tun6 = a6("2001:db8:6764:7069::1", 443);
+        int codes[3];
+        double ms[3];
+        const struct s5addr *dsts[3] = { &dot, &other6, &tun6 };
+        for (int i = 0; i < 3; i++) {
             struct timespec t0, t1;
             clock_gettime(CLOCK_MONOTONIC, &t0);
             int s = tcp_to_proxy();
@@ -561,6 +563,8 @@ int main(int argc, char **argv)
             "198.18.0.53:853 reply=%d in %.1f ms", codes[0], ms[0]);
         result(codes[1] == 2 && ms[1] < 500, "tcp_deny_virtual_v6",
             "[fd00:6764:7069::99]:80 reply=%d in %.1f ms", codes[1], ms[1]);
+        result(codes[2] == 2 && ms[2] < 500, "tcp_deny_tun_global_v6",
+            "[2001:db8:6764:7069::1]:443 reply=%d in %.1f ms", codes[2], ms[2]);
 
         /* UDP: sanal hedefe datagram duser, iliski baglanmaz; ayni iliskide DNS calisir */
         struct assoc G;

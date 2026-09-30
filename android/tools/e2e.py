@@ -20,6 +20,12 @@ Cihazin/emulatorun genel durumunu degistiren adimlar (Wi-Fi/ucak modu, doze, yen
 her zaman acik VPN, gece modu) yalnizca --allow-disruptive ile calisir: ayni emulatoru baska
 isler de kullaniyor olabilir. Bitince eski ayarlar geri yuklenir.
 
+--ipv4-only-underlying (adb root ister): adimlardan once alttaki aglarda (wlan0, eth0) IPv6'yi
+sysctl disable_ipv6=1 ile kapatir, en sonda eski degerleri geri yazar. Turk mobil verisinin cogu
+boyle (IPv6 yok); 1.0.1'de tun yine de IPv6 sunuyordu ve Chromium (Chrome, Google, YouTube)
+Google/YouTube'a baglanamiyordu. chromium_web adimi bu durumda da gecmeli. reboot / always_on
+adimlari sysctl'i sifirlar (sonrasi yine IPv6'li olur).
+
 Varsayimlar (ui/runtime katmaniyla ortak sabitler asagida, tek yerde):
   * Guc dugmesinin content-description'i POWER_DESC_RE ile eslesir.
   * Hata ayiklama derlemesi (run-as calisir): ayar dosyasi files/settings.json.
@@ -67,6 +73,12 @@ VIRTUAL_DNS = "198.18.0.53:53"
 PROBE_URLS = ["https://example.com", "https://discord.com", "https://www.cloudflare.com",
               "http://detectportal.firefox.com/success.txt"]
 PROBE_DNS = ["example.com", "discord.com", "roblox.com"]
+#: chromium_web: WebView (Chromium ag yigini, Chrome/Cronet ile ayni adres secimi) ile tun
+#: uzerinden yuklenen sayfalar. Ucu de cift yiginli (AAAA var): tun IPv6 sunar ama ag tasimazsa
+#: Chromium IPv6'yi secip ERR_CONNECTION_RESET aliyordu (1.0.1).
+WEB_URLS = ["https://www.google.com/search?q=test", "https://m.youtube.com", "https://www.wikipedia.org"]
+#: --ipv4-only-underlying ile IPv6'si kapatilan arayuzler (emulatorde Wi-Fi ve hucresel).
+V4ONLY_IFACES = ("wlan0", "eth0")
 HOST_ECHO_PORTS = (443, 4443)  # 443: dusurulmeli, 4443: gecmeli (UDP yolunun calistigi kontrolu)
 
 VPN_UP_TIMEOUT = 15.0
@@ -335,12 +347,14 @@ class E2E:
         return self.adb.sh("id -u").strip() == "0"
 
     def run_probe(self, r: StepResult, tag: str, urls=None, dns=None, udp=None, quic=None,
-                  parallel: int = 4, repeat: int = 1, timeout_ms: int = 10000, wait: float = 120) -> dict | None:
+                  parallel: int = 4, repeat: int = 1, timeout_ms: int = 10000, wait: float = 120,
+                  tcp=None, web=None) -> dict | None:
         extras = ["--es", "tag", tag, "--ei", "parallel", str(parallel), "--ei", "repeat", str(repeat),
                   "--ei", "timeout", str(timeout_ms)]
-        for key, val in (("urls", urls), ("dns", dns), ("udp", udp), ("quic", quic)):
+        for key, val in (("urls", urls), ("dns", dns), ("udp", udp), ("quic", quic), ("tcp", tcp), ("web", web)):
             if val:
-                extras += ["--es", key, ",".join(val)]
+                # Tek tirnak: adb shell komutu cihazdaki sh'ta calisir, URL'deki '?' / '&' yorumlanmasin.
+                extras += ["--es", key, "'" + ",".join(val) + "'"]
         self.adb.run("logcat", "-c")
         self.adb.run("shell", "am", "start", "-n", PROBE_ACTIVITY, *extras)
         end = time.time() + wait
@@ -526,6 +540,51 @@ class E2E:
         dns = [x for x in res if x["kind"] == "dns"]
         r.expect(all(x["ok"] for x in dns), f"DNS tun uzerinden: {[(x['host'], x['ms']) for x in dns]}")
 
+    def tun_v6_summary(self) -> str:
+        """Tun arayuzundeki IPv6 adresleri (kapsamlariyla). 'yok' = tun IPv6 sunmuyor."""
+        line = self.adb.sh("ip -o addr show 2>/dev/null | grep 198.18.0.1").strip()
+        if not line:
+            return "tun yok"
+        name = line.split(":")[1].strip().split()[0]
+        v6 = self.adb.sh(f"ip -o -6 addr show dev {name}").strip().splitlines()
+        addrs = [" ".join(l.split()[2:6]) for l in v6]
+        return f"{name}: " + ("; ".join(addrs) if addrs else "IPv6 yok")
+
+    def underlying_v6_defaults(self) -> str:
+        """Alttaki aglarin IPv6 varsayilan yollari (Android her aga ayri tablo kurar; tun ve
+        'unreachable' satirlari haric)."""
+        out = self.adb.sh("ip -6 route show table all 2>/dev/null | grep '^default'")
+        lines = [" ".join(l.split()[:5]) for l in out.splitlines()
+                 if l.strip() and "dev tun" not in l and "dev dummy" not in l]
+        return " | ".join(lines) if lines else "yok"
+
+    def step_chromium_web(self, r: StepResult):
+        """WebView ile google arama, m.youtube.com ve wikipedia tun uzerinden: ana belgede ag hatasi
+        (net::ERR_*) olmamali. HttpURLConnection'li probe IPv4'u one aldigi icin 1.0.1'deki IPv6
+        hatasini goremedi; Chromium tun IPv6 sunuyorsa IPv6'yi secer. Google'in robot sayfasi (429)
+        ag hatasi degildir, kanit satirinda httpStatus olarak gorunur."""
+        if not self.ensure_running(r):
+            return
+        r.ev(f"tun IPv6: {self.tun_v6_summary()}")
+        r.ev("alttaki IPv6 varsayilan yol(lar): " + self.underlying_v6_defaults())
+        # Chromium'un baglanti havuzu ve DNS onbellegi onceki calismadan kalmasin.
+        self.adb.sh(f"am force-stop {PROBE_PKG}")
+        d = self.run_probe(r, "chromium", web=WEB_URLS, tcp=["www.google.com:443"], timeout_ms=30000, wait=200)
+        if not d:
+            return
+        for x in d["results"]:
+            if x.get("kind") == "tcp":
+                fams = ["v6" if ":" in a else "v4" for a in x.get("order", [])]
+                r.ev(f"bilgi: getAllByName(www.google.com) aileleri {fams} -> HttpURLConnection {x.get('family')}")
+        web = [x for x in d["results"] if x.get("kind") == "web"]
+        r.expect(len(web) == len(WEB_URLS), f"{len(web)}/{len(WEB_URLS)} sayfa sonucu geldi")
+        for x in web:
+            if x.get("ok"):
+                extra = f" HTTP {x['httpStatus']}" if x.get("httpStatus") else ""
+                r.expect(True, f"{x['url']}: yuklendi ({x.get('ms')} ms{extra}) '{x.get('title', '')[:50]}'")
+            else:
+                r.expect(False, f"{x['url']}: {x.get('error')} (kod {x.get('errorCode')}, {x.get('ms')} ms)")
+
     def step_dns_redirect(self, r: StepResult):
         if not self.ensure_running(r):
             return
@@ -568,6 +627,11 @@ class E2E:
     def step_start_tile(self, r: StepResult):
         comp = f"{self.pkg}/{TILE_CLASS}"
         self.adb.sh(f"cmd statusbar add-tile {comp}")
+        # SystemUI karo servisine yalnizca hizli ayarlar paneli acikken baglaniyor; bagli degilken
+        # click-tile kuyrukta bekliyor ve panel bir sonraki acilisinda isleniyor (emulatorde
+        # goruldu: tiklama 15 sn'de hic gelmedi, panel acilinca geldi). Panel once acilir.
+        self.adb.sh("cmd statusbar expand-settings")
+        time.sleep(2)
         up, _ = self.vpn_state()
         self.adb.sh(f"cmd statusbar click-tile {comp}")
         ok, secs, detail = self.wait_vpn(not up)
@@ -783,6 +847,13 @@ class E2E:
                 out = self.adb.sh(f"su {uid} sh -c 'echo | nc -w 4 1.1.1.1 443 && echo OWN_OK'")
                 r.expect("OWN_OK" in out, "kilit modunda uygulamanin kendi trafigi (byedpi, guncelleyici) muaf")
         finally:
+            # Geri yukleme yeniden baslatmasi logcat'i siler; basarisizlikta kanit kalsin.
+            if r.status == "FAIL":
+                (self.out / "always_on-logcat.txt").write_text(
+                    self.adb.run("logcat", "-d", "-v", "time", timeout=60), encoding="utf-8")
+                (self.out / "always_on-settings.txt").write_text(
+                    self.adb.sh("settings get secure always_on_vpn_app; settings get secure always_on_vpn_lockdown; "
+                                "dumpsys connectivity | grep -iE 'lockdown|always|VPN CONNECTED'"), encoding="utf-8")
             if old_app in ("", "null"):
                 self.adb.sh("settings delete secure always_on_vpn_app")
             else:
@@ -883,6 +954,7 @@ class E2E:
         ("start_ui", "arayuzden guc dugmesiyle baglan"),
         ("vpn_up", "tun0 + dumpsys connectivity VPN"),
         ("probe", "TCP/HTTPS + DNS tun uzerinden"),
+        ("chromium_web", "WebView (Chromium) ile google/youtube/wikipedia tun uzerinden"),
         ("dns_redirect", "UDP DNS -> 198.18.0.53 (byedpi --redirect)"),
         ("quic_drop", "UDP 443 dusurulur, 4443 gecer"),
         ("stop_ui", "arayuzden kapat"),
@@ -908,16 +980,57 @@ class E2E:
         if unknown:
             raise SystemExit(f"bilinmeyen adim(lar): {unknown}; --list ile bakin")
         print(f"Cihaz {self.args.serial}, paket {self.pkg}, cikti {self.out}", flush=True)
-        for name in [n for n in names if n in todo]:
-            r = StepResult(name)
-            print(f"\n== {name}", flush=True)
-            t0 = time.time()
-            try:
-                getattr(self, "step_" + name)(r)
-            except Exception as e:  # adim dusse bile digerleri calissin
-                r.fail(f"istisna: {e!r}")
-            print(f"[{r.status}] {name} ({time.time() - t0:.1f} sn)", flush=True)
+        saved_v6: dict[str, str] = {}
+        if self.args.ipv4_only_underlying:
+            r = StepResult("ipv4_only_underlying")
+            print("\n== ipv4_only_underlying", flush=True)
+            saved_v6 = self.disable_underlying_v6(r)
             self.results.append(r)
+            if r.status == "FAIL":
+                self.restore_underlying_v6(saved_v6)
+                return self.summary()
+        try:
+            for name in [n for n in names if n in todo]:
+                r = StepResult(name)
+                print(f"\n== {name}", flush=True)
+                t0 = time.time()
+                try:
+                    getattr(self, "step_" + name)(r)
+                except Exception as e:  # adim dusse bile digerleri calissin
+                    r.fail(f"istisna: {e!r}")
+                print(f"[{r.status}] {name} ({time.time() - t0:.1f} sn)", flush=True)
+                self.results.append(r)
+        finally:
+            # Ctrl+C ya da beklenmeyen hata olsa da emulator IPv6'siz kalmasin.
+            if saved_v6:
+                self.restore_underlying_v6(saved_v6)
+        return self.summary()
+
+    def disable_underlying_v6(self, r: StepResult) -> dict[str, str]:
+        """IPv4-only alt ag benzetimi: V4ONLY_IFACES'te disable_ipv6=1. Eski degerleri dondurur."""
+        if not self.is_root():
+            r.fail("--ipv4-only-underlying icin adb root gerekli (adb root)")
+            return {}
+        saved: dict[str, str] = {}
+        for iface in V4ONLY_IFACES:
+            cur = self.adb.sh(f"cat /proc/sys/net/ipv6/conf/{iface}/disable_ipv6 2>/dev/null").strip()
+            if cur not in ("0", "1"):
+                r.ev(f"{iface} yok, atlandi")
+                continue
+            saved[iface] = cur
+            self.adb.sh(f"sysctl -w net.ipv6.conf.{iface}.disable_ipv6=1")
+        # LinkProperties guncellemesi (adreslerin ve varsayilan yolun dusmesi) birkac saniye surer.
+        time.sleep(3)
+        r.expect(bool(saved), f"IPv6 kapatildi: {sorted(saved)} (eski degerler {saved})")
+        r.ev("kalan IPv6 varsayilan yol(lar): " + self.underlying_v6_defaults())
+        return saved
+
+    def restore_underlying_v6(self, saved: dict[str, str]) -> None:
+        for iface, val in saved.items():
+            self.adb.sh(f"sysctl -w net.ipv6.conf.{iface}.disable_ipv6={val}")
+        print(f"\n== alttaki IPv6 geri yuklendi: {saved}", flush=True)
+
+    def summary(self) -> int:
         print("\n==== OZET")
         for r in self.results:
             print(f"  {r.status:4}  {r.name}")
@@ -943,6 +1056,8 @@ def main() -> int:
     ap.add_argument("--soak-minutes", type=float, default=10)
     ap.add_argument("--max-jank", type=float, default=10.0, help="izin verilen janky kare yuzdesi")
     ap.add_argument("--service-action-prefix", default=DEFAULT_ACTION_PREFIX)
+    ap.add_argument("--ipv4-only-underlying", action="store_true",
+                    help="adimlardan once wlan0/eth0'da IPv6'yi kapat (sysctl, adb root), sonunda geri yukle")
     ap.add_argument("--method", default="disorder",
                     help="settings adiminda yazilacak yontem (emulatorde sahtesiz: disorder/split2/tlsrec)")
     ap.add_argument("-v", "--verbose", action="store_true")
