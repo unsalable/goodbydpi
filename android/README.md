@@ -114,10 +114,22 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   Sahteler yalnızca bağlantının başında gittiği için GoodbyeDPI bağlıyken sesli kanala yeniden
   girin; gerekirse Discord'u tamamen kapatıp açın. Özel ayarda bu anahtarın açık olduğundan emin
   olun; gerekirse "Sahte UDP tekrar sayısı"nı artırın (varsayılan 6, en çok 20).
-* **Neyi test etmeli:** Ayarlar → **BAĞLANTI TESTİ** (discord.com, roblox.com, example.com; her
-  site için ✓/✗ ve süre). Tarayıcıda discord.com, roblox.com ve bildiğiniz başka engelli siteler;
-  Discord uygulamasında bir sesli kanal. example.com engelsizdir: o da açılmıyorsa sorun
-  bağlantının kendisindedir.
+* **Neyi test etmeli:** Ayarlar → **BAĞLANTI TESTİ** (www.google.com, www.youtube.com,
+  discord.com, roblox.com, www.instagram.com, example.com). Her site için IPv4 ve IPv6 ayrı
+  denenir: `IPv4: ✓ 312 ms · IPv6: ✗ Bağlantı kurulamadı`. Nasıl okunur:
+  * IPv6 satırı **kırmızıysa** tünel IPv6 sunuyor ama IPv6 bağlantısı kurulamıyor: Chrome, Google
+    ve YouTube uygulamaları IPv6'yı seçtiği için bu siteler açılmaz (Discord ve Roblox'un IPv6
+    adresi yok, bu yüzden etkilenmez; test bunları `IPv6: kayıt yok` diye gösterir). Ayarlar →
+    GENEL → IPv6'yı kapatıp tekrar deneyin ve Tanılama raporunu gönderin.
+  * IPv6 satırı **griyse** ve parantezde "ağda IPv6 yok" gibi bir neden varsa tünel IPv6
+    kullanmıyor; uygulamalar IPv4'ten bağlanır, bu satır sorun değildir.
+  * Google satırının altında "Google robot doğrulaması istiyor" yazıyorsa Google operatörün
+    (paylaşılan) IP adresini işaretlemiş: uçak modunu açıp kapatmak (yeni IP) genelde geçirir;
+    uygulama kaynaklı değildir.
+  * Bağlantı kapalıyken test doğrudan yapılır (motor olmadan); atlatmayı ölçmek için önce bağlanın.
+
+  Tarayıcıda discord.com, roblox.com ve bildiğiniz başka engelli siteler; Discord uygulamasında
+  bir sesli kanal. example.com engelsizdir: o da açılmıyorsa sorun bağlantının kendisindedir.
 * **"Bağlantı kurulamadı".** Motor düşerse 1, 3 ve 10 saniye arayla yeniden kurulur; 5 dakikada
   5 deneme başarısız olursa durur ve bildirim gösterir. Güç düğmesine yeniden dokunun. Böyle
   kalıcı bir hatadan sonra bağlantı arka planda kendiliğinden açılmaz; uygulamayı ya da hızlı
@@ -130,7 +142,13 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   Arka arkaya 5 kez geri getirildiği halde yine kapandıysa uygulama bunu yapmayı bırakır ve bu
   bildirimi gösterir: dokunun, bağlantı yeniden kurulur. Tekrar ediyorsa **Tanılama** çıktısıyla
   bildirin.
-* **Hata bildirirken** Ayarlar → HAKKINDA → **Tanılama** ekranındaki komut satırını ekleyin.
+* **Hata bildirirken** önce Ayarlar → **BAĞLANTI TESTİ**'ni bağlıyken çalıştırın, sonra Ayarlar →
+  HAKKINDA → **Tanılama** → **Kopyala** ile raporu ekleyin. Rapor: uygulama ve Android sürümü,
+  cihaz modeli, ağ türü (Mobil veri / Wi-Fi) ve operatör adı, bağlı ağın adres **türleri** (ör.
+  "IPv4 CGNAT", "IPv6 küresel"; IP adresleri yazılmaz), ağda IPv6 varsayılan yolu, Özel DNS
+  durumu, tünelin IPv6 durumu (ayar, ağdaki IPv6, erişim denemesi, tünelde IPv6 açık mı),
+  sağlayıcı / yöntem / akıllı mod / otomatik yedek / DNS, motorun çalışan komut satırı ve son
+  bağlantı testinin site site, IPv4 / IPv6 ayrı sonuçları (hata türüyle).
 
 ## Derleme
 
@@ -193,16 +211,23 @@ Dosya yoksa derleme bozulmaz ama hata ayıklama anahtarıyla imzalanır (böyle 
 
 * `e2e.py` — emülatörde uçtan uca test (`py -3 tools\e2e.py --serial emulator-5554 --apk ... --probe-apk ...`,
   `--list`, `--only a,b`, cihaz genelini etkileyen adımlar için `--allow-disruptive`).
+  `chromium_web` adımı Google arama, m.youtube.com ve wikipedia.org'u WebView (Chrome ile aynı
+  Chromium ağ yığını) ile tünelden yükler; `--ipv4-only-underlying` (adb root) adımlardan önce
+  wlan0/eth0'da IPv6'yı kapatıp sonda geri açar: Türk mobil verisinin çoğu gibi IPv6'sız ağ.
+  1.0.1 bu durumda `net::ERR_CONNECTION_RESET` veriyordu (tünel IPv6 sunuyor, ağ taşımıyordu).
 * `native/smoke.py` — byedpi'nin hazır yöntemleri, kablo (tcpdump) kontrolleri, DPI benzetimi,
   cihazda UDP/yönlendirme testleri ve `--apk` ile JNI testi
   (`py -3 tools\native\smoke.py --serial emulator-5554`).
-* `:probe` modülü — VPN'in içinden HTTP/DNS/UDP/QUIC ölçen yardımcı uygulama (dağıtılmaz);
+* `:probe` modülü — VPN'in içinden HTTP/DNS/UDP/QUIC, `tcp` (adres sırası + sırayla bağlanma)
+  ve `web` (WebView = Chromium ağ yığını) ölçen yardımcı uygulama (dağıtılmaz);
   kullanım `probe/src/main/java/.../ProbeActivity.kt` başındaki açıklamada.
 * Hata ayıklama derlemesinde `DebugUpdateReceiver` güncelleyiciyi adb'den sürer
   (`--es cmd check|open|bg|install|conntest ...`, ayrıntı dosyanın başında). Gerçek periyodik
   iş: `adb shell cmd jobscheduler run -f <paket> 4201`.
 * Ayarlar > BAĞLANTI TESTİ motor açıkken byedpi'ye adı değil IP'yi verir: ad, seçili DNS'e
-  vekil üzerinden (198.18.0.53:53, DNS-over-TCP) sorulur; DNS "Kapalı"ysa sistem çözücüsüne düşer.
+  vekil üzerinden (198.18.0.53:53, DNS-over-TCP; A ve AAAA ayrı) sorulur; DNS "Kapalı"ysa sistem
+  çözücüsüne düşer. Her aileden bir adres ayrı denenir (Google: `/search?q=test`, 429 ya da
+  `/sorry/` = robot doğrulaması; YouTube: `/generate_204`, 204 beklenir).
 
 ## Teşekkür ve lisanslar
 

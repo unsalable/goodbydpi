@@ -312,8 +312,10 @@ Mirror the desktop look & feel (see `src/GoodbyeDpiUI/MainWindow.xaml`, `Themes/
   animated expand/collapse, "Önerilene dön"), DNS (+ Yeni DNS, custom editor with IPv4/port,
   IPv6/port, validation message), GENEL (Otomatik bağlan, Açılışta başlat, Otomatik güncelle,
   Otomatik yedek yöntem, Yerel ağı hariç tut, IPv6), ARKA PLAN (Pil optimizasyonu, Her zaman açık
-  VPN), BAĞLANTI TESTİ (runs `ConnectionTester` against discord.com, roblox.com, example.com via
-  the running proxy or direct, shows per-site ✓/✗ + ms), HAKKINDA (sürüm, GitHub, lisanslar).
+  VPN), BAĞLANTI TESTİ (runs `ConnectionTester` against www.google.com, www.youtube.com,
+  discord.com, roblox.com, www.instagram.com, example.com via the running proxy or direct; per
+  site ✓/✗ plus a per-family line `IPv4: ✓ 312 ms · IPv6: ✗ …`), HAKKINDA (sürüm, GitHub,
+  lisanslar, Tanılama report).
 * Pickers are modal bottom sheets with animated selection indicator; list items show name +
   one-line description/summary (like the desktop dropdown second line).
 * Motion: `spring(dampingRatio≈0.8, stiffness≈400)` style everywhere; `AnimatedContent`,
@@ -381,7 +383,9 @@ No update code may crash or block the UI when offline / rate-limited.
 * **`:probe` app** (debug-only helper, separate package `io.github.unsalable.goodbyedpi.probe`,
   NOT shipped): on `am start … --es urls a,b,c --ei parallel N` performs HTTPS/HTTP requests and
   DNS lookups (so its traffic goes THROUGH the VPN), logs a machine-readable result line per URL
-  to logcat tag `GDPI_PROBE` and writes `files/probe.json`.
+  to logcat tag `GDPI_PROBE` and writes `files/probe.json`. Also `--es udp`, `quic`, `tcp`
+  (getAllByName order + sequential connects) and `web` (android.webkit.WebView = the Chromium
+  network stack; main-frame `onReceivedError` code/description or the page title).
 * **E2E on emulator** (`android/tools/e2e.ps1` or `.py`): install, `appops set <pkg>
   ACTIVATE_VPN allow`, `pm grant … POST_NOTIFICATIONS`, start via UI (uiautomator) and via
   intent/tile, verify tun0 + `dumpsys connectivity` VPN, probe requests OK (TCP+DNS+UDP DNS
@@ -614,6 +618,25 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **Connection test resolves names itself** — DNS-over-TCP to `198.18.0.53:53` through the proxy
   (the selected DNS via `--redirect`), system resolver if refused (DNS "Kapalı"), then SOCKS
   CONNECT to the IP with SNI/hostname checks on the name; required by `-N`.
+* **Connection test is per address family (1.0.2)** — A and AAAA are asked separately on the
+  same DNS connection, and the first IPv4 and the first IPv6 address are tried in parallel
+  (`SiteResult.v4` / `v6` / `dns`, added with defaults so old callers compile). The tester runs in
+  the VPN-excluded app, so this is the only way it can show what tun apps face: in 1.0.1 IPv4
+  worked and IPv6 did not, and only the Chromium-based apps (Chrome, Google, YouTube) pick IPv6.
+  Colour rule (`ConnTestText`): an IPv6 failure is red when the tun offers IPv6 or the service
+  has not reported `Ipv6StatusHolder` yet (unknown = assume offered); grey with the reason
+  ("ağda IPv6 yok", "IPv6 ayarı kapalı", …) when the tun does not; grey in a direct test.
+  Google is checked with `GET /search?q=test` (429 or a 3xx to `/sorry/` = "robot doğrulaması",
+  still reachable), YouTube with `GET /generate_204` (only 204 passes); others accept any status.
+  Browser User-Agent, since Google serves captchas to obvious bots more readily.
+* **Tanılama is a copyable report** (`DiagReport`, `DeviceInfoCollector`): app/Android version,
+  model, transport + `networkOperatorName` (no permission), the underlying network's address
+  *kinds* (global / ULA / CGNAT / 464XLAT…, never the addresses; `activeNetwork` is the
+  underlying network because our uid is excluded from the VPN) and v6 default route, Private DNS
+  (API 28+), the tun's address kinds, `Ipv6Status`, the remaining settings, the engine section
+  (argv) and the last test's per-family lines with DNS counts, HTTP status and an exception
+  summary (class names, errno, SOCKS reply; messages with digits are dropped, `probeDetail` is
+  IP-redacted). The card scrolls; Kopyala stays visible.
 
 ### Updates (§5)
 
@@ -664,6 +687,15 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **curl uses `--socks5 -4`** (names resolved on the host) because of `-N`.
 * **`tools/e2e.py` finds the tun by `198.18.0.1`, not `tun0`** — an in-place rebuild can bring up
   `tun1`. Device-wide steps (Wi-Fi, doze, reboot, always-on) need `--allow-disruptive`.
+* **`chromium_web` e2e step + `--ipv4-only-underlying`** — the HttpURLConnection probe sorts IPv4
+  first and never saw the 1.0.1 Google/YouTube failure; the step loads Google search,
+  m.youtube.com and wikipedia.org in a WebView (probe `web` kind, Chromium stack) and fails on
+  any main-frame `net::ERR_*` (HTTP 429 captcha pages are not errors). `--ipv4-only-underlying`
+  sets `net.ipv6.conf.{wlan0,eth0}.disable_ipv6=1` (root) before the steps and restores the old
+  values in a `finally`. Verified against 1.0.1's runtime on emulator-5554: all three URLs
+  `ERR_CONNECTION_RESET` with the ULA tun (both on the default fec0-only network and IPv4-only);
+  PASS with only `ipv6=false` changed. Chrome itself is not used because its first-run terms
+  screen needs a user decision.
 * **`tools/native/tun_latency.sh`** (manual, root) measures hev session latency (P5).
 
 ### Known limitations (accepted)

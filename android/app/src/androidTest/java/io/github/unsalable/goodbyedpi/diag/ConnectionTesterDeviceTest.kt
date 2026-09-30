@@ -76,7 +76,9 @@ class ConnectionTesterDeviceTest {
         val r = ConnectionTester.run(port, listOf("example.com")).single()
         Log.i("GdpiTest", "vekil+secili DNS: $r, sorular=$queries")
         assertTrue(r.toString(), r.ok)
-        assertEquals(listOf("example.com/${DnsWire.TYPE_A}"), queries.toList())
+        // A ve AAAA ayri sorulur (aile bazli test); sunucu AAAA icin bos cevap veriyor.
+        assertEquals(listOf("example.com/${DnsWire.TYPE_A}", "example.com/${DnsWire.TYPE_AAAA}"), queries.toList())
+        assertEquals(DnsInfo(1, 0, DnsSource.SELECTED), r.dns)
     }
 
     @Test
