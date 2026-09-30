@@ -85,6 +85,9 @@ class VpnServiceLiveTest {
         assertTrue(shell("ip addr show tun0").contains("inet 198.18.0.1/32"))
         val net1 = vpnNetId()
         assertTrue("VPN agi yok", net1 != null)
+        // Kendi VPN'imiz "baska VPN" sayilmaz (sahip uid'i biz); sayilsaydi kurtarma kendini engellerdi.
+        assertFalse("kendi VPN'imiz baska sayildi", VpnGate.otherVpnActive(ctx))
+        assertEquals(VpnGate.Unattended.OK, VpnGate.unattendedStart(ctx))
         assertEquals("HTTP/1.1 200 OK", httpViaShell("example.com"))
         // Trafik tun'dan gecti: sayac artti (akisi dinleyen biz; ornekleme yalnizca dinlerken).
         val traffic = withTimeout(5_000) { EngineStateHolder.traffic.first { it.txBytes > 0 && it.rxBytes > 0 } }

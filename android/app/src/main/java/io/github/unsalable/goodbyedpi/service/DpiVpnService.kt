@@ -151,16 +151,22 @@ class DpiVpnService : VpnService() {
         // Kullanici VPN'i ayarlardan kapatti ya da baska bir VPN aldi. super.onRevoke() yalnizca
         // stopSelf cagiriyor; motoru once kapatmak icin kendimiz yapiyoruz.
         Log.i(TAG, "onRevoke")
-        scope.launch {
-            cancelPending()
-            publish(EngineState.Stopping)
-            engine.stop()
-            persistWantRunning(false)
-            Recovery.disarm(this@DpiVpnService)
-            publish(EngineState.Stopped)
-            leaveForeground()
-            stopSelf(lastStartId)
-        }
+        scope.launch { stopRevoked() }
+    }
+
+    /**
+     * VPN artik bizde degil (onRevoke, ya da sessiz bir baslatmada establish null): kullanici
+     * baska bir tunele gecti ya da izni kaldirdi. Uyari gostermeden durur, son istegi kapatir.
+     */
+    private fun stopRevoked() {
+        cancelPending()
+        publish(EngineState.Stopping)
+        engine.stop()
+        persistWantRunning(false)
+        Recovery.disarm(this)
+        publish(EngineState.Stopped)
+        leaveForeground()
+        stopSelf(lastStartId)
     }
 
     override fun onDestroy() {
@@ -200,7 +206,7 @@ class DpiVpnService : VpnService() {
             return
         }
         cancelPending()
-        startEngine()
+        startEngine(unattended = false)
     }
 
     private fun startFromSticky(startId: Int) {
@@ -211,7 +217,7 @@ class DpiVpnService : VpnService() {
         if (settings.current.wantRunning && Recovery.backgroundArmed(this)) {
             Log.i(TAG, "yapiskan yeniden baslatma: son istek acik, motor kuruluyor")
             policy.reset()
-            startEngine()
+            startEngine(unattended = true)
         } else {
             stopSelfIfIdle(startId)
         }
@@ -242,7 +248,7 @@ class DpiVpnService : VpnService() {
         if (!engine.isRunning && retryJob?.isActive != true) {
             if (settings.current.wantRunning) {
                 policy.reset()
-                startEngine()
+                startEngine(unattended = true)
             } else if (startId != null) {
                 stopSelfIfIdle(startId)
             }
@@ -282,15 +288,24 @@ class DpiVpnService : VpnService() {
         policy.reset()
         publish(EngineState.Starting)
         engine.stop()
-        startEngine()
+        startEngine(unattended = true)
     }
 
-    private fun startEngine() {
+    /**
+     * @param unattended kimse su an baglanmak istemedi (yeniden deneme, yapiskan yeniden
+     *   baslatma, ayar/ag degisikligi). O zaman VpnService.prepare CAGRILMAZ: izin onceden
+     *   verilmisse prepare etkin baska bir VPN'i dusurur (bkz. VpnGate). Arada kullanici baska
+     *   bir VPN'e gectiyse (motor kurulmadan once: onRevoke gelmez) establish null doner ve
+     *   onRevoke gibi sessizce durulur. Kullanici/her zaman acik START'inda ServiceController
+     *   (ya da sistem) bizi zaten hazirladi; buradaki prepare yan etkisiz.
+     */
+    private fun startEngine(unattended: Boolean) {
         // Hizli kapat/ac: STOP isi on plandan cikmis ama sonraki START servisi durdurmamis olabilir.
         if (!foreground) goForeground()
         publish(EngineState.Starting)
         // Izin geri alinmissa establish null doner; onceden bakmak gereksiz bir byedpi baslatmasini onler.
-        if (VpnService.prepare(this) != null) {
+        val consented = if (unattended) VpnGate.hasConsent(this) else VpnService.prepare(this) == null
+        if (!consented) {
             fail("VPN izni yok")
             return
         }
@@ -305,7 +320,14 @@ class DpiVpnService : VpnService() {
                 .onFailure { Log.w(TAG, "backgroundCheck", it) }
         } catch (e: DpiEngine.StartException) {
             Log.w(TAG, "baslatma basarisiz: ${e.message}", e.cause)
-            if (e.retryable) scheduleRetry(e.message ?: "") else fail(e.message ?: "")
+            when {
+                unattended && e.notPrepared -> {
+                    Log.i(TAG, "VPN baska bir uygulamada; devralinmadi, duruluyor")
+                    stopRevoked()
+                }
+                e.retryable -> scheduleRetry(e.message ?: "")
+                else -> fail(e.message ?: "")
+            }
         } catch (t: Throwable) {
             // Beklenmedik (programlama) hatasi: servis cokmesin, yeniden denensin.
             Log.e(TAG, "baslatma beklenmedik hata", t)
@@ -332,7 +354,7 @@ class DpiVpnService : VpnService() {
         retryJob?.cancel()
         retryJob = scope.launch {
             delay(wait)
-            startEngine()
+            startEngine(unattended = true)
         }
     }
 

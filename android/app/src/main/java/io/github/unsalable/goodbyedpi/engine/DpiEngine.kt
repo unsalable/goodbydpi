@@ -42,11 +42,14 @@ class DpiEngine(
      * @param retryable watchdog yeniden denemeli mi (izin yok / gecersiz arguman gibi kalici
      *   hatalarda false)
      * @param portBusy byedpi portu acamadi; motor bos port secmisse baska portla hemen yeniden dener
+     * @param notPrepared establish null dondu: VPN'in sahibi artik biz degiliz (baska bir uygulama
+     *   hazirlandi ya da izin geri alindi)
      */
     class StartException(
         message: String,
         val retryable: Boolean,
         val portBusy: Boolean = false,
+        val notPrepared: Boolean = false,
         cause: Throwable? = null,
     ) : Exception(message, cause)
 
@@ -255,7 +258,7 @@ class DpiEngine(
             // StartException'i nedeniyle (cause) birlikte gunluge yaziyor.
             throw StartException("VPN arayüzü kurulamadı.", retryable = true, cause = t)
         }
-        return pfd ?: throw StartException("VPN izni yok", retryable = false)
+        return pfd ?: throw StartException("VPN izni yok", retryable = false, notPrepared = true)
     }
 
     /** hev'i [pfd] uzerinde baslatir; basarisizsa kendi yarim kalanini durdurup firlatir. */
