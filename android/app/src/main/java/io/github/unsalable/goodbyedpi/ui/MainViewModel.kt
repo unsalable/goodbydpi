@@ -390,8 +390,14 @@ class MainViewModel(
     /**
      * Servisin bildirdigi IPv6 durumu; servis hic bildirmediyse (ilk deger) null. Bilinmeyen durum
      * "tunel IPv6 sunuyor" gibi yorumlanir: IPv6 hatasi o zaman kirmizi gorunur, gizlenmez.
+     * Motor calisiyorsa servis durumu mutlaka yazmistir (publish Running'den hemen sonra
+     * publishIpv6 cagirir). IPv6'siz agda yazilan durum UNKNOWN'a esit cikar ve StateFlow esit
+     * degeri degistirmedigi icin kimlik hala UNKNOWN kalir; bu yuzden yalniz kimlige bakmak tam da
+     * duzeltmenin hedefi olan agda (mobil veri, IPv6 yok) bilinen durumu "bilinmiyor" sayiyordu.
      */
-    private fun knownIpv6(): Ipv6Status? = ipv6Status.value.takeUnless { it === Ipv6Status.UNKNOWN }
+    private fun knownIpv6(): Ipv6Status? = ipv6Status.value.takeIf {
+        it !== Ipv6Status.UNKNOWN || engineState.value is EngineState.Running
+    }
 
     // ----------------------------------------------------------- guncelleme
 
