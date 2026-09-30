@@ -340,6 +340,7 @@ HOST_BANNER_PORT = 18099  # once konusan (SMTP benzeri) + yankilayan sunucu
 TLS12_SHELLO = (bytes.fromhex("160303003102") + bytes.fromhex("00002d0303") + bytes(32)
                 + bytes.fromhex("00c02f000005ff01000100"))
 TLS_ALERT = bytes.fromhex("15030300020230")  # fatal, unknown_ca
+SILENT_SNI = "gdpi-silent.example"  # host TLS sunucusu bu SNI'ye hic cevap vermez
 
 
 class HostServers:
@@ -366,11 +367,20 @@ class HostServers:
     @staticmethod
     def _tls(c):
         # Ne gelirse gelsin (emulatorde sahte ClientHello sunucuya ulasir) ServerHello yolla,
-        # sonra istemcinin kapatmasini bekle.
+        # sonra istemcinin kapatmasini bekle. SNI'de SILENT_SNI varsa hic cevap verme: yavas
+        # bir sunucu / mobil hat, istemci cevaptan once vazgecsin (onbellek satirlari).
         try:
             c.settimeout(10)
-            if c.recv(4096):
-                c.sendall(TLS12_SHELLO)
+            d = c.recv(4096)
+            # --split 1 gibi gruplarda ilk recv tek bayt olabilir: TLS kaydinin tamamini bekle
+            while d and (len(d) < 5 or len(d) < 5 + int.from_bytes(d[3:5], "big")):
+                more = c.recv(4096)
+                if not more:
+                    break
+                d += more
+            if d:
+                if SILENT_SNI.encode() not in d:
+                    c.sendall(TLS12_SHELLO)
                 while c.recv(4096):
                     pass
         except OSError:
@@ -420,11 +430,11 @@ def socks_connect(port, ip, dport, timeout=8):
     return s
 
 
-def client_hello():
+def client_hello(sni="gdpi-smoke.example"):
     """Gercek bir ClientHello (TLS 1.3 yetenekli, SNI'li); ag kullanmadan bellekte uretilir."""
     ctx = ssl.create_default_context()
     inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
-    obj = ctx.wrap_bio(inc, out, server_hostname="gdpi-smoke.example")
+    obj = ctx.wrap_bio(inc, out, server_hostname=sni)
     try:
         obj.do_handshake()
     except ssl.SSLWantReadError:
@@ -572,6 +582,62 @@ def main():
             ok = marker in log and saves == ["1"] and groups[-1:] == ["1"]
             row("dpi-sim", f"fake reached tls1.2 server ({case})", "PASS" if ok else "FAIL",
                 f"{detail}; saves {saves}; groups {groups}")
+
+        # ---------------------------------------------------------- onbellek zehirlenmesi (P2)
+        # Her adim: SOCKS uzerinden ClientHello yolla; "answer" cevabi okur, "abort" cevap
+        # gelmeden (sessiz SNI) 0.5 sn sonra kapatir: yavas mobil hatta vazgecen uygulama.
+        ch_silent = client_hello(SILENT_SNI)
+
+        def cache_case(name, layout, dport, steps, check):
+            px = Proxy(adb, "cache_" + re.sub(r"[^a-z0-9]+", "_", name), 18095, BASE + layout)
+            procs.append(px)
+            detail = ""
+            try:
+                for kind in steps:
+                    s = socks_connect(18095, "10.0.2.2", dport)
+                    s.sendall(ch_silent if kind == "abort" else ch)
+                    if kind == "abort":
+                        time.sleep(0.5)
+                    else:
+                        s.settimeout(5)
+                        s.recv(4096)
+                    s.close()
+                    time.sleep(0.4)
+            except OSError as e:
+                detail = f"client error {e}; "
+            log = px.logtext()
+            px.stop()
+            saves = re.findall(r"save: ip=\S+, id=(\d+)", log)
+            groups = re.findall(r"desync TCP: group=(\d+)", log)
+            ok = check(log, saves, groups)
+            row("cache", name, "PASS" if ok and not detail else "FAIL",
+                f"{detail}saves {saves}; groups {groups}"
+                + ("; unreach" if "unreach ip" in log else "") + ("; unpin" if "unpin ip" in log else ""))
+
+        # (a) Dogrudan (atlatmasiz) grupta istemcinin cevaptan once kapatmasi yedege yazmaz;
+        # upstream bunu ssl_err sayip IP'yi sahte gruba bir saatligine sabitliyordu.
+        smart_min = ["--proto=tls", "--auto=torst,ssl_err", "--proto=tls", "--fake", "-1", "--ttl", "5",
+                     "--fake-sni", "www.w3.org", "--cache-ttl", "60", "--timeout", "4:0:0:1"]
+        cache_case("client abort: direct group no save", smart_min, HOST_TLS_PORT,
+                   ["abort", "answer"], lambda log, sv, gr: sv == [] and gr == ["0", "0"])
+        # (a) Yedek grupta (sahteye cevap -> fake_abort -> 1) istemci vazgecerse kayit ileri
+        # (2) tasinmaz, zincirin basina geri alinir: sonraki baglanti yine 0'dan baslar.
+        three = ["--proto=tls", "--fake", "-1", "--ttl", "5", "--fake-sni", "www.w3.org",
+                 "--auto=torst,ssl_err", "--proto=tls", "--split", "1", "--cache-ttl", "60",
+                 "--auto=torst,ssl_err", "--proto=tls", "--split", "2", "--cache-ttl", "60",
+                 "--timeout", "4:0:0:1"]
+        cache_case("client abort in fallback unpins", three, HOST_TLS_PORT,
+                   ["answer", "abort", "answer"],
+                   lambda log, sv, gr: "unpin ip" in log and sv == ["1", "1"] and gr == ["0", "1", "0"])
+        # (b) Son yedek de ssl_err ile basarisiz (yankilayici ClientHello'yu geri yollar:
+        # ServerHello degil) -> "unreach", kayit sifirlanir; upstream'de kayit basarisiz
+        # grupta (1) kalir ve sonraki baglanti dogrudan oradan baslardi. --timeout'un B=1'i
+        # uygulamadaki gibi: mark ilk cevapta silinir, istemci kapanisi da hicbir sey tetiklemez;
+        # "unreach" yalnizca on_response'tan gelebilir.
+        last = ["--proto=tls", "--auto=torst,ssl_err", "--proto=tls", "--split", "1", "--cache-ttl", "60",
+                "--timeout", "4:0:0:1"]
+        cache_case("last fallback fails: unreach", last, HOST_ECHO_PORT, ["answer", "answer"],
+                   lambda log, sv, gr: log.count("unreach ip") == 2 and gr == ["0", "1", "0", "1"])
 
         if adb.root and not a.quick:
             # ------------------------------------------------------ kablo kontrolleri
