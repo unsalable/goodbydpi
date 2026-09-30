@@ -29,11 +29,11 @@ fun AppSettings.selectedConfig(): DpiConfig = selectedMethod().build().sanitized
 fun AppSettings.dnsChoices(): List<DnsProfile> =
     DnsProfile.builtIn + customDns.map { it.toProfile() }
 
-/** Secili DNS; silinmis bir ozel giris Cloudflare'e duser. */
+/** Secili DNS; silinmis bir ozel giris varsayilana (Yandex) duser. */
 fun AppSettings.selectedDns(): DnsProfile =
     if (CustomIds.isCustom(dns)) {
         customDns.firstOrNull { it.id.equals(dns, ignoreCase = true) }?.toProfile()
-            ?: DnsProfile.Cloudflare
+            ?: DnsProfile.Default
     } else {
         DnsProfile.fromId(dns)
     }

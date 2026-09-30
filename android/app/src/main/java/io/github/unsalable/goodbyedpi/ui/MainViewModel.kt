@@ -324,7 +324,7 @@ class MainViewModel(
         s.copy(
             customDns = s.customDns.filterNot { it.id.equals(id, ignoreCase = true) },
             dns = if (s.dns.equals(id, ignoreCase = true)) {
-                s.ispProfile().dnsId ?: DnsProfile.CLOUDFLARE_ID
+                s.ispProfile().dnsId ?: DnsProfile.DEFAULT_ID
             } else {
                 s.dns
             },

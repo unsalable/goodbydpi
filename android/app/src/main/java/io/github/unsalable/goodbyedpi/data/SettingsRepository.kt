@@ -16,6 +16,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -132,7 +135,13 @@ class SettingsRepository internal constructor(
 
     private fun decode(text: String): AppSettings {
         require(text.isNotBlank()) { "bos ayar dosyasi" }
-        return json.decodeFromString(AppSettings.serializer(), text).migrate()
+        val element = json.parseToJsonElement(text)
+        val settings = json.decodeFromJsonElement(AppSettings.serializer(), element)
+        // Alan yoksa dosya 1.0.0'dan: varsayilan (guncel surum) degil, 1 sayilmali ki eski
+        // varsayilanlara dayanan yukseltme bir kez calissin (AppSettings.upgradedFrom).
+        val version = ((element as? JsonObject)?.get(VERSION_KEY) as? JsonPrimitive)?.intOrNull ?: 1
+        val upgraded = if (version < AppSettings.CURRENT_VERSION) settings.upgradedFrom(version) else settings
+        return upgraded.migrate()
     }
 
     private fun write(settings: AppSettings) {
@@ -159,6 +168,7 @@ class SettingsRepository internal constructor(
     companion object {
         private const val TAG = "SettingsRepository"
         private const val FILE_NAME = "settings.json"
+        private const val VERSION_KEY = "settingsVersion"
 
         internal val json = Json {
             ignoreUnknownKeys = true

@@ -267,6 +267,8 @@ traffic inside the emulator, and runs curl through ciadpi:
 | RST, auto(disorder 2, also blocked) → auto(split) | 200, saves id 1 then 2 (a failing alternative is skipped) |
 | RST, primary `--auto=none` static split | **fails**: a static group ends the fallback chain |
 | RST, full recommended layout (§7.3) | 200 via groups 4→5 |
+| RST, smart layout (§7.3.1) | 1st 200 in 2.6 s via 3 (direct, RST) → 4 (default: fake broken by slirp) → 5 (disorder, RST) → 6 (split); 2nd 200 in 0.6 s (cache) |
+| no DPI, smart layout | example.com / www.google.com / http 200, only `group=3` logged, no `save:` |
 
 Timing guidance:
 
@@ -383,6 +385,10 @@ The emulator results are for `https://example.com`, `https://www.google.com` and
 
 ### 7.3 Full argv layout (verified to parse and to recover on the emulator)
 
+This is the layout with **smart mode off** (the v1.0.0 behaviour). The default since
+`settingsVersion` 2 is smart mode, §7.3.1: the same argv with a no-desync group in front, so the
+selected method becomes the first fallback.
+
 ```
 -i 127.0.0.1 -p <port> -c 2048 -b 16384 -N
 [DNS active]   --redirect 198.18.0.53:53=<v4>:<port>
@@ -457,6 +463,89 @@ Results:
   `400` first, that is not a trigger, and the 400 is passed through. This is emulator-only.
 * Under the RST DPI simulation it recovers through groups 4 → 5.
 
+### 7.3.1 Smart mode layout (default since `settingsVersion` 2)
+
+`AppSettings.smartMode` (default on, "Akıllı mod" in Ayarlar → GENEL) changes only the TCP part:
+the first TCP group applies **no desync**, and the selected method becomes the first fallback.
+With smart mode off, `ByeDpiArgs` emits exactly the §7.3 layout (unit-tested).
+
+```
+<base, --redirect, --deny-net, --drop-udp, voice UDP groups: unchanged>
+--proto=tls,http                                                   (direct group: scope only, static)
+--auto=torst,ssl_err <selected method's TCP group (7.1)> --cache-ttl 3600
+[autoFallback, per ISP method not equal to an earlier group]
+--auto=torst,ssl_err <its TCP group> --cache-ttl 3600
+--timeout 4:0:0:1                                                  (whenever >= 1 fallback group)
+```
+
+Literal example (`SMART_LAYOUT` in `tools/native/smoke.py`, `smartModeStartsDirectAndUsesMethodAsFirstFallback`
+in `ByeDpiArgsTest`): the §7.3 example with `--proto=tls,http` inserted before the default group
+and `--auto=torst,ssl_err` in front of it:
+
+```
+... --proto=udp --pf=19294-19344 --udp-fake 6 --ttl 64 --auto=none
+--proto=tls,http
+--auto=torst,ssl_err --proto=tls,http --disorder 2 --split 0+hm --fake -1 --ttl 5 --fake-sni www.w3.org --cache-ttl 3600
+--auto=torst,ssl_err --proto=tls,http --disorder 2 --cache-ttl 3600
+--auto=torst,ssl_err --proto=tls,http --split 2 --split 0+hm --cache-ttl 3600
+--auto=torst,ssl_err --proto=tls,http --tlsrec 3+s --cache-ttl 3600
+--timeout 4:0:0:1
+```
+
+Türk Telekom (`ttl4`, fallbacks on): `--proto=tls,http --auto=torst,ssl_err --proto=tls,http --fake -1
+--ttl 4 --fake-sni www.w3.org --cache-ttl 3600 --auto=torst,ssl_err --proto=tls,http --disorder 2
+--cache-ttl 3600 --auto=… ttl3 … --auto=… default … --timeout 4:0:0:1`. With `autoFallback` off
+only the method group follows the direct group (plus `--timeout`).
+
+Why this is correct in byedpi (code, `extend.c`, and verified below):
+
+* **New connections land in the direct group.** `connect_hook` → `find_dp` takes the first
+  *static* group whose `check_l34` passes; the voice groups fail it for TCP and are added to
+  `dp_mask`; auto groups are never picked for a new connection (§2.1.3). At the first request
+  `setup_conn` → `find_dp` checks `--proto`: a ClientHello / HTTP request stays in the direct
+  group; anything else walks on to the auto-appended catch-all (every `--auto` group has
+  `--proto`), exactly as before.
+* **An empty group sends the request unchanged.** `desync()` with `parts_n == 0` writes the
+  buffer as is (smoke: `desync TCP: group=3` and no `save:` for example.com, www.google.com and
+  plain HTTP; HTTP now returns 200 on the emulator instead of the fake-caused 400).
+* **The chain rule of §2.1.4 still holds**: the fallbacks follow the direct group directly and
+  nothing static sits between them. `on_trigger` walks from the head: the voice groups and the
+  direct group are in `dp_mask` (tried/skipped), so the first untried group whose mask matches the
+  trigger is the method group.
+* **The replay is transparent.** Any detect flag sets `auto_reconnect`, so `tcp_recv_hook` keeps
+  the client's first request (up to `-b` = 16384 bytes, also across several reads) in `sq_buff`
+  until the server answers. `on_torst`/`on_response` → `on_trigger` → `reconnect()` copies it back
+  into the client buffer, opens a new upstream socket with the next group and resends it; the app
+  sees one connection. After the server has answered (DPI RST after the ServerHello) there is
+  nothing to replay: that connection fails and the cache moves the next one (B7 still requires
+  round 1).
+* **`--timeout`** is armed by `setup_conn` because the direct group's `next` has `DETECT_TORST`
+  (patch B7), so a silently dropped ClientHello costs 4 s once. It is removed as soon as the
+  server sends a byte (`:1`), and never armed for server-first protocols.
+* **Cache**: the working group is stored per destination IP:port (`cache_add` in `on_trigger`) for
+  the method group's `--cache-ttl` (1 h); later connections start in it (`connect_hook` →
+  `cache_get`), unblocked IPs never get an entry. "unreach" (every group failed) resets the entry
+  to the head, so the next connection starts direct again.
+* **Group count** grows by one (≤ 3 voice + 1 direct + 1 method + ≤ 3 ISP alternatives +
+  catch-all = 9 ≪ 64).
+
+Trade-offs (documented to the user in README "Sorun giderme"):
+
+* Only `torst` and `ssl_err` detect a block. A DPI that answers a blocked plain-HTTP request with
+  its own warning page (200/302) is not detected; `redirect` stays off for the reason in §7.3.
+  Turkish blocking of HTTPS is by RST (dev machine, desktop live tests) or silent drop.
+* A blocked host costs one replay (RST: one extra TCP handshake; measured on the emulator, the
+  first blocked request is within ~0.5 s of the cached ones) or 4 s (silent drop: first request
+  7.7 s vs 0.9 s cached, including the probe's cold start) once per IP:port per hour and per
+  engine run.
+* **No built-in "never desync" host list.** byedpi could do it (`check_host` matches `--hosts`
+  against the TLS SNI / HTTP Host in `setup_conn`, so it works with hev's IP-only CONNECTs), but
+  the direct group already leaves unblocked hosts alone, and an exemption group must be static,
+  which *ends* the fallback chain (`on_trigger` stops at the first untried static group →
+  "unreach"): a future block of an exempted service (YouTube was blocked in Turkey 2008-2010)
+  could then not be bypassed at all. It would also be bypassed for any IP already cached by
+  another SNI (the cache is per IP:port, `find_dp` starts at the cached group).
+
 ### 7.4 Why the ISP lists recommend a fake method first (wave 3)
 
 * The desktop "Ters sıra" is zapret multidisorder pos=2 **with seqovl=1**: the tail segment is sent
@@ -479,6 +568,12 @@ Results:
   fake → `ssl_err` (TLS 1.3 by session id, TLS 1.2 by patch B7) → next method on the next connection.
 * Unverified: the efficacy of every mapping on real Turkish networks (the emulator's slirp NAT
   re-originates TCP, and the host already runs the desktop bypass).
+* The "server closer than the TTL" case was only covered after the fact by `ssl_err`: a user
+  could not use Google search. On the emulator www.google.com answers the `ttl4` fake (2.9 KB
+  server flight, `save: id=1`) and v1.0.0 only recovered by replaying with `disorder`; with
+  `autoFallback` off, or when the next methods are fakes too / blocked, the site stays broken.
+  Since smart mode (§7.3.1) the fake is only ever sent to a host whose direct connection was
+  reset / timed out / not answered, so unblocked nearby servers never see it.
 
 ## 8. Restartability and leaks (verified)
 
@@ -556,6 +651,41 @@ Measurements:
    * Before the B7 `ssl_err` extension a fake-to-near-TLS-1.2-server case was also reproduced with Windows curl
      (schannel `-k`) against `openssl s_server -tls1_2`: all three attempts failed with no fallback;
      after: first attempt fails, the next two return 200 through the cached fallback.
+
+6. **Smart mode (§7.3.1), emulator-5556 (`gdpi_r`), 2026-09-30.**
+   * `smoke.py --apk <debug apk>`: new rows `smart layout argv+up`, `smart layout example.com /
+     www.google.com / example.com (http)` (200/0.6 s, 200/1.5 s, 200/0.6 s), `smart layout: direct
+     group only` (`groups ['3'] saves []`), `rst: smart layout recovers + cache` (see §5); all
+     earlier rows unchanged. Total 93 checks, 0 FAIL, 8 EXPECTED (the fake presets), 13/13 JNI,
+     restart_test 589 + ASan 586 checks.
+   * App through the VPN (`:probe`, HttpURLConnection, Yandex DNS; slirp delivers every fake, like
+     a server closer than the fake TTL):
+     * v1.0.0 argv (`smartMode=false`), Genel/`default`, no fallback: www.google.com/search,
+       youtube.com, example.com, discord.com all fail (RST / decode_error alert), 3/3 runs.
+     * Every preset, `autoFallback` off (Google search / YouTube / example.com): smart mode off →
+       all 8 fake presets (`default fixedttl ttl4 ttl3 md5sig md5ttl3 fakesplit5 zerofake`) fail
+       all three ("Connection reset"), the 4 non-fake ones pass; smart mode on → all 12 presets
+       200 on all three.
+     * v1.0.0 argv, Türk Telekom/`ttl4` with fallbacks: Google 200 in 1.2-3.1 s, but only via
+       replay (ciadpi `-x 1`: group 0 `save: id=1` after the server answered the fake with
+       2.9 KB, then group 1 `disorder`); smart layout: only group 0 (direct), 1.0-1.1 s vs 2.3 s
+       for the first request. discord.com failed 6/6 (~20 s): the fake was answered
+       (`ssl_err`), and the dev host's own line resets discord.com for `disorder`/`default`
+       (the direct path works there only because the host runs the desktop bypass), so the
+       chain ended "unreach" — a mixed case, not a pure near-server one.
+     * smart mode, same settings: google.com/search and discord.com 200 6/6 (1.2-1.9 s); every
+       ISP preset tried (Genel `default` with and without fallbacks, TT `ttl4`) 200 on all four
+       sites.
+     * Simulated DPI on the upstream side only (`iptables -I OUTPUT ! -o tun+ -p tcp --dport 443
+       -m string --string example.com --algo bm -j REJECT --reject-with tcp-reset`, or `-j DROP`;
+       it matches an unsplit ClientHello like a non-reassembling DPI): smart + `disorder` (SNI
+       still in one segment), no ISP fallbacks: example.com "Connection reset" 2/2 (so the direct
+       group really is blocked) while Google stays 200; smart + `tlsrec`, no ISP fallbacks:
+       example.com 200 5/5, Google 200 5/5. RST: first request 2.2 s, then 0.8-1.05 s from the
+       cache (Google's first request in the same run: 2.4 s vs 1.6 s, i.e. ~0.7 s of the first
+       is the probe's cold start). DROP: first 7.3 s (4 s `--timeout`), then 0.8-1.06 s. The same
+       with `discord.com` as the string and Genel fallbacks: 200 4/4, first request 0.68 s in a
+       parallel run (example.com 0.60 s).
 
 ## 10. Known limitations / decisions
 

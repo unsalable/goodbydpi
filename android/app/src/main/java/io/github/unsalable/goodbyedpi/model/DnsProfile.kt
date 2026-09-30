@@ -47,6 +47,15 @@ data class DnsProfile(
         const val OFF_ID = "off"
 
         /**
+         * Yeni kurulumun ve bilinmeyen/silinmis secimlerin DNS'i. Yandex: Turk ISS'leri 53.
+         * portu kaciriyor (Cloudflare:53 de ISS'in cevabini alir, engelli sitelerde zehirli);
+         * 1253 standart disi port oldugu icin kurtulur. Masaustunun varsayilani Cloudflare
+         * kaldi; telefonda saglayici secmeden (Genel) baslayan kullanici engelli sitelerde
+         * zehirli cevapla kalmasin diye burada Yandex.
+         */
+        const val DEFAULT_ID = YANDEX_ID
+
+        /**
          * Cloudflare yalnizca 53. portta hizmet verir. Hizli ve gizlilik dostudur ama
          * ISS 53. portu kaciriyorsa yonlendirme etkisiz kalir.
          */
@@ -83,12 +92,16 @@ data class DnsProfile(
         @JvmField
         val builtIn: List<DnsProfile> = listOf(Cloudflare, Yandex, Off)
 
+        /** [DEFAULT_ID]'nin profili. */
+        @JvmField
+        val Default: DnsProfile = Yandex
+
         /**
          * Kimlige gore yerlesik profili bulur. Kullanicinin kendi girdigi sunucular ayar
          * dosyasindaki listede tutuldugu icin onlari cagiran taraf cozer (Selection.selectedDns).
          */
         fun fromId(id: String?): DnsProfile =
-            builtIn.firstOrNull { it.id.equals(id, ignoreCase = true) } ?: Cloudflare
+            builtIn.firstOrNull { it.id.equals(id, ignoreCase = true) } ?: Default
 
         /** Kullanicinin girdigi adres/porttan adlandirilmis bir "Ozel" profil olusturur. */
         fun createCustom(
