@@ -6,6 +6,7 @@ import io.github.unsalable.goodbyedpi.service.Ipv6Status
 import io.github.unsalable.goodbyedpi.ui.MainViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetAddress
@@ -191,6 +192,10 @@ class DiagReportTest {
         // Motor uzerinden (secili DNS) 0 AAAA gercekten kayit yok demek.
         val viaEngine = g.copy(dns = DnsInfo(8, 0, DnsSource.SELECTED))
         assertTrue(ConnTestText.parts(viaEngine, null, true).joinToString("") { it.text }.endsWith("IPv6: kayıt yok"))
+        // Aciklama satirlarda degil listede bir kez; motor uzerinden testte yok.
+        assertEquals(ConnTestText.V6_NOT_ASKED_NOTE, ConnTestText.notAskedNote(listOf(g, g), viaProxy = false))
+        assertNull(ConnTestText.notAskedNote(listOf(viaEngine), viaProxy = true))
+        assertNull(ConnTestText.notAskedNote(listOf(g.copy(v6 = FamilyResult(true, 30))), viaProxy = false))
     }
 
     @Test
@@ -220,5 +225,19 @@ class DiagReportTest {
         assertEquals("one.one.one.one", AddressKinds.redactHostname("one.one.one.one"))
         assertEquals("dns.adguard-dns.com", AddressKinds.redactHostname("dns.adguard-dns.com"))
         assertEquals("family.adguard-dns.com", AddressKinds.redactHostname("family.adguard-dns.com"))
+        assertEquals("dns.quad9.net", AddressKinds.redactHostname("DNS.Quad9.net."))
+        assertEquals("p2.freedns.controld.com", AddressKinds.redactHostname("p2.freedns.controld.com"))
+        assertEquals("*.*.adguard-dns.com", AddressKinds.redactHostname("a1b2c3.d.adguard-dns.com"))
+    }
+
+    @Test
+    fun privateDnsHostnameHidesUnknownServersEntirely() {
+        // Kendi DoT sunucusu: ilk etiket genel ("dns") olsa da alan adi kisinin kendisi.
+        assertEquals(AddressKinds.HIDDEN_HOST, AddressKinds.redactHostname("dns.ahmetyilmaz.dev"))
+        assertEquals(AddressKinds.HIDDEN_HOST, AddressKinds.redactHostname("ahmetyilmaz.duckdns.org"))
+        assertEquals(AddressKinds.HIDDEN_HOST, AddressKinds.redactHostname("ahmetyilmaz.net"))
+        assertEquals(AddressKinds.HIDDEN_HOST, AddressKinds.redactHostname("localhost"))
+        // Saglayici adi baska bir alanin icinde gecse de (sonek degil) gizlenir.
+        assertEquals(AddressKinds.HIDDEN_HOST, AddressKinds.redactHostname("dns.google.ahmet.dev"))
     }
 }

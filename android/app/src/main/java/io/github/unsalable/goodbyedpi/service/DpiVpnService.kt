@@ -489,11 +489,20 @@ class DpiVpnService : VpnService() {
         // IPv6 ayari acilinca deneme baslasin (kapaliyken hic denenmez), durum satiri tazelensin.
         // maybeRefreshTun: tun ayarla uyussun diye ikinci guvence (yukaridaki gozlemci zaten
         // yeniler); restart(force=false) ayni yapilandirmada hicbir sey yapmadigi icin cift is yok.
+        // Debounce yok: bu gozlemci yukaridakinden (400 ms) once calisir, underlyingV6 orada
+        // kullanilmadan duzelir.
         scope.launch {
+            var previous: Boolean? = null
             settings.settings
                 .map { it.ipv6 }
                 .distinctUntilChanged()
-                .collect {
+                .collect { on ->
+                    // Kapaliyken deneme yapilmaz, basari bayatlar ama underlyingV6 onunla true
+                    // kalir. Ayar yeniden acilinca ona guvenmek, taze deneme surerken tun'a IPv6
+                    // verirdi (IPv6 bu arada bozulduysa Chrome/YouTube RST alir, sonra ikinci bir
+                    // yenileme). Yeni baslatmadaki kural: bayat basari yokmus gibi, IPv4'le beklenir.
+                    if (previous == false && on) distrustStaleSuccess(v6Key)
+                    previous = on
                     evaluateIpv6()
                     maybeRefreshTun()
                 }
@@ -654,8 +663,11 @@ class DpiVpnService : VpnService() {
     /**
      * Tun'un yenilenmesi gerekiyorsa NETWORK_SETTLE_MS sonra (ag gecisinde bilgiler birkac geri
      * cagiriyla parca parca geliyor) restart(force=false): tunKey degistigi icin tun yerinde
-     * yenilenir. Deneme surerken yenilenmez; sonucu gelince burasi yeniden cagrilir. Boylece
-     * bir gecis en cok bir yenileme: once IPv4'e, sonra IPv6'ya iki kez yenilenmez.
+     * yenilenir. IPv6'yi ACMAK icin deneme beklenir (sonucu gelince burasi yeniden cagrilir):
+     * IPv4'teki tun gecis basina en cok bir kez yenilenir. IPv6'yi KAPATMAK beklemez: tun IPv6
+     * sunarken denemesi bitmemis yeni bir aga (ornek: adresi/yolu olan ama IPv6 cikisi bozuk
+     * mobil veri) gecildiyse deneme boyunca (~5-6 sn) Chrome/YouTube IPv6'dan RST alirdi, 1.0.1
+     * belirtisi. Bedeli: yeni agin IPv6'si calisiyorsa bir ek yenileme.
      */
     private fun maybeRefreshTun() {
         val running = engine.runningConfig ?: return
@@ -664,7 +676,8 @@ class DpiVpnService : VpnService() {
         netRestartJob = scope.launch {
             delay(NETWORK_SETTLE_MS)
             val cfg = engine.runningConfig ?: return@launch
-            if (probePendingForCurrent()) return@launch
+            val v6Off = cfg.ipv6 && v6Differs(cfg)
+            if (probePendingForCurrent() && !v6Off) return@launch
             if (v6Differs(cfg)) {
                 Log.i(TAG, "ipv6: tun ${cfg.ipv6} -> ${!cfg.ipv6}, tun yerinde yenileniyor")
                 restart(force = false)
@@ -704,7 +717,10 @@ class DpiVpnService : VpnService() {
         val gate = link.gate
         val key = if (gate) ProbeKey(net, link.global) else null
         val now = SystemClock.elapsedRealtime()
-        // Bayat basari (PROBE_OK_TTL_MS) karar icin gecerli kalir; yeniden deneme arka planda.
+        // Ayni agda bayat basari (PROBE_OK_TTL_MS) karar icin gecerli kalir; yeniden deneme arka
+        // planda. Baska bir agdan gecildiyse (Wi-Fi -> mobil -> Wi-Fi, 10 dk'dan uzun) ona
+        // guvenilmez: yeni baslatmadaki gibi taze deneme beklenir, o zamana kadar IPv4.
+        if (key != null && net != v6Network) probeCache.dropStale(key, now)
         val cached = key?.let { probeCache.get(it, now) }
         if (key != null && settings.current.ipv6 && probeCache.needsProbe(key, now)) startProbe(net, key)
         val next = Ipv6Gate.decide(gate, cached?.ok, sameNetwork = net == v6Network, current = underlyingV6)
@@ -740,7 +756,7 @@ class DpiVpnService : VpnService() {
             // Yeni baglantida bayat basariya guvenilmez (kapaliyken IPv6 bozulmus olabilir):
             // sonuc yokmus gibi taze deneme beklenir, yetismezse IPv4 ile baslanir.
             val now = SystemClock.elapsedRealtime()
-            if (probeCache.isStale(key, now)) probeCache.remove(key)
+            probeCache.dropStale(key, now)
             if (probeCache.get(key, now) == null) {
                 val pending = startProbe(net, key)
                 val r = runBlocking { withTimeoutOrNull(START_PROBE_WAIT_MS) { pending.await() } }
@@ -772,10 +788,24 @@ class DpiVpnService : VpnService() {
     }
 
     private fun recordProbe(key: ProbeKey, r: Ipv6Probe.Result) {
-        if (probesRunning.remove(key) != null) {
-            Log.i(TAG, "ipv6: deneme ${if (r.ok) "gecti" else "basarisiz"} (${r.detail})")
+        val wasRunning = probesRunning.remove(key) != null
+        val stored = probeCache.put(key, r, SystemClock.elapsedRealtime())
+        if (wasRunning) {
+            // Basarinin ustune tek basarisizlik yazilmaz (Ipv6ProbeCache.confirmFails): saglik
+            // dongusu (~20 sn) yeniden dener, ikinci kez de basarisizsa IPv6 kapanir.
+            val what = if (r.ok) "gecti" else if (stored) "basarisiz" else "basarisiz, dogrulanacak"
+            Log.i(TAG, "ipv6: deneme $what (${r.detail})")
         }
-        probeCache.put(key, r, SystemClock.elapsedRealtime())
+    }
+
+    /**
+     * Bayat basariya guvenme: atilir ve karar false'a cekilir (sonuc yokken Ipv6Gate.decide ayni
+     * agda eski degeri korurdu). Taze deneme gecince tun bir kez IPv6'ya yenilenir.
+     */
+    private fun distrustStaleSuccess(key: ProbeKey?) {
+        if (key == null || !probeCache.dropStale(key, SystemClock.elapsedRealtime())) return
+        Log.i(TAG, "ipv6: bayat basari atildi, taze deneme beklenecek")
+        underlyingV6 = false
     }
 
     private fun onProbeDone(key: ProbeKey, r: Ipv6Probe.Result) {
@@ -796,13 +826,18 @@ class DpiVpnService : VpnService() {
     private fun publishIpv6() {
         val key = v6Key
         val result = key?.let { probeCache.peek(it) }
-        val pending = key != null && result == null && probesRunning.containsKey(key)
+        val running = key != null && probesRunning.containsKey(key)
         val st = Ipv6Status(
             setting = settings.current.ipv6,
             underlyingGlobal = v6Link.global.isNotEmpty(),
             underlyingDefaultRoute = v6Link.defaultRoute,
             probeOk = result?.ok,
-            probeDetail = result?.detail ?: if (pending) "deneniyor" else null,
+            // Eski sonucun ustune suren deneme (bayat basarinin tazelenmesi) raporda da gorunsun.
+            probeDetail = when {
+                result == null -> if (running) "deneniyor" else null
+                running -> "${result.detail}; yeniden deneniyor"
+                else -> result.detail
+            },
             tunV6 = engine.runningConfig?.ipv6 == true,
         )
         Ipv6StatusHolder.set(st)

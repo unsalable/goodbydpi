@@ -99,7 +99,8 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   çıkabiliyorsa kullanır; altındaki "Şu an: …" satırı o anki durumu gösterir (ağda IPv6 yok /
   IPv6 etkin / ağda IPv6 var ama çalışmıyor). Ağ değişince (Wi-Fi ↔ mobil veri) bağlantı
   kendiliğinden, kopmadan uyarlanır; IPv6 aynı ağda sonradan bozulursa da en geç 10 dakika içinde
-  fark edilip kapatılır. Yine de Google veya YouTube açılmıyorsa bu anahtarı kapatıp
+  fark edilip kapatılır (tek bir başarısız deneme yetmez, ~20 sn sonra tekrarlanması gerekir:
+  asansörde kısa bir sinyal kaybı bağlantıları koparmasın). Yine de Google veya YouTube açılmıyorsa bu anahtarı kapatıp
   deneyin. Google "olağan dışı trafik / robot değilim" sayfası gösteriyorsa bu genelde
   operatörün paylaşılan IP adresinden kaynaklanır (VPN kapalıyken de çıkar); uçak modunu açıp
   kapatmak yeni bir IP verir.
@@ -141,8 +142,8 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
     anlamına gelmez (test tek ve çerezsiz bir istek); tarayıcıda "robot değilim" sayfası
     görüyorsanız neden yine aynıdır.
   * Bağlantı kapalıyken test doğrudan yapılır (motor olmadan); atlatmayı ölçmek için önce bağlanın.
-    Bu durumda IPv6'sız ağda `IPv6: bilinmiyor` görünür: sistem, ağda IPv6 yoksa sitelerin IPv6
-    adresini hiç sormaz.
+    Bu durumda IPv6'sız ağda `IPv6: bilinmiyor` görünür (listenin altında bir kez açıklanır):
+    sistem, ağda IPv6 yoksa sitelerin IPv6 adresini hiç sormaz.
 
   Tarayıcıda discord.com, roblox.com ve bildiğiniz başka engelli siteler; Discord uygulamasında
   bir sesli kanal. example.com engelsizdir: o da açılmıyorsa sorun bağlantının kendisindedir.
@@ -162,7 +163,8 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   HAKKINDA → **Tanılama** → **Kopyala** ile raporu ekleyin. Rapor: uygulama ve Android sürümü,
   cihaz modeli, ağ türü (Mobil veri / Wi-Fi) ve operatör adı, bağlı ağın adres **türleri** (ör.
   "IPv4 CGNAT", "IPv6 küresel"; IP adresleri yazılmaz), ağda IPv6 varsayılan yolu, Özel DNS
-  durumu (kişisel profil adreslerinin kimlik kısmı `*` ile gizlenir), tünelin IPv6 durumu (ayar,
+  durumu (bilinen sağlayıcıların kişisel profil adreslerinde kimlik kısmı `*` ile, kendi
+  sunucunuzun adı tümüyle gizlenir), tünelin IPv6 durumu (ayar,
   ağdaki IPv6, erişim denemesi, tünelde IPv6 açık mı), sağlayıcı / yöntem / akıllı mod /
   otomatik yedek / DNS, motorun çalışan komut satırı (kendi girdiğiniz DNS sunucusunun adresi
   `<özel-DNS>` olarak gizlenir) ve son bağlantı testinin site site, IPv4 / IPv6 ayrı sonuçları
@@ -239,6 +241,13 @@ Dosya yoksa derleme bozulmaz ama hata ayıklama anahtarıyla imzalanır (böyle 
 * `:probe` modülü — VPN'in içinden HTTP/DNS/UDP/QUIC, `tcp` (adres sırası + sırayla bağlanma)
   ve `web` (WebView = Chromium ağ yığını) ölçen yardımcı uygulama (dağıtılmaz);
   kullanım `probe/src/main/java/.../ProbeActivity.kt` başındaki açıklamada.
+* Hata ayıklama derlemesinde `DebugIpv6Receiver` IPv6 erişim denemesini zorlar (`--es probe
+  pass|fail|real`, `--es ipv6 on|off`). Emülatörde yalnızca fec0 adresi olduğundan tünelde IPv6
+  açık yolu otomatik testle sınanamaz; elle (adb root): `adb shell ip -6 addr add
+  2001:db8:77::5/64 dev wlan0`, bağlan, `--es probe pass` → logcat'te `ipv6: … tun=true`;
+  `--es ipv6 off` ~1,5 sn içinde `tun=false` yapmalı, `--es ipv6 on` geri açmalı; `--es probe
+  fail` → `tun=false`; sonda `--es probe real` ve `ip -6 addr del 2001:db8:77::5/64 dev wlan0`
+  (ayrıntı docs/SPEC.md §8).
 * Hata ayıklama derlemesinde `DebugUpdateReceiver` güncelleyiciyi adb'den sürer
   (`--es cmd check|open|bg|install|conntest ...`, ayrıntı dosyanın başında). Gerçek periyodik
   iş: `adb shell cmd jobscheduler run -f <paket> 4201`.

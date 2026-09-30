@@ -1122,6 +1122,9 @@ private fun ConnectionTestSection(vm: MainViewModel) {
                         modifier = Modifier.padding(bottom = 4.dp),
                     )
                     test.results.forEach { r -> ConnTestRow(r, test) }
+                    ConnTestText.notAskedNote(test.results, test.viaProxy)?.let {
+                        Text(it, style = GdpiType.optionHint, color = c.muted, modifier = Modifier.padding(top = 6.dp))
+                    }
                 }
                 Text(
                     "Sorun bildirirken HAKKINDA → Tanılama → Kopyala ile raporu ekleyin; test sonuçları da rapora girer.",

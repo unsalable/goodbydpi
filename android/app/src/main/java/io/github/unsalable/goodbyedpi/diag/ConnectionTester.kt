@@ -477,8 +477,12 @@ object ConnectionTester {
 
     /**
      * Tani raporu icin hatanin teknik ozeti: istisna siniflari, errno adi (ECONNRESET ...) ve
-     * vekilin SOCKS cevabi ("SOCKS: Network unreachable"). Mesajin geri kalani yazilmaz: IP adresi
-     * icerebilir ve rapor paylasiliyor.
+     * vekilin SOCKS cevabi ("SOCKS: ağa ulaşılamıyor / network unreachable"). Mesajin geri kalani
+     * yazilmaz: IP adresi icerebilir ve rapor paylasiliyor.
+     *
+     * SOCKS cevaplari JDK'nin Ingilizce metinleri; rapor Turkce oldugu icin bilinenler Turkceye
+     * cevrilir, Ingilizce anahtar sozcuk arama/kiyaslama icin yaninda kalir. Sinif adlari ve errno
+     * bilerek cevrilmez (teknik ayrinti, gelistirici icin).
      */
     fun errorDetail(e: Throwable): String {
         val chain = generateSequence(e) { it.cause }.take(MAX_CAUSES).toList()
@@ -487,7 +491,7 @@ object ConnectionTester {
         val errno = messages.firstNotNullOfOrNull { ERRNO_RE.find(it)?.value }
         // Vekilin cevabi ya da rakamsiz kisa bir mesaj ("Malformed reply from SOCKS server"):
         // rakam iceren mesajlar adres/port tasiyabilir, yazilmaz.
-        val hint = messages.firstNotNullOfOrNull { m -> SOCKS_RE.find(m)?.let { "SOCKS: " + it.groupValues[1].trim() } }
+        val hint = messages.firstNotNullOfOrNull(::socksReply)
             ?: messages.firstOrNull { m -> m.isNotBlank() && m.length <= 80 && m.none { it.isDigit() } }?.trim()
         return buildString {
             append(names.joinToString("/"))
@@ -498,6 +502,28 @@ object ConnectionTester {
 
     private val ERRNO_RE = Regex("""\bE[A-Z]{3,}\b""")
     private val SOCKS_RE = Regex("""SOCKS\s*:\s*([A-Za-z ]{3,40})""")
+
+    /** Vekilin cevabi, Turkce + Ingilizce anahtar; SOCKS'la ilgisi yoksa null. */
+    internal fun socksReply(message: String): String? {
+        val m = message.lowercase()
+        if (!m.contains("socks")) return null
+        SOCKS_REPLIES.firstOrNull { (en, _) -> m.contains(en) }?.let { (en, tr) -> return "SOCKS: $tr / $en" }
+        // Bilinmeyen cevap: eskisi gibi ozgun metin (rakamsiz kisa kalip).
+        return SOCKS_RE.find(message)?.let { "SOCKS: " + it.groupValues[1].trim() }
+    }
+
+    // JDK SocksSocketImpl'in RFC 1928 cevap metinleri (+ bozuk cevap). Sira onemli: ozelden genele.
+    private val SOCKS_REPLIES = listOf(
+        "general failure" to "vekil hedefe bağlanamadı",
+        "not allowed" to "vekil izin vermedi",
+        "network unreachable" to "ağa ulaşılamıyor",
+        "host unreachable" to "hedefe ulaşılamıyor",
+        "connection refused" to "bağlantı reddedildi",
+        "ttl expired" to "süre (TTL) doldu",
+        "address type not supported" to "adres türü desteklenmiyor",
+        "command not supported" to "komut desteklenmiyor",
+        "malformed reply" to "vekilden bozuk cevap",
+    )
 
     private const val OVERALL_SLACK_MS = 2_000L
 

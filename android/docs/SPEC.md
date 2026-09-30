@@ -452,14 +452,23 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
     Cached per network + global address set (`Ipv6ProbeCache`): a failure is dropped after 5 min
     and retried by the health loop (the old `false` holds meanwhile); a success goes stale after
     10 min and is re-probed in the background while IPv6 stays on (so a v6 upstream that breaks
-    later with addresses/route intact is turned off within ~10 min instead of never). A new start
-    does not trust a stale success: it waits up to 2 s for a fresh probe like a first start. Re-run
-    when `onAvailable` / `onLinkPropertiesChanged` changes the address set. Runs only while the
-    setting is on;
+    later with addresses/route intact is turned off within ~10 min instead of never). A failure on
+    top of a success is stored only when it repeats (`confirmFails` = 2, the second probe comes
+    from the next health tick, ~20 s): with a single failure a 5 s signal dip on a working
+    dual-stack network cost two full engine swaps (v6 off, then on 5 min later), each dropping
+    every connection. With no earlier success (new network, new start) one failure counts at once
+    (fail closed). A stale success is trusted only on the network it was measured on; it is
+    dropped (fresh probe, IPv4 until it passes) on a new start (waits up to 2 s like a first
+    start), on a switch from another network, and when the setting goes off -> on (while the
+    setting is off nothing is probed, so the success only ages). Re-run when `onAvailable` /
+    `onLinkPropertiesChanged` changes the address set. Runs only while the setting is on;
   * effective `EngineConfig.ipv6` = setting && gate && probe (`withUnderlyingV6`), used for the tun,
     hev YAML, the v6 `--redirect` and `tunKey`. When it flips the tun is rebuilt in place (1 s settle,
-    never while the probe for the current network is still running, never on `onLost`), so a network
-    switch costs at most one rebuild;
+    never on `onLost`). Turning IPv6 **on** waits for the current network's probe (an IPv4 tun is
+    rebuilt at most once per switch); turning it **off** does not wait: a tun that offers IPv6 on a
+    new network whose probe is still running (address + route but a broken v6 upstream) would
+    give Chrome/YouTube RSTs for the ~5-6 s the probe takes. Cost: one extra rebuild when the new
+    network's IPv6 works;
   * start seeds `false`; if the network looks IPv6-capable the first start waits up to 2 s for the probe,
     otherwise it starts IPv4-only and rebuilds once the probe passes;
   * when on, the tun address is the global-scope `2001:db8:6764:7069::1` (documentation prefix, never a
@@ -471,7 +480,14 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   * `Ipv6StatusHolder` publishes setting / gate parts / probe / tun state for the settings row ("Şu an:
     …") and diagnostics. There is deliberately no "force IPv6" option. Debug builds only:
     `DebugIpv6Receiver` (`--es probe pass|fail|real`) forces the probe result and
-    (`--es ipv6 on|off`) writes the setting like the switch, for emulator tests;
+    (`--es ipv6 on|off`) writes the setting like the switch, for emulator tests. The emulator
+    only has fec0 addresses, so the gate stays closed and no instrumented test reaches
+    `tunV6=true`; the IPv6-tun path is checked by hand (debug build, adb root):
+    `adb shell ip -6 addr add 2001:db8:77::5/64 dev wlan0`, connect, `am broadcast -n
+    <pkg>/io.github.unsalable.goodbyedpi.service.DebugIpv6Receiver --es probe pass` -> logcat
+    `ipv6: ... tun=true` and `ip -6 addr` shows `2001:db8:6764:7069::1` on the tun; then `--es ipv6
+    off` -> `tun=false` within ~1.5 s (the fa74257 regression) and `--es ipv6 on` -> back; `--es
+    probe fail` -> `tun=false`; finally `--es probe real` and `ip -6 addr del ...`;
   * the settings observer compares the **un-narrowed** config (`EngineConfig.settingsChanges`) and
     narrows with `withUnderlyingV6` only when applying. It used to narrow inside the flow: the first
     value was stored narrowed to `false` before the probe finished, so after the probe opened IPv6 the
@@ -670,8 +686,9 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   has not reported `Ipv6StatusHolder` yet (unknown = assume offered); when the tun does not offer
   IPv6 it reads "kullanılmıyor (ağda IPv6 yok / IPv6 ayarı kapalı / …)" in grey without ✗ (the
   exception summary stays in the report); a grey ✗ in a direct test. In a direct test a system
-  resolver answer with 0 AAAA shows "bilinmiyor (ağda IPv6 yoksa sistem AAAA sormaz)", not "kayıt
-  yok": Android's resolver does not ask AAAA on a network without IPv6.
+  resolver answer with 0 AAAA shows "bilinmiyor", not "kayıt yok": Android's resolver does not ask
+  AAAA on a network without IPv6. The explanation is shown once under the list
+  (`ConnTestText.notAskedNote`), not on every row (it wrapped all six rows to two lines).
   Google is checked with `GET /search?q=test` (429 or a 3xx to `/sorry/` = "robot doğrulaması",
   still reachable), YouTube with `GET /generate_204` (only 204 passes); others accept any status.
   Browser User-Agent and Accept-Language, since Google serves captchas to obvious bots more
@@ -684,15 +701,20 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   the underlying network's address
   *kinds* (global / ULA / CGNAT / 464XLAT…, never the addresses; `activeNetwork` is the
   underlying network because our uid is excluded from the VPN) and v6 default route, Private DNS
-  (API 28+; the leftmost label of a 3+ label hostname is shown as `*` unless it is a generic word
-  like `dns`/`family`, since personal profiles such as `<id>.dns.nextdns.io` carry an account ID),
+  (API 28+; only a known public provider's domain is kept (dns.google, Cloudflare, AdGuard,
+  NextDNS, Control D, Quad9, Mullvad, ...) and each label left of it becomes `*` unless it is a
+  generic word like `dns`/`family`, since personal profiles such as `<id>.dns.nextdns.io` carry
+  an account ID; any other hostname, e.g. a self-hosted `dns.<name>.dev`, is shown as
+  `<kişisel ad, gizlendi>`),
   the tun's address kinds, `Ipv6Status`, the remaining settings, the engine section
   (argv; a custom DNS server's address in `--redirect` becomes `<özel-DNS>`, the built-in
   presets' addresses stay; when disconnected the argv is not narrowed by the IPv6 gate, so a note
   says the IPv6 part is dropped on a network without working IPv6) and the last test's per-family
   lines with DNS counts, HTTP status and an exception
-  summary (class names, errno, SOCKS reply; messages with digits are dropped, `probeDetail` is
-  IP-redacted). The card scrolls; Kopyala stays visible.
+  summary (class names, errno, SOCKS reply; known SOCKS replies are Turkish with the English
+  key kept, e.g. `SOCKS: vekil hedefe bağlanamadı / general failure`; messages with digits are
+  dropped, `probeDetail` is IP-redacted). When disconnected the argv's `-p` reads
+  `<bağlanınca-seçilir>` (the port is picked at connect; `0` looked like a misconfiguration). The card scrolls; Kopyala stays visible.
 
 ### Updates (§5)
 

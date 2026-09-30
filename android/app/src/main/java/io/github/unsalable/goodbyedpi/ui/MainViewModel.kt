@@ -464,7 +464,10 @@ class MainViewModel(
                 } else {
                     val cfg = EngineConfig.from(s)
                     appendLine(if (running != null) "Şu anki ayarlarla komut:" else "Bağlı değil; bağlanınca çalışacak komut:")
-                    appendLine(formatArgv(redactCustomDns(ByeDpiArgs.build(cfg))))
+                    // Port baglanirken bos bir port olarak secilir; ayarlardaki 0 raporda yanlis
+                    // yapilandirma gibi okunuyordu. Motor calisiyorsa (argv'si bos) kendi portu.
+                    val port = running?.socksPort?.toString() ?: PORT_AT_CONNECT
+                    appendLine(formatArgv(withPort(redactCustomDns(ByeDpiArgs.build(cfg)), port)))
                     // Bu komut alttaki aga gore daraltilmamis: servis IPv6'yi ancak baglaninca ag
                     // gercekten IPv6 ile cikabiliyorsa acar (Ipv6Gate). Not olmadan rapor, IPv6'siz
                     // agda hic calismayacak IPv6 DNS yonlendirmesini "calisacak" diye gosteriyordu.
@@ -512,6 +515,11 @@ class MainViewModel(
             DnsProfile.builtIn.flatMap { listOfNotNull(it.v4Addr, it.v6Addr) }.map { it.lowercase() }.toSet()
 
         internal const val CUSTOM_DNS_PLACEHOLDER = "<özel-DNS>"
+
+        internal const val PORT_AT_CONNECT = "<bağlanınca-seçilir>"
+
+        private fun withPort(argv: List<String>, port: String): List<String> =
+            argv.mapIndexed { i, a -> if (i > 0 && argv[i - 1] == "-p") port else a }
 
         /** ByeDpiArgs.describe ile ayni bicim: "ciadpi" + bosluk/tirnak iceren argumanlar tirnakli. */
         internal fun formatArgv(argv: List<String>): String {

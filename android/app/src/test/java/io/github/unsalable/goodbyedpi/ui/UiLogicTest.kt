@@ -155,6 +155,12 @@ class UiLogicTest {
         val off = MainViewModel.diagnosticsText(EngineState.Stopped, s)
         assertTrue(off, off.startsWith("Bağlı değil"))
         assertTrue(off.contains("ciadpi -i 127.0.0.1"))
+        // Port baglanirken secilir: "-p 0" yanlis yapilandirma gibi okunuyordu.
+        assertTrue(off, off.contains("-p ${MainViewModel.PORT_AT_CONNECT} "))
+        assertFalse(off, off.contains("-p 0"))
+        // Calisiyor ama argv bos: calisan port.
+        val noArgv = MainViewModel.diagnosticsText(running.copy(argv = emptyList()), s)
+        assertTrue(noArgv, noArgv.contains("-p 39889 "))
         assertEquals("ciadpi -p 1", MainViewModel.formatArgv(listOf("ciadpi", "-p", "1")))
     }
 

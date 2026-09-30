@@ -46,25 +46,40 @@ object AddressKinds {
     private val IPV6_RE = Regex("""(?<![\w:])[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}(?![\w:])""")
 
     /**
-     * Ozel DNS sunucu adi, rapor icin. Kisisel profil adreslerinin (NextDNS, Control D, AdGuard
-     * kisisel: "<profil-kimligi>.dns.nextdns.io") en soldaki etiketi hesap kimligidir; paylasilan
-     * raporda o hesabi (bazi saglayicilarda kayitlarini) bulunur kilar. Uc ve daha fazla etiketli
-     * adlarda en soldaki etiket bilinen genel bir sozcuk degilse "*" yazilir; saglayici (alan
-     * adinin geri kalani) sorun ayirmak icin yeterli.
+     * Ozel DNS sunucu adi, rapor icin. Yalnizca bilinen genel saglayicilarin alan adi yazilir;
+     * onun solundaki etiketler bilinen genel sozcuklerse ("dns", "family") kalir, degilse "*" olur:
+     * kisisel profil adreslerinin ("<profil-kimligi>.dns.nextdns.io") o etiketi hesap kimligidir
+     * ve paylasilan raporda o hesabi (bazi saglayicilarda kayitlarini) bulunur kilar. Bilinmeyen
+     * her ad tumuyle gizlenir: eskiden yalnizca en soldaki etikete bakiliyordu ve kendi sunucusunu
+     * kullanan birinin "dns.ahmetyilmaz.dev" / "ahmetyilmaz.duckdns.org" adi (kimligi) oldugu gibi
+     * rapora giriyordu. Saglayici adi sorun ayirmak icin yeterli, kisisel ad gerekmiyor.
      */
     fun redactHostname(name: String): String {
-        val labels = name.trim().trimEnd('.').split('.')
-        if (labels.size < 3) return name.trim()
-        val first = labels[0].lowercase()
-        if (first in PUBLIC_LABELS) return name.trim()
-        return (listOf("*") + labels.drop(1)).joinToString(".")
+        val labels = name.trim().trimEnd('.').lowercase().split('.')
+        val provider = PROVIDER_SUFFIXES
+            .filter { suf -> labels.takeLast(suf.size) == suf }
+            .maxByOrNull { it.size }
+            ?: return HIDDEN_HOST
+        val prefix = labels.dropLast(provider.size).map { if (it in PUBLIC_LABELS) it else "*" }
+        return (prefix + provider).joinToString(".")
     }
 
-    /** Genel (kimlik tasimayan) ilk etiketler: dns.adguard-dns.com, one.one.one.one, family... */
+    const val HIDDEN_HOST = "<kişisel ad, gizlendi>"
+
+    /** Bilinen genel DoT saglayicilari (alan adi kimlik tasimaz; kisisel kisim solunda). */
+    private val PROVIDER_SUFFIXES: List<List<String>> = listOf(
+        "dns.google", "one.one.one.one", "cloudflare-dns.com", "adguard-dns.com", "nextdns.io",
+        "controld.com", "quad9.net", "mullvad.net", "cleanbrowsing.org", "opendns.com", "dns.sb",
+        "alidns.com", "dns.yandex.net", "dns0.eu", "libredns.gr", "dnsforge.de", "comss.one",
+    ).map { it.split('.') }
+
+    /** Genel (kimlik tasimayan) etiketler: dns.adguard-dns.com, family.cloudflare-dns.com... */
     private val PUBLIC_LABELS = setOf(
-        "dns", "dns1", "dns2", "doh", "dot", "one", "family", "security", "adblock", "unfiltered",
-        "base", "free", "public", "protected", "private", "common", "cloudflare-dns", "dns-unfiltered",
-        "dns-family", "anycast", "kids", "standard", "default",
+        "dns", "dns1", "dns2", "dns9", "dns10", "dns11", "dns12", "doh", "dot", "one", "family",
+        "security", "adblock", "unfiltered", "base", "free", "freedns", "public", "protected",
+        "private", "common", "cloudflare-dns", "1dot1dot1dot1", "dns-unfiltered", "dns-family",
+        "anycast", "kids", "standard", "default", "extended", "all", "p0", "p1", "p2", "p3",
+        "adult-filter-dns", "family-filter-dns", "security-filter-dns", "safe",
     )
 
     /** Serbest metindeki (hata mesaji vb.) IP adreslerini siler; rapor paylasiliyor. */
@@ -116,7 +131,21 @@ object ConnTestText {
     private fun systemMaySkipAaaa(dns: DnsInfo, viaProxy: Boolean): Boolean =
         !viaProxy && dns.source == DnsSource.SYSTEM && dns.aaaa == 0
 
-    const val V6_NOT_ASKED = "bilinmiyor (ağda IPv6 yoksa sistem AAAA sormaz)"
+    const val V6_NOT_ASKED = "bilinmiyor"
+
+    /**
+     * [V6_NOT_ASKED]'in aciklamasi, listede bir kez (her satirda tekrarlaninca IPv6'siz agda alti
+     * satirin hepsi iki satira tasiyor, liste okunmuyordu). Rapor satirlarinda aciklama DNS
+     * satirinda zaten var.
+     */
+    const val V6_NOT_ASKED_NOTE =
+        "IPv6 “bilinmiyor”: ağda IPv6 yoksa sistem AAAA sormaz. IPv6'yı ölçmek için bağlanıp tekrar test edin."
+
+    /** Dogrudan testte en az bir satir [V6_NOT_ASKED] ise aciklama, yoksa null. */
+    fun notAskedNote(results: List<SiteResult>, viaProxy: Boolean): String? =
+        V6_NOT_ASKED_NOTE.takeIf {
+            results.any { r -> r.v6 == null && r.dns?.let { systemMaySkipAaaa(it, viaProxy) } == true }
+        }
 
     private fun family(f: FamilyResult?, failTone: Tone, why: String?): Part = when {
         f == null -> Part("kayıt yok", Tone.MUTED)

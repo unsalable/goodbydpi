@@ -13,13 +13,21 @@ package io.github.unsalable.goodbyedpi.service
  *   bitmiyordu: modemin IPv6 oturumu dusup adres/yol kaldiginda (ya da operatorun IPv6 cikisi
  *   bozuldugunda) tun ag degisene kadar IPv6 sunmaya devam ediyor, Chrome/YouTube 1.0.1'deki
  *   gibi RST aliyordu.
+ *
+ * Basariyi tek bir basarisizlik silmez ([confirmFails]): basarinin ustune gelen basarisizlik
+ * ancak ust uste [confirmFails] kez tekrarlanirsa yazilir, o zamana kadar eski basari (bayat
+ * haliyle, yani yeniden denenmek uzere) kalir. Tek basarisizlikla dusurmek calisan cift yiginli
+ * agda asansordeki 5 sn'lik sinyal kaybini bile iki tam motor yenilemesine (IPv6 kapat, 5 dk
+ * sonra ac) ceviriyordu; her yenileme tum baglantilari koparir.
  */
 internal class Ipv6ProbeCache<K : Any>(
     private val okTtlMs: Long,
     private val failTtlMs: Long,
     private val maxSize: Int,
+    private val confirmFails: Int = 2,
 ) {
-    private class Entry(val result: Ipv6Probe.Result, val atMs: Long)
+    /** [unconfirmedFails]: basarinin ustune gelmis, henuz yazilmamis ardisik basarisizlik sayisi. */
+    private class Entry(val result: Ipv6Probe.Result, val atMs: Long, val unconfirmedFails: Int = 0)
 
     // Ekleme sirasi: en eskisi once atilir.
     private val map = LinkedHashMap<K, Entry>()
@@ -49,10 +57,29 @@ internal class Ipv6ProbeCache<K : Any>(
     /** Yeni deneme gerekli mi: sonuc yok ya da basari bayatladi. */
     fun needsProbe(key: K, nowMs: Long): Boolean = get(key, nowMs) == null || isStale(key, nowMs)
 
-    fun put(key: K, result: Ipv6Probe.Result, nowMs: Long) {
+    /**
+     * Sonucu yazar. Onceki sonuc basariysa ve bu bir basarisizliksa, ardisik [confirmFails]'inci
+     * basarisizliga kadar yazilmaz (eski basari ve zamani kalir; bayatsa yeniden denenir).
+     * @return sonuc yazildi mi (false: basarisizlik henuz dogrulanmadi)
+     */
+    fun put(key: K, result: Ipv6Probe.Result, nowMs: Long): Boolean {
+        val prev = map[key]
+        if (!result.ok && prev != null && prev.result.ok && prev.unconfirmedFails + 1 < confirmFails) {
+            // Sira (en eski atilir) degismesin diye yerinde guncellenir.
+            map[key] = Entry(prev.result, prev.atMs, prev.unconfirmedFails + 1)
+            return false
+        }
         map.remove(key)
         map[key] = Entry(result, nowMs)
         while (map.size > maxSize) map.remove(map.keys.first())
+        return true
+    }
+
+    /** Bayat basariyi atar (yeni baglanti / yeni ag / ayar yeniden acildi): taze deneme beklenir. */
+    fun dropStale(key: K, nowMs: Long): Boolean {
+        if (!isStale(key, nowMs)) return false
+        map.remove(key)
+        return true
     }
 
     fun remove(key: K) {

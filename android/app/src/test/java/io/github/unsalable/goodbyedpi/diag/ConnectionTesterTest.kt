@@ -302,7 +302,7 @@ class ConnectionTesterTest {
     @Test
     fun errorDetailHasClassesErrnoAndSocksReplyButNoAddresses() {
         assertEquals(
-            "SocketException (SOCKS: Network unreachable)",
+            "SocketException (SOCKS: ağa ulaşılamıyor / network unreachable)",
             ConnectionTester.errorDetail(SocketException("SOCKS: Network unreachable")),
         )
         val reset = SSLHandshakeException("Read error: ssl=0x7b: I/O error")
@@ -312,9 +312,22 @@ class ConnectionTesterTest {
             ConnectionTester.errorDetail(reset),
         )
         assertEquals(
-            "SocketException (Malformed reply from SOCKS server)",
+            "SocketException (SOCKS: vekilden bozuk cevap / malformed reply)",
             ConnectionTester.errorDetail(SocketException("Malformed reply from SOCKS server")),
         )
+        // 1.0.1 raporunda Ingilizce kalan iki metin (IPv6'siz mobil veri / bozuk IPv6 yolu).
+        assertEquals(
+            "SocketException (SOCKS: vekil hedefe bağlanamadı / general failure)",
+            ConnectionTester.errorDetail(SocketException("SOCKS server general failure")),
+        )
+        assertEquals(
+            "SocketException (SOCKS: bağlantı reddedildi / connection refused)",
+            ConnectionTester.errorDetail(SocketException("SOCKS: Connection refused")),
+        )
+        assertEquals("SOCKS: vekil izin vermedi / not allowed", ConnectionTester.socksReply("SOCKS: Connection not allowed by ruleset"))
+        // Bilinmeyen cevap ozgun haliyle; SOCKS'suz mesaj ceviriye girmez.
+        assertEquals("SOCKS: Something new", ConnectionTester.socksReply("SOCKS: Something new"))
+        assertEquals(null, ConnectionTester.socksReply("Connection refused"))
         val withIp = ConnectException(
             "failed to connect to /100.64.12.34 (port 443) from /10.0.0.2 after 3000ms: isConnected failed: EHOSTUNREACH",
         )
