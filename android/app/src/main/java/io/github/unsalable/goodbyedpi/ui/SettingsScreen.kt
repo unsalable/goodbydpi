@@ -1,5 +1,7 @@
 package io.github.unsalable.goodbyedpi.ui
 
+import io.github.unsalable.goodbyedpi.service.QuickTileState
+import android.widget.Toast
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Build
@@ -866,6 +868,12 @@ private fun GeneralSection(vm: MainViewModel, settings: SettingsUi) {
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
         )
         ToggleRow(
+            // Kapaliyken 1.0.0 davranisi: secili yontem her TLS/HTTP baglantisina uygulanir.
+            "Akıllı mod", settings.smartMode, { v -> vm.updateSettings { it.copy(smartMode = v) } },
+            hint = "Engelsiz sitelere dokunmaz; yalnızca engellenen bağlantılarda atlatma yöntemini kullanır",
+            titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
+        )
+        ToggleRow(
             "Otomatik yedek yöntem", settings.autoFallback, { v -> vm.updateSettings { it.copy(autoFallback = v) } },
             hint = "Bir site takılırsa sağlayıcının diğer yöntemleriyle yeniden dener",
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
@@ -912,6 +920,7 @@ private fun BackgroundSection() {
             valueColor = if (ignoring) c.successText else c.dangerText,
             onClick = { SystemIntents.openBatteryOptimization(context) },
         )
+        QuickTileRow()
         NavRow(
             title = "Her zaman açık VPN",
             hint = "Android'in VPN ayarlarında GoodbyeDPI'ın yanındaki dişliye dokunup \"Her zaman açık VPN\"i " +
@@ -919,6 +928,57 @@ private fun BackgroundSection() {
             onClick = { SystemIntents.openVpnSettings(context) },
         )
     }
+}
+
+/**
+ * Bildirim panelindeki hizli ayarlara (Wi-Fi, mobil veri, ucak modu yanina) tek dokunusla
+ * baglanma dugmesi. Android 13+ sistem penceresiyle ekler; eskilerde nasil eklenecegini anlatir.
+ */
+@Composable
+private fun QuickTileRow() {
+    val context = LocalContext.current
+    val c = GdpiTheme.colors
+    var added by remember { mutableStateOf(QuickTileState.isAdded(context)) }
+    LifecycleResumeEffect(Unit) {
+        added = QuickTileState.isAdded(context)
+        onPauseOrDispose { }
+    }
+    val supported = QuickTileRequest.supported
+    NavRow(
+        title = "Hızlı ayarlar düğmesi",
+        hint = when {
+            added -> "Bildirim panelinde; tek dokunuşla bağlanır ya da keser. Son sayfada kaldıysa paneldeki kalemle " +
+                "Wi-Fi ve uçak modunun yanına taşıyabilirsin."
+            supported -> "Bildirim paneline, Wi-Fi ve uçak modunun yanına tek dokunuşla bağlanma düğmesi ekle."
+            else -> "Bildirim panelini iki kez aşağı çek, kalem (düzenle) simgesine dokun ve " +
+                "GoodbyeDPI'ı yukarıdaki düğmelerin arasına sürükle."
+        },
+        value = when {
+            added -> "Eklendi"
+            supported -> "Ekle"
+            else -> null
+        },
+        valueColor = if (added) c.successText else c.accent,
+        onClick = if (supported) {
+            {
+                val activity = with(QuickTileRequest) { context.findActivity() }
+                if (activity != null) {
+                    QuickTileRequest.request(activity) { result ->
+                        added = QuickTileState.isAdded(context)
+                        val msg = when (result) {
+                            QuickTileRequest.Result.ADDED -> "Hızlı ayarlara eklendi. Öne almak için paneldeki kaleme dokun."
+                            QuickTileRequest.Result.ALREADY_ADDED -> "Zaten hızlı ayarlarda."
+                            QuickTileRequest.Result.DECLINED -> null
+                            QuickTileRequest.Result.FAILED -> "Eklenemedi; panelin düzenle ekranından elle ekleyebilirsin."
+                        }
+                        if (msg != null) Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } else {
+            null
+        },
+    )
 }
 
 /** Dokununca baska bir ekran acan satir: baslik, aciklama, sagda deger ya da ok. */

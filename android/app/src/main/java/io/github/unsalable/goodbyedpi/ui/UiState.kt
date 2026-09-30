@@ -49,6 +49,7 @@ data class SettingsUi(
     val startOnBoot: Boolean,
     val autoUpdate: Boolean,
     val autoFallback: Boolean,
+    val smartMode: Boolean,
     val excludeLan: Boolean,
     val ipv6: Boolean,
 ) {
@@ -81,6 +82,7 @@ data class SettingsUi(
                 startOnBoot = s.startOnBoot,
                 autoUpdate = s.autoUpdate,
                 autoFallback = s.autoFallback,
+                smartMode = s.smartMode,
                 excludeLan = s.excludeLan,
                 ipv6 = s.ipv6,
             )

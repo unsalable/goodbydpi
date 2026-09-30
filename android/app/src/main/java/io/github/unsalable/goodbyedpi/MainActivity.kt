@@ -17,6 +17,12 @@ import io.github.unsalable.goodbyedpi.ui.GoodbyeDpiApp
 import io.github.unsalable.goodbyedpi.ui.MainViewModel
 import io.github.unsalable.goodbyedpi.service.ServiceController
 import io.github.unsalable.goodbyedpi.ui.UiEvent
+import io.github.unsalable.goodbyedpi.service.EngineState
+import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.QuickTileState
+import io.github.unsalable.goodbyedpi.ui.QuickTileRequest
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -56,8 +62,30 @@ class MainActivity : ComponentActivity() {
 
         setContent { GoodbyeDpiApp(vm) }
 
+        offerQuickTileOnce()
+
         // Yeniden kurulumda (dondurme vb.) ayni istegi ikinci kez isleme.
         if (savedInstanceState == null) handleConnectExtra(intent)
+    }
+
+    /**
+     * Ilk basarili baglantidan sonra, bir kez: "Hizli ayarlara ekle?" sistem penceresi (Android
+     * 13+). RESUMED'da bekleniyor: bildirim izni penceresi aktiviteyi duraklatir, ikisi ust uste
+     * binmesin; o kapaninca kisa bir gecikmeyle sorulur. Reddedilirse bir daha sorulmaz, Ayarlar >
+     * Arka plan'daki satirdan eklenebilir.
+     */
+    private fun offerQuickTileOnce() {
+        if (!QuickTileRequest.supported) return
+        if (QuickTileState.isAdded(this) || QuickTileState.wasPrompted(this)) return
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                EngineStateHolder.state.first { it is EngineState.Running }
+                delay(1500)
+                if (QuickTileState.isAdded(this@MainActivity) || QuickTileState.wasPrompted(this@MainActivity)) return@repeatOnLifecycle
+                QuickTileState.markPrompted(this@MainActivity)
+                QuickTileRequest.request(this@MainActivity) { }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

@@ -169,6 +169,8 @@ Common switches:
   append the ISP's alternative methods as `--auto=torst,ssl_err` groups (and a `--timeout`
   of a few seconds), so a host that resets/stalls is transparently retried with the next method
   and cached (`--cache-ttl`). Custom profiles fall back to the ISP recommendation.
+  (As built, with smart mode on the primary group is a no-desync group and the selected method
+  is the first fallback — §8 Engine mapping.)
 * DNS profile active → `--redirect 198.18.0.53:53=<v4>:<port>` (+ v6 equivalent).
 * `--def-ttl` unset (byedpi reads it from a socket).
 
@@ -452,6 +454,21 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **Fallback layout**: per distinct fallback `--auto=torst,ssl_err <group> --cache-ttl 3600`,
   then `--timeout 4:0:0:1`; no `redirect` trigger — legitimate cross-domain HTTP redirects would
   cycle through every group; `:1` lifts the timeout once the server answers (mobile stalls).
+* **Smart mode (`AppSettings.smartMode`, default on; not in the original spec)**: the first TCP
+  group is only the scope (`--proto=tls,http`, no desync); the selected method becomes the first
+  `--auto=torst,ssl_err` group, followed by the ISP alternatives when `autoFallback` is on (the
+  method stays even when it is off). Reason: a user on a Turkish line could not use Google
+  search — fakes use a fixed low TTL, and Google's in-ISP caches / nearby CDNs are within that
+  TTL, so the fake reaches the real server and breaks the connection. Reproduced on the emulator,
+  whose slirp NAT delivers every fake: www.google.com answers the `ttl4` fake ClientHello (byedpi
+  log: 2.9 KB server flight → `ssl_err`), v1.0.0 only recovered through the `disorder` fallback
+  (first request 2.3 s vs 1.1 s), and with `autoFallback` off Google search, YouTube, example.com
+  and discord.com failed 3/3; smart mode: 200 everywhere, only the direct group used, and with a
+  simulated SNI-RST DPI the blocked host still opens via the method. Unblocked hosts are never touched; a blocked host
+  costs one transparent replay (RST) or the 4 s timeout (silent drop) once per IP:port per hour.
+  Off = the exact v1.0.0 argv. No built-in "never desync" host list (`--hosts`): a static
+  exemption group ends the fallback chain, so a future block of an exempted service (YouTube was
+  blocked in Turkey before) could not be bypassed. BYEDPI_NOTES §7.3.
 
 ### Models, state and controller (§2)
 
@@ -463,6 +480,16 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   byedpi's SNI split is a separate part, so the fixed position must be a real byte offset.
 * **`AppSettings` adds `lastUpdateCheck`, `pendingUpdate`, `dismissedUpdate`** — the last is
   legacy and unread; update snooze state lives in SharedPreferences `gdpi_update`.
+* **`AppSettings` adds `smartMode` (default true, also for a missing key) and
+  `settingsVersion` (2)** — see Engine mapping. A file without `settingsVersion` is a 1.0.0 file
+  (`encodeDefaults` wrote every other field, so an untouched default cannot be told apart
+  otherwise); `SettingsRepository` upgrades it once via `AppSettings.upgradedFrom`.
+* **Default DNS is Yandex (1253), not Cloudflare** (desktop keeps Cloudflare) — Turkish ISPs
+  hijack port 53, so Cloudflare:53 returned the ISP's poisoned answer for blocked hosts on the
+  Genel profile, which does not set a DNS. Unknown/deleted DNS selections also fall back to
+  Yandex. Upgrade from 1.0.0: only `isp=general` + `dns=cloudflare` (the untouched default)
+  moves to Yandex, once; ISP profiles, custom entries and "Kapalı" are kept, and re-selecting
+  Cloudflare afterwards sticks.
 * **`EngineState.Running` adds `socksPort`, `argv` and `generation`** — the connection test
   needs the port, the diagnostics screen shows the argv actually running, and `generation`
   (`DpiEngine.generation`, new on every start and on every in-place update that swaps byedpi or

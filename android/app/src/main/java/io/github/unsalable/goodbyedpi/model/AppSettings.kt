@@ -28,8 +28,12 @@ data class AppSettings(
     val method: String = MethodPreset.DEFAULT_ID,
     /** Kullanicinin olusturdugu, adlandirilmis ozel yontem profilleri. */
     val customProfiles: List<CustomMethodProfile> = emptyList(),
-    /** Secili DNS: DnsProfile.id ya da bir ozel DNS girisinin kimligi. */
-    val dns: String = DnsProfile.CLOUDFLARE_ID,
+    /**
+     * Secili DNS: DnsProfile.id ya da bir ozel DNS girisinin kimligi. Varsayilan Yandex
+     * (1253): Turk ISS'leri 53. portu kaciriyor, Cloudflare:53 engelli sitelerde ISS'in
+     * zehirli cevabini dondururdu. Eski dosyalar icin bkz. [upgradedFrom].
+     */
+    val dns: String = DnsProfile.DEFAULT_ID,
     /** Kullanicinin olusturdugu, adlandirilmis ozel DNS sunuculari. */
     val customDns: List<CustomDnsEntry> = emptyList(),
     /**
@@ -43,6 +47,12 @@ data class AppSettings(
     val autoUpdate: Boolean = true,
     /** Secili yontem bir sitede takilirsa ISS'in diger yontemleriyle kendiliginden yeniden dene. */
     val autoFallback: Boolean = true,
+    /**
+     * Akilli mod: baglantilar once atlatmasiz gider, secili yontem yalnizca engel algilaninca
+     * (RST/zaman asimi, ServerHello yok) devreye girer. Sahte paket yakin sunucuya (ISS icindeki
+     * Google onbellegi) ulasip engelsiz siteleri bozmasin. Eski dosyada alan yoksa acik gelir.
+     */
+    val smartMode: Boolean = true,
     /** Yerel ag (192.168.x.x vb.) VPN disinda kalsin: yazici, NAS, Chromecast calismaya devam etsin. */
     val excludeLan: Boolean = true,
     /** IPv6 trafigini de tun uzerinden gecir. */
@@ -61,7 +71,36 @@ data class AppSettings(
     val pendingUpdate: String? = null,
     /** Kullanicinin "simdi degil" dedigi surum; ayni surum icin afis tekrar cikmasin. */
     val dismissedUpdate: String? = null,
+    /**
+     * Ayar dosyasinin bicim surumu. 1.0.0 bu alani yazmiyordu; dosyada yoksa SettingsRepository
+     * onu 1 sayip [upgradedFrom] ile bir kez yukseltir. Yeni kurulumda dogrudan guncel surum.
+     */
+    val settingsVersion: Int = CURRENT_VERSION,
 ) {
+    /**
+     * Eski bicimli bir dosyayi bir kez yukseltir (yalnizca yuklemede, [settingsVersion] dosyada
+     * yoksa ya da eskiyse). Surum 1 -> 2: 1.0.0'da varsayilan DNS Cloudflare:53 idi ve Genel
+     * saglayici DNS'e dokunmuyordu; Genel + Cloudflare bu yuzden neredeyse her zaman el
+     * degmemis varsayilan. Turk ISS'leri 53. portu kacirdigi icin o durumda engelli sitelerin
+     * adi zehirli cozuluyordu: Yandex (1253) yapilir. Baska her secim (ISS profili, ozel DNS,
+     * Kapali, bilerek Cloudflare secilmis bir ISS profili) oldugu gibi kalir. Kullanici sonra
+     * Cloudflare'i yeniden secerse dosya guncel surumle yazildigi icin bu bir daha calismaz.
+     */
+    fun upgradedFrom(version: Int): AppSettings {
+        var s = this
+        if (version < 2 && s.isp.equals(IspProfile.GENERAL_ID, ignoreCase = true) &&
+            s.dns.equals(DnsProfile.CLOUDFLARE_ID, ignoreCase = true)
+        ) {
+            s = s.copy(dns = DnsProfile.DEFAULT_ID)
+        }
+        return s.copy(settingsVersion = CURRENT_VERSION)
+    }
+
+    companion object {
+        /** 2: smartMode eklendi, varsayilan DNS Yandex oldu (1.0.0 = 1, alan yazilmiyordu). */
+        const val CURRENT_VERSION = 2
+    }
+
     /**
      * Ayar dosyasini tutarli hale getirir; yuklemede ve her guncellemede cagrilir.
      *
@@ -104,7 +143,7 @@ data class AppSettings(
         }
 
         val dnsId = if (CustomIds.isCustom(dns)) {
-            dnsEntries.firstOrNull { it.id.equals(dns, ignoreCase = true) }?.id ?: DnsProfile.CLOUDFLARE_ID
+            dnsEntries.firstOrNull { it.id.equals(dns, ignoreCase = true) }?.id ?: DnsProfile.DEFAULT_ID
         } else {
             DnsProfile.fromId(dns).id
         }

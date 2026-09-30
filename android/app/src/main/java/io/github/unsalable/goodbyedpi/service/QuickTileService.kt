@@ -25,8 +25,22 @@ import kotlinx.coroutines.launch
 class QuickTileService : TileService() {
     private var scope: CoroutineScope? = null
 
+    // Panele eklenip cikarildigini hatirla: uygulama "Hizli ayarlar dugmesi" satirinda ve ilk
+    // baglantidan sonraki ekleme isteginde bunu kullanir.
+    override fun onTileAdded() {
+        super.onTileAdded()
+        QuickTileState.setAdded(this, true)
+    }
+
+    override fun onTileRemoved() {
+        QuickTileState.setAdded(this, false)
+        super.onTileRemoved()
+    }
+
     override fun onStartListening() {
         super.onStartListening()
+        // Karo gorunuyorsa paneldedir (onTileAdded eski surumlerde kacmis olabilir).
+        QuickTileState.setAdded(this, true)
         scope?.cancel()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { s ->
             s.launch { EngineStateHolder.state.collect { render(it) } }

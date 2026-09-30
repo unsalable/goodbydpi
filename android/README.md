@@ -23,7 +23,7 @@ Mimari ve sözleşmeler: [`docs/SPEC.md`](docs/SPEC.md) (§8: tasarımdan sapmal
 1. Ana ekrandaki **SAĞLAYICI** kutucuğundan internet sağlayıcınızı seçin (Türk Telekom,
    Superonline, Vodafone, TürkNet, Kablonet, TT Mobil, Turkcell Mobil, Vodafone Mobil). Bu, o hat
    için önerilen yöntemi ve Yandex DNS'i (77.88.8.8, port 1253) birlikte seçer. Listede yoksa
-   **Genel** kalsın; o zaman DNS'e dokunulmaz, DNS kutucuğundan **Yandex (1253)** seçmeniz önerilir.
+   **Genel** kalsın; varsayılan DNS zaten **Yandex (1253)**'tür.
 2. Güç düğmesine dokunun. Android bir **bağlantı isteği** (VPN izni) sorar: **Tamam**.
 3. Android 13 ve üstünde ardından bildirim izni bir kez sorulur. İzin verirseniz bağlantı açıkken
    "Bağlı · <yöntem>" bildirimi ve **Durdur** düğmesi görünür, hatalar "Uyarılar" kanalına düşer.
@@ -83,17 +83,31 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
 
 ## Sorun giderme
 
+* **Google (ya da engelsiz başka bir site) açılmıyor, arama yapılamıyor.** Ayarlar → GENEL →
+  **Akıllı mod** açık olmalı (varsayılan). Neden: sahte paketli yöntemler sahteyi düşük ve sabit
+  bir TTL ile yollar; Google'ın ve bazı CDN'lerin ISS'in içindeki önbellek sunucuları o kadar
+  yakın olabilir ki sahte paket DPI'da ölmeden sunucuya ulaşır ve bağlantıyı bozar. Akıllı mod
+  her bağlantıyı önce hiçbir şey yapmadan dener; yöntemi yalnızca bağlantı DPI tarafından
+  sıfırlanır, takılır ya da TLS cevabı gelmezse devreye sokar. Engelsiz sitelere hiç dokunulmaz.
+  Akıllı mod kapalıyken (1.0.0 davranışı) yöntem her HTTPS/HTTP bağlantısına uygulanır: bu
+  durumda sahte paketsiz bir yöntem (Ters sıra, TLS kayıt bölme) seçin ya da akıllı modu açın.
 * **Bir site açılmıyor / yöntem işe yaramıyor.**
   1. Doğru sağlayıcının seçili olduğundan emin olun (mobil veride "… Mobil" profilleri).
-  2. **Otomatik yedek yöntem** (varsayılan açık) bir sitede bağlantı sıfırlanır ya da takılırsa
-     sağlayıcının diğer yöntemlerini sırayla dener: ilk açılış 4 sn kadar sürebilir, çalışan
-     yöntem o adres için 1 saat hatırlanır. Bağlantıyı kapatıp açmak ya da yöntemi değiştirmek bu
-     belleği sıfırlar.
+  2. **Akıllı mod** açıkken engellenen bir sitenin ilk açılışı biraz uzar: DPI bağlantıyı
+     sıfırlıyorsa yarım saniye kadar, sessizce düşürüyorsa 4 sn kadar. Sonra seçili yöntem
+     devreye girer ve o adres için 1 saat hatırlanır. **Otomatik yedek yöntem** (varsayılan açık)
+     seçili yöntem de işe yaramazsa sağlayıcının diğer yöntemlerini sırayla dener. Bağlantıyı
+     kapatıp açmak ya da yöntemi değiştirmek bu belleği sıfırlar. DPI engelli siteye bağlantıyı
+     kesmek yerine kendi uyarı sayfasını gösteriyorsa (düz HTTP) akıllı mod bunu engel olarak
+     algılamaz: o site için akıllı modu kapatmayı deneyin.
   3. Olmazsa **YÖNTEM** listesinden sağlayıcının alternatiflerini (listedeki sırayla) elle deneyin.
      Sahte paketli yöntemlerde TTL önemlidir: fazla düşükse DPI sahteyi görmez, fazla yüksekse
      sahte sunucuya ulaşıp bağlantıyı bozar. Ayarlar → YÖNTEM → **+ Yeni özel ayar** seçili
      yöntemin kopyasını açar; orada TTL'i birer birer değiştirerek deneyebilirsiniz.
-  4. DNS olarak **Yandex (1253)** kullanın; Cloudflare 53. portta olduğu için ISS kaçırabilir.
+  4. DNS olarak **Yandex (1253)** kullanın (varsayılan); Cloudflare 53. portta olduğu için ISS
+     kaçırabilir ve engelli sitelerin adresini yanlış (uyarı sayfasına) çözer. 1.0.0'dan
+     güncellenen ve Genel + Cloudflare'de kalmış (hiç değiştirilmemiş) kurulumlar bir kez
+     Yandex'e alınır; Cloudflare'i sonra yeniden seçerseniz bir daha değiştirilmez.
   5. Tarayıcının önbelleği eski sonucu tutabilir: gizli sekmede deneyin.
 * **Discord sesli kanala giriyor ama ses bağlanmıyor.** Bütün hazır yöntemlerde "Discord ses ve
   aramalar (UDP)" açıktır: ses bağlantısının ilk paketlerinden önce sahte UDP paketleri gider.

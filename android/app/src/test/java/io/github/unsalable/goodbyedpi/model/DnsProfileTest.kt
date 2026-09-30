@@ -87,8 +87,11 @@ class DnsProfileTest {
     fun fromIdAndEquality() {
         assertSame(DnsProfile.Yandex, DnsProfile.fromId("YANDEX"))
         assertSame(DnsProfile.Off, DnsProfile.fromId("off"))
-        assertSame(DnsProfile.Cloudflare, DnsProfile.fromId("custom"))
-        assertSame(DnsProfile.Cloudflare, DnsProfile.fromId(null))
+        // Bilinmeyen kimlik varsayilana (Yandex 1253) duser: ISS 53. portu kaciriyor.
+        assertSame(DnsProfile.Yandex, DnsProfile.fromId("custom"))
+        assertSame(DnsProfile.Yandex, DnsProfile.fromId(null))
+        assertSame(DnsProfile.Default, DnsProfile.fromId(DnsProfile.DEFAULT_ID))
+        assertSame(DnsProfile.Cloudflare, DnsProfile.fromId("cloudflare"))
         assertEquals(
             DnsProfile.createCustom("custom:1", "A", "1.1.1.1", 53, null, 53),
             DnsProfile.createCustom("CUSTOM:1", "B", "8.8.8.8", 53, null, 53),
