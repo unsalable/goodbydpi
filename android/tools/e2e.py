@@ -627,6 +627,11 @@ class E2E:
     def step_start_tile(self, r: StepResult):
         comp = f"{self.pkg}/{TILE_CLASS}"
         self.adb.sh(f"cmd statusbar add-tile {comp}")
+        # SystemUI karo servisine yalnizca hizli ayarlar paneli acikken baglaniyor; bagli degilken
+        # click-tile kuyrukta bekliyor ve panel bir sonraki acilisinda isleniyor (emulatorde
+        # goruldu: tiklama 15 sn'de hic gelmedi, panel acilinca geldi). Panel once acilir.
+        self.adb.sh("cmd statusbar expand-settings")
+        time.sleep(2)
         up, _ = self.vpn_state()
         self.adb.sh(f"cmd statusbar click-tile {comp}")
         ok, secs, detail = self.wait_vpn(not up)
@@ -842,6 +847,13 @@ class E2E:
                 out = self.adb.sh(f"su {uid} sh -c 'echo | nc -w 4 1.1.1.1 443 && echo OWN_OK'")
                 r.expect("OWN_OK" in out, "kilit modunda uygulamanin kendi trafigi (byedpi, guncelleyici) muaf")
         finally:
+            # Geri yukleme yeniden baslatmasi logcat'i siler; basarisizlikta kanit kalsin.
+            if r.status == "FAIL":
+                (self.out / "always_on-logcat.txt").write_text(
+                    self.adb.run("logcat", "-d", "-v", "time", timeout=60), encoding="utf-8")
+                (self.out / "always_on-settings.txt").write_text(
+                    self.adb.sh("settings get secure always_on_vpn_app; settings get secure always_on_vpn_lockdown; "
+                                "dumpsys connectivity | grep -iE 'lockdown|always|VPN CONNECTED'"), encoding="utf-8")
             if old_app in ("", "null"):
                 self.adb.sh("settings delete secure always_on_vpn_app")
             else:

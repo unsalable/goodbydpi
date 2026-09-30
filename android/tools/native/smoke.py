@@ -47,7 +47,8 @@ NDK_VERSION = "29.0.14206865"
 
 # -N: ByeDpiArgs gibi alan adi cozumleme kapali; curl adi host'ta cozer (--socks5, -4).
 BASE = ["-i", "127.0.0.1", "-c", "2048", "-b", "16384", "-N", "-x", "1"]
-DENY = ["--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48"]
+DENY = ["--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48",
+        "--deny-net", "2001:db8:6764:7069::/64"]  # ByeDpiArgs.VIRTUAL_NETS ile ayni
 FAKE_SNI = ["--fake-sni", "www.w3.org"]
 ZEROS = ":\\x00\\x00\\x00\\x00"  # argv'de ters bolu + x + 00: byedpi parse_cform 4 sifir bayta cevirir
 

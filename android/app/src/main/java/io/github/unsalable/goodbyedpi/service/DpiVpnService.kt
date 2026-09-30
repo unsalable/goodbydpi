@@ -111,7 +111,9 @@ class DpiVpnService : VpnService() {
     private var loggedIpv6: Ipv6Status? = null
 
     /** Erisim denemesi sonuclari (ag + kuresel adres kumesi basina); kucuk, en eskisi atilir. */
-    private val probeCache = Ipv6ProbeCache<ProbeKey>(PROBE_OK_TTL_MS, PROBE_FAIL_TTL_MS, PROBE_CACHE_SIZE)
+    private val probeCache = Ipv6ProbeCache<ProbeKey>(
+        PROBE_OK_TTL_MS, PROBE_FAIL_TTL_MS, PROBE_CACHE_SIZE, reconfirmDelayMs = HEALTH_INTERVAL_MS,
+    )
     private val probesRunning = HashMap<ProbeKey, CompletableDeferred<Ipv6Probe.Result>>()
 
     /** Denemeler burada: motor is parcacigi 2,5 sn'lik baglanti beklemesiyle tikanmasin. */

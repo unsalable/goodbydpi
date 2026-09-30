@@ -71,6 +71,20 @@ class Ipv6ProbeCacheTest {
     }
 
     @Test
+    fun secondProbeWaitsForReconfirmDelayAfterUnconfirmedFailure() {
+        val c = Ipv6ProbeCache<String>(okTtlMs = 600_000, failTtlMs = 300_000, maxSize = 3, reconfirmDelayMs = 20_000)
+        c.put("sim", ok, 0)
+        val stale = 600_001L
+        assertFalse(c.put("sim", fail, stale))
+        // Hemen ardindan yeniden denenmez (anlik kopmada iki deneme birden basarisiz olmasin).
+        assertFalse(c.needsProbe("sim", stale + 1))
+        assertFalse(c.needsProbe("sim", stale + 19_999))
+        // Saglik dongusunde denenir; eski basari bu arada gecerli kalir.
+        assertTrue(c.needsProbe("sim", stale + 20_000))
+        assertEquals(ok, c.get("sim", stale + 10_000))
+    }
+
+    @Test
     fun successInBetweenResetsTheFailureCount() {
         val c = cache()
         c.put("sim", ok, 0)

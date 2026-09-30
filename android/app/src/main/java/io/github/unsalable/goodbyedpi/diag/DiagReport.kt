@@ -14,7 +14,7 @@ object AddressKinds {
         val b = a.address.map { it.toInt() and 0xFF }
         return when (a) {
             is Inet4Address -> when {
-                b[0] == 10 || (b[0] == 172 && b[1] in 16..31) || (b[0] == 192 && b[1] == 168) -> "IPv4 özel (LAN)"
+                b[0] == 10 || (b[0] == 172 && b[1] in 16..31) || (b[0] == 192 && b[1] == 168) -> "IPv4 özel (yerel ağ ya da operatör NAT)"
                 b[0] == 100 && b[1] in 64..127 -> "IPv4 CGNAT (100.64/10)"
                 b[0] == 192 && b[1] == 0 && b[2] == 0 && b[3] < 8 -> "IPv4 464XLAT (192.0.0/29)"
                 b[0] == 198 && b[1] in 18..19 -> "IPv4 sanal (198.18/15)"
@@ -68,7 +68,7 @@ object AddressKinds {
 
     /** Bilinen genel DoT saglayicilari (alan adi kimlik tasimaz; kisisel kisim solunda). */
     private val PROVIDER_SUFFIXES: List<List<String>> = listOf(
-        "dns.google", "one.one.one.one", "cloudflare-dns.com", "adguard-dns.com", "nextdns.io",
+        "dns.google", "one.one.one.one", "cloudflare-dns.com", "adguard.com", "adguard-dns.com", "nextdns.io",
         "controld.com", "quad9.net", "mullvad.net", "cleanbrowsing.org", "opendns.com", "dns.sb",
         "alidns.com", "dns.yandex.net", "dns0.eu", "libredns.gr", "dnsforge.de", "comss.one",
     ).map { it.split('.') }

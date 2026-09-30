@@ -25,9 +25,23 @@ internal class Ipv6ProbeCache<K : Any>(
     private val failTtlMs: Long,
     private val maxSize: Int,
     private val confirmFails: Int = 2,
+    /**
+     * Dogrulanmamis bir basarisizliktan sonra ikinci denemeye kadar beklenecek sure. Beklemeden
+     * denenirse (onProbeDone -> evaluateIpv6 hemen yeniden deniyordu) anlik kopmada iki deneme
+     * ayni milisaniyelerde basarisiz olur ve [confirmFails] hicbir seyi korumazdi.
+     */
+    private val reconfirmDelayMs: Long = 0,
 ) {
-    /** [unconfirmedFails]: basarinin ustune gelmis, henuz yazilmamis ardisik basarisizlik sayisi. */
-    private class Entry(val result: Ipv6Probe.Result, val atMs: Long, val unconfirmedFails: Int = 0)
+    /**
+     * [unconfirmedFails]: basarinin ustune gelmis, henuz yazilmamis ardisik basarisizlik sayisi;
+     * [lastFailMs]: bunlarin sonuncusunun zamani.
+     */
+    private class Entry(
+        val result: Ipv6Probe.Result,
+        val atMs: Long,
+        val unconfirmedFails: Int = 0,
+        val lastFailMs: Long = 0,
+    )
 
     // Ekleme sirasi: en eskisi once atilir.
     private val map = LinkedHashMap<K, Entry>()
@@ -54,8 +68,15 @@ internal class Ipv6ProbeCache<K : Any>(
         return e.result.ok && nowMs - e.atMs > okTtlMs
     }
 
-    /** Yeni deneme gerekli mi: sonuc yok ya da basari bayatladi. */
-    fun needsProbe(key: K, nowMs: Long): Boolean = get(key, nowMs) == null || isStale(key, nowMs)
+    /**
+     * Yeni deneme gerekli mi: sonuc yok ya da basari bayatladi. Dogrulanmamis bir basarisizliktan
+     * hemen sonra degil: ikinci deneme [reconfirmDelayMs] sonra (saglik dongusunde) yapilir.
+     */
+    fun needsProbe(key: K, nowMs: Long): Boolean {
+        val e = map[key]
+        if (e != null && e.unconfirmedFails > 0 && nowMs - e.lastFailMs < reconfirmDelayMs) return false
+        return get(key, nowMs) == null || isStale(key, nowMs)
+    }
 
     /**
      * Sonucu yazar. Onceki sonuc basariysa ve bu bir basarisizliksa, ardisik [confirmFails]'inci
@@ -66,7 +87,7 @@ internal class Ipv6ProbeCache<K : Any>(
         val prev = map[key]
         if (!result.ok && prev != null && prev.result.ok && prev.unconfirmedFails + 1 < confirmFails) {
             // Sira (en eski atilir) degismesin diye yerinde guncellenir.
-            map[key] = Entry(prev.result, prev.atMs, prev.unconfirmedFails + 1)
+            map[key] = Entry(prev.result, prev.atMs, prev.unconfirmedFails + 1, nowMs)
             return false
         }
         map.remove(key)

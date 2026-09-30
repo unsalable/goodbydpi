@@ -17,8 +17,8 @@ class DiagReportTest {
     @Test
     fun addressKinds() {
         assertEquals("IPv4 CGNAT (100.64/10)", AddressKinds.kind(ip("100.72.1.2")))
-        assertEquals("IPv4 özel (LAN)", AddressKinds.kind(ip("192.168.1.5")))
-        assertEquals("IPv4 özel (LAN)", AddressKinds.kind(ip("10.0.2.16")))
+        assertEquals("IPv4 özel (yerel ağ ya da operatör NAT)", AddressKinds.kind(ip("192.168.1.5")))
+        assertEquals("IPv4 özel (yerel ağ ya da operatör NAT)", AddressKinds.kind(ip("10.0.2.16")))
         assertEquals("IPv4 464XLAT (192.0.0/29)", AddressKinds.kind(ip("192.0.0.4")))
         assertEquals("IPv4 sanal (198.18/15)", AddressKinds.kind(ip("198.18.0.1")))
         assertEquals("IPv4 genel", AddressKinds.kind(ip("88.1.2.3")))
@@ -222,6 +222,8 @@ class DiagReportTest {
         assertEquals("*.dns.controld.com", AddressKinds.redactHostname("x7k2p9q.dns.controld.com"))
         // Genel adlar oldugu gibi kalir.
         assertEquals("dns.google", AddressKinds.redactHostname("dns.google"))
+        assertEquals("dns.adguard.com", AddressKinds.redactHostname("dns.adguard.com"))
+        assertEquals("dns-family.adguard.com", AddressKinds.redactHostname("dns-family.adguard.com"))
         assertEquals("one.one.one.one", AddressKinds.redactHostname("one.one.one.one"))
         assertEquals("dns.adguard-dns.com", AddressKinds.redactHostname("dns.adguard-dns.com"))
         assertEquals("family.adguard-dns.com", AddressKinds.redactHostname("family.adguard-dns.com"))
