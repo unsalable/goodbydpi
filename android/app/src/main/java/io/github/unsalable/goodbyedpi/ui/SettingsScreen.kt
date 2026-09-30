@@ -84,6 +84,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,6 +95,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.unsalable.goodbyedpi.BuildConfig
+import io.github.unsalable.goodbyedpi.diag.ConnTestText
+import io.github.unsalable.goodbyedpi.diag.ConnectionTester
+import io.github.unsalable.goodbyedpi.diag.SiteResult
 import io.github.unsalable.goodbyedpi.model.CustomDnsEntry
 import io.github.unsalable.goodbyedpi.model.CustomMethodProfile
 import io.github.unsalable.goodbyedpi.model.DnsProfile
@@ -1079,7 +1085,7 @@ private fun ConnectionTestSection(vm: MainViewModel) {
         Section("BAĞLANTI TESTİ")
         Text(
             if (viaProxy) {
-                "Siteler çalışan motor üzerinden denenir."
+                "Siteler çalışan motor üzerinden, IPv4 ve IPv6 ayrı ayrı denenir."
             } else {
                 "Bağlantı kapalı: siteler doğrudan denenir. Atlatmayı ölçmek için önce bağlan."
             },
@@ -1107,32 +1113,75 @@ private fun ConnectionTestSection(vm: MainViewModel) {
             exit = fadeOut(Motion.fadeOut()) + shrinkVertically(Motion.spring()),
             label = "results",
         ) {
-            SurfaceCard(Modifier.padding(top = 12.dp)) {
+            Column {
+                SurfaceCard(Modifier.padding(top = 12.dp)) {
+                    Text(
+                        if (test.viaProxy) "Motor üzerinden" else "Doğrudan bağlantı",
+                        style = GdpiType.chipLabel,
+                        color = c.muted,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    test.results.forEach { r -> ConnTestRow(r, test) }
+                }
                 Text(
-                    if (test.viaProxy) "Motor üzerinden" else "Doğrudan bağlantı",
-                    style = GdpiType.chipLabel,
+                    "Sorun bildirirken HAKKINDA → Tanılama → Kopyala ile raporu ekleyin; test sonuçları da rapora girer.",
+                    style = GdpiType.rowHint,
                     color = c.muted,
-                    modifier = Modifier.padding(bottom = 4.dp),
+                    modifier = Modifier.padding(top = 8.dp),
                 )
-                test.results.forEach { r ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 36.dp).semantics(mergeDescendants = true) { },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(if (r.ok) "✓" else "✗", style = GdpiType.number, color = if (r.ok) c.successText else c.dangerText, modifier = Modifier.width(24.dp))
-                        Text(r.host, style = GdpiType.optionTitle, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(
-                            if (r.ok) "${r.millis ?: 0} ms" else (r.error ?: "Hata"),
-                            style = GdpiType.optionHint,
-                            color = if (r.ok) c.muted else c.dangerText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.End,
-                            modifier = Modifier.padding(start = 8.dp),
-                        )
+            }
+        }
+    }
+}
+
+/**
+ * Tek site: isaret + ad, altinda aile satiri ("IPv4: ✓ 312 ms · IPv6: ✗ ..."). Ad cozulemediyse
+ * aile satiri yok, hata sagda (eski gorunum). Kurallar ConnTestText'te (rapor ile ayni).
+ */
+@Composable
+private fun ConnTestRow(r: SiteResult, test: ConnTestUi) {
+    val c = GdpiTheme.colors
+    val parts = ConnTestText.parts(r, test.ipv6, test.viaProxy)
+    val ok = ConnTestText.rowOk(r, test.ipv6, test.viaProxy)
+    Column(
+        Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(vertical = 4.dp).semantics(mergeDescendants = true) { },
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (ok) "✓" else "✗", style = GdpiType.number, color = if (ok) c.successText else c.dangerText, modifier = Modifier.width(24.dp))
+            Text(r.host, style = GdpiType.optionTitle, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (parts.isEmpty()) {
+                Text(
+                    if (r.ok) "${r.millis ?: 0} ms" else (r.error ?: "Hata"),
+                    style = GdpiType.optionHint,
+                    color = if (r.ok) c.muted else c.dangerText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
+        if (parts.isNotEmpty()) {
+            val line = buildAnnotatedString {
+                parts.forEach { p ->
+                    val color = when (p.tone) {
+                        ConnTestText.Tone.OK -> c.successText
+                        ConnTestText.Tone.BAD -> c.dangerText
+                        ConnTestText.Tone.MUTED -> c.muted
                     }
+                    withStyle(SpanStyle(color = color)) { append(p.text) }
                 }
             }
+            Text(line, style = GdpiType.optionHint, modifier = Modifier.padding(start = 24.dp, top = 2.dp))
+        }
+        if (r.captcha) {
+            Text(
+                ConnectionTester.CAPTCHA_NOTE,
+                style = GdpiType.optionHint,
+                color = c.accentText,
+                modifier = Modifier.padding(start = 24.dp, top = 2.dp),
+            )
         }
     }
 }
@@ -1176,7 +1225,7 @@ private fun AboutSection(vm: MainViewModel, onSheet: (SettingsSheet) -> Unit) {
         NavRow(title = "Açık kaynak lisansları", onClick = { onSheet(SettingsSheet.Licenses) })
         NavRow(
             title = "Tanılama",
-            hint = "Motorun çalışan (bağlı değilse çalıştıracağı) komut satırı",
+            hint = "Cihaz, ağ ve IPv6 durumu, motorun komut satırı ve son test sonuçları",
             onClick = { onSheet(SettingsSheet.Diagnostics) },
         )
     }
@@ -1314,8 +1363,10 @@ private fun DiagnosticsSheet(vm: MainViewModel, onDismiss: () -> Unit) {
                 color = c.muted,
                 modifier = Modifier.padding(top = 4.dp),
             )
-            SurfaceCard(Modifier.padding(top = 12.dp)) {
-                SelectionContainer {
+            // Rapor uzun (cihaz, ag, IPv6, komut satiri, test sonuclari): kart kendi icinde kayar,
+            // Kopyala dugmesi hep gorunur kalir.
+            SurfaceCard(Modifier.padding(top = 12.dp).heightIn(max = 460.dp)) {
+                SelectionContainer(Modifier.verticalScroll(rememberScrollState())) {
                     Text(text, style = GdpiType.mono, color = c.text)
                 }
             }

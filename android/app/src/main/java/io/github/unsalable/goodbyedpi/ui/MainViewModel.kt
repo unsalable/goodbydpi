@@ -16,6 +16,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.unsalable.goodbyedpi.data.SettingsRepository
 import io.github.unsalable.goodbyedpi.diag.ConnectionTester
+import io.github.unsalable.goodbyedpi.diag.DeviceInfoCollector
+import io.github.unsalable.goodbyedpi.diag.DiagReport
 import io.github.unsalable.goodbyedpi.diag.SiteResult
 import io.github.unsalable.goodbyedpi.engine.ByeDpiArgs
 import io.github.unsalable.goodbyedpi.engine.EngineConfig
@@ -32,6 +34,8 @@ import io.github.unsalable.goodbyedpi.model.selectedDns
 import io.github.unsalable.goodbyedpi.model.selectedMethod
 import io.github.unsalable.goodbyedpi.service.EngineState
 import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.Ipv6Status
+import io.github.unsalable.goodbyedpi.service.Ipv6StatusHolder
 import io.github.unsalable.goodbyedpi.service.ServiceController
 import io.github.unsalable.goodbyedpi.service.TrafficStats
 import io.github.unsalable.goodbyedpi.update.UpdateManager
@@ -71,6 +75,8 @@ class MainViewModel(
     val traffic: StateFlow<TrafficStats> = EngineStateHolder.traffic,
     val updateState: StateFlow<UpdateState> = UpdateManager.state,
     val justUpdatedTo: StateFlow<String?> = UpdateManager.justUpdatedTo,
+    /** Tunelin IPv6 durumu (servis doldurur); baglanti testi ve tani raporu okur. */
+    private val ipv6Status: StateFlow<Ipv6Status> = Ipv6StatusHolder.status,
 ) : AndroidViewModel(app) {
 
     private val context: Context get() = getApplication()
@@ -377,9 +383,15 @@ class MainViewModel(
                 Log.w(TAG, "Baglanti testi calismadi", e)
                 ConnectionTester.DEFAULT_HOSTS.map { SiteResult(it, false, null, "Test çalıştırılamadı") }
             }
-            _connTest.value = ConnTestUi(running = false, results = results, viaProxy = port != null)
+            _connTest.value = ConnTestUi(running = false, results = results, viaProxy = port != null, ipv6 = knownIpv6())
         }
     }
+
+    /**
+     * Servisin bildirdigi IPv6 durumu; servis hic bildirmediyse (ilk deger) null. Bilinmeyen durum
+     * "tunel IPv6 sunuyor" gibi yorumlanir: IPv6 hatasi o zaman kirmizi gorunur, gizlenmez.
+     */
+    private fun knownIpv6(): Ipv6Status? = ipv6Status.value.takeUnless { it === Ipv6Status.UNKNOWN }
 
     // ----------------------------------------------------------- guncelleme
 
@@ -391,14 +403,37 @@ class MainViewModel(
     // ------------------------------------------------------------- tani
 
     /**
-     * Hakkinda > Tanilama. Motor calisiyorsa gercekten calisan komut satiri (baglanan port,
-     * otomatik yedek yontemin sectigi yontem dahil); kapaliysa su anki ayarlarla
-     * calistirilacak komut, bunu belirten bir notla.
+     * Hakkinda > Tanilama: sorun bildiriminde kopyalanan rapor. Cihaz/Android surumu, ag turu ve
+     * operator, alttaki agin adres turleri (IP yazilmaz), ozel DNS, tunelin IPv6 durumu, ayarlar,
+     * motorun komut satiri (calisiyorsa gercekten calisan; kapaliysa su anki ayarlarla
+     * calistirilacak olan) ve son baglanti testinin aile bazli sonuclari. Google/YouTube gibi
+     * sorunlar ancak bu bilgilerin hepsi bir aradayken tek raporda ayirt edilebiliyor.
      */
-    fun diagnostics(): String = try {
-        diagnosticsText(engineState.value, repo.current)
-    } catch (e: Exception) {
-        "Komut satırı oluşturulamadı: ${e.message}"
+    fun diagnostics(): String {
+        val state = engineState.value
+        val s = repo.current
+        val engine = try {
+            diagnosticsText(state, s)
+        } catch (e: Exception) {
+            "Komut satırı oluşturulamadı: ${e.message}"
+        }
+        return try {
+            val test = _connTest.value
+            DiagReport.build(
+                device = DeviceInfoCollector.collect(context),
+                running = state is EngineState.Running,
+                ipv6 = knownIpv6(),
+                settingsLine = settingsLine(s),
+                engineText = engine,
+                tests = test.results,
+                testsViaProxy = test.viaProxy,
+                testRunning = test.running,
+                testsIpv6 = test.ipv6,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Tani raporu olusturulamadi", e)
+            engine
+        }
     }
 
     companion object {
@@ -430,6 +465,13 @@ class MainViewModel(
                 append("Sağlayıcı: ${s.ispProfile().name}")
             }
         }
+
+        /** Motor bolumunde olmayan, soruna yon veren ayarlar (saglayici/yontem/DNS motor bolumunde). */
+        internal fun settingsLine(s: AppSettings): String =
+            "Ayarlar: akıllı mod ${DiagReport.onOff(s.smartMode)}" +
+                " · otomatik yedek yöntem ${DiagReport.onOff(s.autoFallback)}" +
+                " · yerel ağı hariç tut ${DiagReport.onOff(s.excludeLan)}" +
+                " · IPv6 ${DiagReport.onOff(s.ipv6)}"
 
         /** ByeDpiArgs.describe ile ayni bicim: "ciadpi" + bosluk/tirnak iceren argumanlar tirnakli. */
         internal fun formatArgv(argv: List<String>): String {
