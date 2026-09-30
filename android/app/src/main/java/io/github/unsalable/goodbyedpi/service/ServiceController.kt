@@ -106,10 +106,9 @@ object ServiceController {
         // Android 12+'da arka plandan on plan servisi baslatma izni bize yalnizca VPN izni
         // (OP_ACTIVATE_VPN) sayesinde var; izin gittiyse baslatma reddedilir, denemeyelim.
         // Kalan bildirim, sistemin ertelenmis yapiskan yeniden baslatmasinda ya da uygulama
-        // acilinca kalkar (SPEC 8, bilinen sinir).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            runCatching { VpnService.prepare(context) != null }.getOrDefault(true)
-        ) return
+        // acilinca kalkar (SPEC 8, bilinen sinir). VpnService.prepare DEGIL: o, izin onceden
+        // verilmisse etkin baska bir VPN'i dusurur (bkz. VpnGate).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !VpnGate.hasConsent(context)) return
         val shown = runCatching {
             context.getSystemService(NotificationManager::class.java)
                 ?.activeNotifications?.any { it.id == Notifications.STATUS_ID } == true
@@ -120,6 +119,9 @@ object ServiceController {
     }
 
     private fun start(context: Context, reportFailure: Boolean): Intent? {
+        // Bilerek prepare: baglanmak istiyoruz, etkin baska bir VPN varsa devralinir (onun
+        // uygulamasi onRevoke alir). Kullanicinin "baglan"i disinda buraya yalnizca
+        // VpnGate.unattendedStart'tan (baska VPN yok) gecen kurtarma gelir.
         val consent = try {
             VpnService.prepare(context)
         } catch (e: Exception) {
@@ -163,7 +165,8 @@ object ServiceController {
 
     /**
      * Surec oldurulduyse (LMK, kill -9) baglantiyi geri getirir: son istek "acik" (wantRunning),
-     * bu surecte motor yok (Stopped) ve VPN izni hala gecerli. Uygulamanin arayuzu acilinca ve
+     * bu surecte motor yok (Stopped), VPN izni hala gecerli ve baska bir uygulamanin VPN'i etkin
+     * degil (kullanicinin VPN'ini devralmayiz). Uygulamanin arayuzu acilinca ve
      * hizli ayar paneli acilinca cagrilir; arka plan yollari icin [recoverInBackground].
      *
      * Kullanici uygulamayi sistemden bilerek durdurduysa (durmaya zorla, Etkin uygulamalar >
@@ -211,16 +214,21 @@ object ServiceController {
             Log.i(TAG, "$source: arka plan kurtarmasi kurulu degil (durduruldu, kalici hata ya da yeni acilis)")
             return false
         }
-        val prepared = runCatching { VpnService.prepare(app) == null }.getOrDefault(false)
-        if (!prepared) {
+        // VpnService.prepare ile bakilmaz: izin onceden verilmisse o cagri etkin baska bir VPN'i
+        // dusurur (panel acilinca kullanicinin WireGuard'i kapaniyordu). Karar degistirmeden
+        // (VpnGate); asagidaki start() icindeki prepare yalnizca baska VPN yokken calisir.
+        val gate = VpnGate.unattendedStart(app)
+        if (gate != VpnGate.Unattended.OK) {
             if (background) {
-                // Surec olukken VPN izni gitmis (baska bir VPN uygulamasi hazirlandi ya da izin
-                // ayarlardan kaldirildi): onRevoke hic calismadi. Kullanici bilerek baska bir
-                // tunele gecti; onRevoke gibi son istegi kapat ki sonraki surec dogumlari ve
-                // yapiskan yeniden baslatma bosuna ugrasmasin.
-                Log.i(TAG, "$source: VPN izni artik yok; arka plan kurtarmasi kapatildi")
+                // Surec olukken VPN izni gitmis ya da kullanici baska bir VPN'e gecmis (onu
+                // hazirlayan uygulama bizi dusurdu ama surec olu oldugu icin onRevoke hic
+                // calismadi). Kullanici bilerek baska bir tunele gecti; onRevoke gibi son istegi
+                // kapat ki sonraki surec dogumlari ve yapiskan yeniden baslatma bosuna ugrasmasin.
+                Log.i(TAG, "$source: $gate; arka plan kurtarmasi kapatildi")
                 runBlocking { repo.update { it.copy(wantRunning = false) } }
                 Recovery.disarm(app)
+            } else {
+                Log.i(TAG, "$source: $gate; kurtarma atlandi")
             }
             return false
         }

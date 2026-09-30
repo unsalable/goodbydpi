@@ -497,12 +497,15 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   stayed the same.
 * **`ServiceController` adds `recoverIfNeeded`, `recoverInBackground` (internal),
   `EXTRA_CONNECT`, `CONNECT_ALIAS`** — process-death recovery and the tile's connect request.
+* **`BootReceiver` checks `VpnGate.unattendedStart` instead of `VpnService.prepare()==null`**
+  (§3) — consent without side effects, and no start while another app's VPN is active (see
+  "Passive VPN checks" under Service & stability).
 * **`SettingsRepository` adds `updateNow()` (non-suspending) and CAS updates; the service writes
   `wantRunning` with `runBlocking`** — suspending in the single-thread engine queue let a queued
   action (START during STOP) interleave.
-* **More files than §2 suggests** (`ByeDpiRunner`, `VpnTunBuilder`, `Recovery`, `KeeperService`,
-  `RecoveryJobService`, `RestartPolicy`, `UpdateManager`, `UpdateMemo`, `UpdateJobService`,
-  `DnsWire`, …) — split by responsibility.
+* **More files than §2 suggests** (`ByeDpiRunner`, `VpnTunBuilder`, `VpnGate`, `Recovery`,
+  `KeeperService`, `RecoveryJobService`, `RestartPolicy`, `UpdateManager`, `UpdateMemo`,
+  `UpdateJobService`, `DnsWire`, …) — split by responsibility.
 
 ### Service & stability (§3)
 
@@ -562,12 +565,33 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   record the same way as the give-up (start with `ACTION_REFRESH_NOTIFICATION`, leave
   foreground, stop); with no such notification nothing is started. The status notification text
   is not made neutral: while it is up it is correct except for this bounded window.
-  If VPN consent is gone (another VPN app was prepared while our process was dead), background
-  recovery clears `wantRunning` and disarms like `onRevoke`; on API 31+ the stale record cannot
+  If VPN consent is gone or another app's VPN is active (the user switched tunnels while our
+  process was dead, so `onRevoke` never ran), background recovery clears `wantRunning` and
+  disarms like `onRevoke`; on API 31+ the stale record cannot
   be released from the background (the FGS start exemption is `OP_ACTIVATE_VPN`), so it stays
   until AMS's deferred sticky restart or the next app open. The in-process dedupe of recovery requests
   (5 s) only records a start that was actually issued: a give-up in `App.onCreate` does not make
   the UI's recovery a moment later a silent no-op.
+* **Passive VPN checks never call `VpnService.prepare()`** — `prepare()` is not a pure check:
+  when the caller is not the current VPN but is pre-consented (`ACTIVATE_VPN` allowed), the
+  platform's `Vpn.prepare(old, null)` runs `prepareInternal` and tears down the active VPN
+  (`Switched from <B> to …`, `reason=prepare`, B gets `onRevoke`). Seen on API 36: opening the
+  quick settings panel spawned our process for the tile, and `App.onCreate`'s stale-notification
+  check killed the user's other VPN. `VpnGate` answers without side effects: consent from the
+  `android:activate_vpn` app-op (`unsafeCheckOpNoThrow`, API 29+; `prepare()` only as a fallback
+  when the op cannot be read and no other VPN is up), "another VPN is active" from any
+  `TRANSPORT_VPN` network whose `ownerUid` is not ours (API 30+; the owner is redacted to -1 for
+  other apps; below 30 every VPN counts as foreign). Unattended starts (process-death recovery
+  from the UI, tile or background, `BootReceiver`, auto-connect on app open) require consent and
+  no foreign VPN, then call `prepare()` via `ServiceController.start`, which can then only
+  release an idle prepared package (a VPN connecting in between is an accepted race). The
+  service's own retries, sticky restart and settings/network restarts skip `prepare()` entirely
+  and let `establish()` decide: `null` there (`StartException.notPrepared`) means another app
+  owns the VPN now, and the service stops quietly like `onRevoke`. Only the user's connect (power
+  button, tile tap, consent result) and an always-on start take over on purpose. A VPN in another
+  user profile also counts as foreign (erring towards not taking over). Verified on API 36 with a
+  second build (`-Pgdpi.appIdSuffix`) as the other VPN: panel open, package replace and a
+  killed-while-wanted process leave it connected; HEAD before the fix switched to ours.
 * **User stops are honoured** — recovery first checks `ApplicationExitInfo` for
   `REASON_USER_REQUESTED` newer than the last arm (API 30+, not within 60 s of a package update)
   or, below 30, a cancelled backstop job; then it clears `wantRunning`. Force stop and "Durdur" in
@@ -665,6 +689,14 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
 * **`tools/e2e.py` finds the tun by `198.18.0.1`, not `tun0`** — an in-place rebuild can bring up
   `tun1`. Device-wide steps (Wi-Fi, doze, reboot, always-on) need `--allow-disruptive`.
 * **`tools/native/tun_latency.sh`** (manual, root) measures hev session latency (P5).
+* **Not taking over another VPN is checked by hand**: it needs a second VPN app. `VpnGateTest`
+  (JVM) pins that `prepare()` is never reached while a foreign VPN is up or the app-op is
+  readable, `VpnGateDeviceTest` that consent follows `appops set ACTIVATE_VPN`, and
+  `VpnServiceLiveTest` that our own running VPN is not "foreign". Manual: install a
+  `-Pgdpi.appIdSuffix=.vpnb` build, `appops set` both packages, add our tile, connect the other
+  build, then (a) kill our process and open the panel, (b) reinstall ours, (c) `kill -9` ours
+  while connected (keeper disabled) and connect the other one first; `dumpsys vpn_management`
+  must still name the other package and logcat must show no `Switched from`.
 
 ### Known limitations (accepted)
 

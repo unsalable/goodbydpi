@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
-import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -34,6 +33,7 @@ import io.github.unsalable.goodbyedpi.service.EngineState
 import io.github.unsalable.goodbyedpi.service.EngineStateHolder
 import io.github.unsalable.goodbyedpi.service.ServiceController
 import io.github.unsalable.goodbyedpi.service.TrafficStats
+import io.github.unsalable.goodbyedpi.service.VpnGate
 import io.github.unsalable.goodbyedpi.update.UpdateManager
 import io.github.unsalable.goodbyedpi.update.UpdateState
 import kotlinx.coroutines.CancellationException
@@ -141,16 +141,20 @@ class MainViewModel(
         if (recovered) return
 
         // Izin daha once verilmediyse sessizce gecilir: acilista kullanicinin karsisina
-        // bir izin ekrani cikarmak "otomatik" degil, dayatma olurdu.
+        // bir izin ekrani cikarmak "otomatik" degil, dayatma olurdu. Baska bir uygulamanin VPN'i
+        // etkinse de gecilir: yalnizca uygulamayi acmak onun VPN'ini dusurmemeli (guc dugmesi
+        // bilerek devralir).
         val s = repo.current
-        if (s.autoConnect && engineState.value == EngineState.Stopped && hasVpnConsent()) {
+        if (s.autoConnect && engineState.value == EngineState.Stopped &&
+            VpnGate.unattendedStart(context) == VpnGate.Unattended.OK
+        ) {
             runCatching { ServiceController.start(context) }
                 .onFailure { Log.w(TAG, "Otomatik baglanti baslatilamadi", it) }
         }
     }
 
-    private fun hasVpnConsent(): Boolean =
-        runCatching { VpnService.prepare(context) == null }.getOrDefault(false)
+    /** Degistirmeden: VpnService.prepare izin onceden verilmisse etkin baska VPN'i dusururdu (VpnGate). */
+    private fun hasVpnConsent(): Boolean = VpnGate.hasConsent(context)
 
     // ------------------------------------------------------------ guc dugmesi
 
