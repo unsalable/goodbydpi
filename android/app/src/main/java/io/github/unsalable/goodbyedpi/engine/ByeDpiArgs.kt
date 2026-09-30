@@ -56,9 +56,10 @@ object ByeDpiArgs {
      * yamamiz): orn. Android'in Ozel DNS'i sanal cozucuyu 853'ten yokluyor; reddedilmezse
      * gercek aga anlamsiz bir SYN gider ve oturum zaman asimina kadar asili kalir. DNS
      * "Kapali" iken 198.18.0.53:53 de reddedilir; baglanti testi buna gore sistem
-     * cozucusune duser.
+     * cozucusune duser. 2001:db8:6764:7069::/64 tun'un kuresel kapsamli IPv6 adresinin blogu
+     * (HevConfig.TUN_IPV6): gercek bir hedef degil, disari SYN gitmesin.
      */
-    val VIRTUAL_NETS = listOf("198.18.0.0/15", "fd00:6764:7069::/48")
+    val VIRTUAL_NETS = listOf("198.18.0.0/15", "fd00:6764:7069::/48", "2001:db8:6764:7069::/64")
 
     /**
      * Cekirdek TCP_MD5SIG destekliyor mu (true/false), bilinmiyorsa null. Android GKI

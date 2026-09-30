@@ -303,8 +303,9 @@ Timing guidance:
   later datagrams go to that destination whatever their header says. This is fine, because hev opens
   one association per UDP flow (HEV_NOTES §4).
 * **`--deny-net`** (patch B5):
-  * `ByeDpiArgs` always passes `--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48` (the tun's
-    own blocks). A `--redirect` FROM inside them still wins (checked first).
+  * `ByeDpiArgs` always passes `--deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48 --deny-net
+    2001:db8:6764:7069::/64` (the tun's own blocks; the last one holds the global-scope tun IPv6
+    address used since 1.0.2). A `--redirect` FROM inside them still wins (checked first).
   * TCP: reply `02` in a few ms (`tcp_deny_virtual_v4`: 9 ms, `…_v6`: 5 ms); hev resets the app's
     connection at once. This is what Android's Private DNS probe of `198.18.0.53:853` now gets,
     instead of a real SYN to the ISP. With DNS "Kapalı" there is no redirect, so `198.18.0.53:53` is
@@ -392,8 +393,9 @@ selected method becomes the first fallback.
 ```
 -i 127.0.0.1 -p <port> -c 2048 -b 16384 -N
 [DNS active]   --redirect 198.18.0.53:53=<v4>:<port>
-               [--redirect [fd00:6764:7069::53]:53=[<v6>]:<port>]     (only if the profile has v6)
-               --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48   (always)
+               [--redirect [fd00:6764:7069::53]:53=[<v6>]:<port>]     (profile has v6 AND effective IPv6 on)
+               --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48
+               --deny-net 2001:db8:6764:7069::/64                        (always)
 [blockQuic]    --drop-udp 443
 [voiceFake]    --proto=udp --pf=50000-65535 --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none
                --proto=udp --pf=3478-3481   --udp-fake <voiceFakeRepeats> --ttl 64 --auto=none

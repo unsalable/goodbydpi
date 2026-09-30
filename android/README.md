@@ -91,6 +91,17 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   sıfırlanır, takılır ya da TLS cevabı gelmezse devreye sokar. Engelsiz sitelere hiç dokunulmaz.
   Akıllı mod kapalıyken (1.0.0 davranışı) yöntem her HTTPS/HTTP bağlantısına uygulanır: bu
   durumda sahte paketsiz bir yöntem (Ters sıra, TLS kayıt bölme) seçin ya da akıllı modu açın.
+* **Google, YouTube (Chrome, Google ve YouTube uygulamaları) açılmıyor; Discord, Roblox, Instagram
+  uygulaması çalışıyor.** 1.0.1 ve öncesinde tünel, bağlı ağda IPv6 olmasa da (Türkiye'de mobil
+  hatların çoğu) IPv6 sunuyordu; Chrome ve Google uygulamaları IPv6 ile bağlanmaya çalışıp
+  `ERR_CONNECTION_RESET` / `ERR_QUIC_PROTOCOL_ERROR` alıyordu. 1.0.2'den itibaren Ayarlar → GENEL →
+  **IPv6 (otomatik)** IPv6'yı yalnızca bağlı ağ (mobil veri / Wi-Fi) gerçekten IPv6 ile internete
+  çıkabiliyorsa kullanır; altındaki "Şu an: …" satırı o anki durumu gösterir (ağda IPv6 yok /
+  IPv6 etkin / ağda IPv6 var ama çalışmıyor). Ağ değişince (Wi-Fi ↔ mobil veri) bağlantı
+  kendiliğinden, kopmadan uyarlanır. Yine de Google veya YouTube açılmıyorsa bu anahtarı kapatıp
+  deneyin. Google "olağan dışı trafik / robot değilim" sayfası gösteriyorsa bu genelde
+  operatörün paylaşılan IP adresinden kaynaklanır (VPN kapalıyken de çıkar); uçak modunu açıp
+  kapatmak yeni bir IP verir.
 * **Bir site açılmıyor / yöntem işe yaramıyor.**
   1. Doğru sağlayıcının seçili olduğundan emin olun (mobil veride "… Mobil" profilleri).
   2. **Akıllı mod** açıkken engellenen bir sitenin ilk açılışı biraz uzar: DPI bağlantıyı

@@ -278,7 +278,7 @@ Literal file for our addressing. Kotlin writes it to `filesDir/hev.yml` before e
 tunnel:
   mtu: 8500
   ipv4: 198.18.0.1
-  ipv6: 'fd00:6764:7069::1'
+  ipv6: '2001:db8:6764:7069::1'
 socks5:
   address: 127.0.0.1
   port: 10808
@@ -300,7 +300,10 @@ Matching `VpnService.Builder` calls:
 
 * `setMtu(8500)`
 * `addAddress("198.18.0.1", 32)`
-* `addAddress("fd00:6764:7069::1", 128)` when IPv6 is enabled
+* `addAddress("2001:db8:6764:7069::1", 128)` only when the *effective* IPv6 is on (setting AND the
+  underlying network has global IPv6 AND the reachability probe passed; SPEC §1.2). Up to 1.0.1 this
+  was the ULA `fd00:6764:7069::1`, offered unconditionally; see SPEC §8 for why both changed.
+  The `ipv6:` YAML line is written only in that case (hev ignores it with an external fd anyway)
 * routes and DNS as in SPEC §1.2
 * `addDisallowedApplication(packageName)`
 * leave `setBlocking` at its default

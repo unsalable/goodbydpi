@@ -311,8 +311,8 @@ upstream whitespace is preserved.
 | `main.c` | long-only option `deny-net` (val `OPT_DENY_NET` = 0x12), `parse_deny_net()` (`inet_pton` v4 or v6 without brackets, `/0..32` or `/0..128`, repeatable), help text, freed in `clear_params` |
 | `proxy.c` | `deny_dst()` (prefix match after v4-mapped un-mapping). `redirect_tcp()` now returns -1 when the destination is not a `--redirect` FROM and lies in a denied net: SOCKS5 CONNECT gets reply `02` (not allowed) at once, SOCKS4/HTTP CONNECT get their error reply. `on_udp_tunnel`: such a datagram is dropped like `--drop-udp` (the association stays unbound) |
 
-Why: the tun's own blocks (198.18.0.0/15, fd00:6764:7069::/48) are only meaningful for the virtual
-DNS address. Android's Private DNS (opportunistic DoT) probes `198.18.0.53:853`; byedpi used to open a
+Why: the tun's own blocks (198.18.0.0/15, fd00:6764:7069::/48, and since 1.0.2 the global-scope tun
+address block 2001:db8:6764:7069::/64) are only meaningful for the virtual DNS address. Android's Private DNS (opportunistic DoT) probes `198.18.0.53:853`; byedpi used to open a
 real connection to it on the underlying network (a SYN to the ISP, a session hanging until the
 connect timeout). Contract C2: every other virtual destination fails fast.
 

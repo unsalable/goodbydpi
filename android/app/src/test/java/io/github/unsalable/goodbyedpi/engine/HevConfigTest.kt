@@ -19,7 +19,7 @@ class HevConfigTest {
             tunnel:
               mtu: 8500
               ipv4: 198.18.0.1
-              ipv6: 'fd00:6764:7069::1'
+              ipv6: '2001:db8:6764:7069::1'
             socks5:
               address: 127.0.0.1
               port: 10808

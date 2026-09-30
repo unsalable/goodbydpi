@@ -19,6 +19,10 @@ data class EngineConfig(
     /** Kapali profilde isActive == false. */
     val dns: DnsProfile,
     val excludeLan: Boolean,
+    /**
+     * Tunel IPv6 sunar mi. [from] kullanici ayarini koyar; servis calistirmadan once
+     * [withUnderlyingV6] ile alttaki agin durumuna gore daraltir (Ipv6Gate).
+     */
     val ipv6: Boolean,
     /** byedpi'nin dinleyecegi yerel port; 0 = motor bos port secer. */
     val socksPort: Int = 0,
@@ -74,6 +78,13 @@ data class EngineConfig(
         ipv6,
         ByeDpiArgs.build(copy(socksPort = 0)),
     )
+
+    /**
+     * Ayardaki IPv6'yi alttaki agin durumuyla daraltir: ag IPv6 ile cikamiyorsa tunelde IPv6 yok
+     * (adres, yol, IPv6 sanal cozucu ve onun --redirect'i dahil). Asla IPv6'yi acmaz.
+     */
+    fun withUnderlyingV6(usable: Boolean): EngineConfig =
+        if (ipv6 && !Ipv6Gate.effective(ipv6, usable)) copy(ipv6 = false) else this
 
     /** Yalnizca gosterilen adlar (yontem, DNS) farkli mi; motor davranisi aynidir. */
     fun sameEngineAs(other: EngineConfig): Boolean = runtimeKey() == other.runtimeKey()

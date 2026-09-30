@@ -1,5 +1,9 @@
 package io.github.unsalable.goodbyedpi.ui
 
+import io.github.unsalable.goodbyedpi.service.EngineState
+import io.github.unsalable.goodbyedpi.service.EngineStateHolder
+import io.github.unsalable.goodbyedpi.service.Ipv6Status
+import io.github.unsalable.goodbyedpi.service.Ipv6StatusHolder
 import io.github.unsalable.goodbyedpi.service.QuickTileState
 import android.widget.Toast
 import android.content.ClipData
@@ -883,12 +887,48 @@ private fun GeneralSection(vm: MainViewModel, settings: SettingsUi) {
             hint = "Yazıcı, NAS, Chromecast gibi yerel cihazlar VPN dışında kalır",
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
         )
-        ToggleRow(
-            "IPv6", settings.ipv6, { v -> vm.updateSettings { it.copy(ipv6 = v) } },
-            hint = "IPv6 trafiğini de tünelden geçirir",
-            titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
+        Ipv6Row(vm, settings)
+    }
+}
+
+/**
+ * IPv6 anahtari + canli durum satiri. Ayar acik olsa da tunel IPv6'yi yalnizca bagli ag
+ * gercekten IPv6 ile internete cikabiliyorsa sunar (DpiVpnService / Ipv6Gate); satir bunun
+ * o anki sonucunu gosterir. "IPv6'yi zorla" secenegi bilerek yok: zorlamak hatanin kendisi.
+ */
+@Composable
+private fun Ipv6Row(vm: MainViewModel, settings: SettingsUi) {
+    val c = GdpiTheme.colors
+    val status by Ipv6StatusHolder.status.collectAsStateWithLifecycle()
+    val engine by EngineStateHolder.state.collectAsStateWithLifecycle()
+    ToggleRow(
+        "IPv6 (otomatik)", settings.ipv6, { v -> vm.updateSettings { it.copy(ipv6 = v) } },
+        hint = "Yalnızca bağlı ağ (mobil veri / Wi-Fi) IPv6 destekliyorsa kullanılır. " +
+            "Google veya YouTube açılmıyorsa kapatıp deneyin.",
+        titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
+    )
+    ipv6StateLine(settings.ipv6, status, engine is EngineState.Running)?.let { line ->
+        Text(
+            line,
+            style = GdpiType.rowHint,
+            color = if (status.tunV6 && settings.ipv6) c.successText else c.muted,
+            modifier = Modifier.padding(bottom = 6.dp),
         )
     }
+}
+
+/**
+ * IPv6 satirinin "Su an" metni; bagli degilken null (ag izlenmiyor, soylenecek bir sey yok).
+ * [setting] arayuzdeki ayar: anahtara dokununca servis beklenmeden "kapalı" gorunsun.
+ */
+internal fun ipv6StateLine(setting: Boolean, status: Ipv6Status, connected: Boolean): String? = when {
+    !setting -> "Şu an: kapalı"
+    !connected -> null
+    status.tunV6 -> "Şu an: IPv6 etkin"
+    !status.underlyingGlobal || !status.underlyingDefaultRoute -> "Şu an: ağda IPv6 yok, yalnızca IPv4 kullanılıyor"
+    status.probeOk == false -> "Şu an: ağda IPv6 var ama çalışmıyor, IPv4 kullanılıyor"
+    // Deneme suruyor ya da gecti ve tun birazdan yenilenecek.
+    else -> "Şu an: IPv6 deneniyor, şimdilik IPv4 kullanılıyor"
 }
 
 @Composable

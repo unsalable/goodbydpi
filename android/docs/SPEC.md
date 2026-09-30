@@ -113,9 +113,9 @@ rules for both classes.) 16 KB page alignment for all `.so` (Android 15+).
 | item | value |
 |---|---|
 | tun IPv4 | `198.18.0.1/32` (hev `tunnel.ipv4: 198.18.0.1`) |
-| tun IPv6 | `fd00:6764:7069::1/128` (hev `tunnel.ipv6`) |
+| tun IPv6 | `2001:db8:6764:7069::1/128` (hev `tunnel.ipv6`), **only when the effective IPv6 is on**: setting `ipv6` AND the underlying network has a global (2000::/3) address and an IPv6 default route AND the reachability probe passed (see §8 "IPv6 gate") |
 | virtual DNS v4 | `198.18.0.53` → byedpi `--redirect 198.18.0.53:53=<dns v4>:<port>` |
-| virtual DNS v6 | `fd00:6764:7069::53` (only if the DNS profile has an IPv6 address) |
+| virtual DNS v6 | `fd00:6764:7069::53` (only if the DNS profile has an IPv6 address and the effective IPv6 is on) |
 | MTU | 8500 (hev default; tun is terminated by lwIP) |
 | routes | `0.0.0.0/0` and `::/0`; if "Yerel ağı hariç tut" is on (default), route the complement of private/link-local/multicast ranges (10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10?, 224/4, fc00::/7, fe80::/10, ff00::/8) while still covering 198.18.0.0/15 — compute with a unit-tested CIDR complement (on API 33+ `excludeRoute` may be used instead, but one code path is preferable) |
 | DNS "Kapalı" (off) | do not redirect: add the underlying network's DNS servers (`LinkProperties.dnsServers` of the active non-VPN network) to the VPN so queries still flow through the tun; if none, fall back to 1.1.1.1 |
@@ -425,11 +425,40 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   carrier's own network with no DPI; 240/4 holds 255.255.255.255, and tunnelled broadcasts would
   leave through byedpi without `SO_BROADCAST`. Kept routed: `198.18.0.0/15`, `fd00:6764:7069::/64`.
 * **Virtual nets are refused**: byedpi always gets `--deny-net 198.18.0.0/15 --deny-net
-  fd00:6764:7069::/48` (a `--redirect` FROM still wins) — Private DNS probes `198.18.0.53:853`;
+  fd00:6764:7069::/48 --deny-net 2001:db8:6764:7069::/64` (a `--redirect` FROM still wins) — Private DNS probes `198.18.0.53:853`;
   without it a real SYN went to the ISP and the session hung. With DNS "Kapalı",
   `198.18.0.53:53` is refused too.
 * **Cross-family DNS**: a profile with only an IPv6 address still redirects the IPv4 resolver
   (byedpi supports it); the IPv6 resolver is added only if the profile has v6 *and* IPv6 is on.
+* **IPv6 gate (1.0.2)** — the tun offers IPv6 only when it really works on the underlying network.
+  Up to 1.0.1 it always added the ULA `fd00:6764:7069::1`, `::/0` and the v6 virtual DNS. On the many
+  Turkish mobile lines without IPv6 (APNIC: TT Mobil ~1%, Turkcell ~14%, Vodafone TR ~54% IPv6)
+  Chrome/Cronet (Chrome, Google, YouTube) then connected to dual-stack hosts over IPv6: lwIP completes
+  the handshake locally, byedpi cannot reach the v6 upstream, the app gets a RST /
+  `ERR_QUIC_PROTOCOL_ERROR` and never falls back to IPv4 (Discord/Roblox have no AAAA, so they worked).
+  Now (`engine/Ipv6Gate.kt`, `service/Ipv6Probe.kt`, `DpiVpnService`):
+  * gate = a 2000::/3 address (ULA, fe80, the emulator's fec0 do not count) AND an IPv6 default route
+    in the underlying `LinkProperties`;
+  * probe = TCP connect over the underlying network (`Network.bindSocket`) to
+    `[2001:4860:4860::8888]:443`, then `[2606:4700:4700::1111]:443`, 2.5 s each; any failure = unusable
+    (fail closed). Cached per network + global address set; a failure is retried after 5 min (health
+    loop); re-run when `onAvailable` / `onLinkPropertiesChanged` changes the address set. Runs only
+    while the setting is on;
+  * effective `EngineConfig.ipv6` = setting && gate && probe (`withUnderlyingV6`), used for the tun,
+    hev YAML, the v6 `--redirect` and `tunKey`. When it flips the tun is rebuilt in place (1 s settle,
+    never while the probe for the current network is still running, never on `onLost`), so a network
+    switch costs at most one rebuild;
+  * start seeds `false`; if the network looks IPv6-capable the first start waits up to 2 s for the probe,
+    otherwise it starts IPv4-only and rebuilds once the probe passes;
+  * when on, the tun address is the global-scope `2001:db8:6764:7069::1` (documentation prefix, never a
+    real destination): with the ULA, RFC 6724 made apps prefer IPv4 and moved Google to the carrier's
+    shared CGNAT IPv4 on IPv6-capable SIMs. Without the gate this address is harmful (apps prefer v6
+    and get reset; a Google fetch took 26 s), so it is never used without it;
+  * when off, Android installs `unreachable default` for IPv6 in the VPN table: getaddrinfo returns A
+    records only and IPv6 literals fail in ~1 ms (measured);
+  * `Ipv6StatusHolder` publishes setting / gate parts / probe / tun state for the settings row ("Şu an:
+    …") and diagnostics. There is deliberately no "force IPv6" option. Debug builds only:
+    `DebugIpv6Receiver` (`--es probe pass|fail|real`) forces the probe result for emulator tests.
 * **`setUnderlyingNetworks`**: API 31+ follows `registerBestMatchingNetworkCallback(INTERNET,
   NOT_VPN)`; below 31 it passes `null` and reads DNS from `registerDefaultNetworkCallback` — on
   S+ the default callback reports the VPN itself to its owner; "last `onAvailable` wins" picked

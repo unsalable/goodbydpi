@@ -11,5 +11,11 @@
             android:name=".update.DebugUpdateReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />
+
+        <!-- IPv6 erisim denemesinin sonucunu zorlar (emulatorde IPv6 cikisi yok). -->
+        <receiver
+            android:name=".service.DebugIpv6Receiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
     </application>
 </manifest>

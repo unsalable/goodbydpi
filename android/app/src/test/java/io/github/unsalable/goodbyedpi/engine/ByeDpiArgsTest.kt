@@ -18,7 +18,9 @@ import org.junit.Test
 
 class ByeDpiArgsTest {
     private val base = listOf("-i", "127.0.0.1", "-p", "10808", "-c", "2048", "-b", "16384", "-N")
-    private val deny = listOf("--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48")
+    private val deny = listOf(
+        "--deny-net", "198.18.0.0/15", "--deny-net", "fd00:6764:7069::/48", "--deny-net", "2001:db8:6764:7069::/64",
+    )
     private val sni = listOf("--fake-sni", "www.w3.org")
     private val realMd5 = ByeDpiArgs.md5SigSupport
 
@@ -400,7 +402,7 @@ class ByeDpiArgsTest {
     fun describeQuotesOnlyForDisplay() {
         val c = cfg(DpiConfig(splitTls = false, fakePayload = FakePayload.ZEROS, voiceFake = false, blockQuic = false))
         assertEquals(
-            "ciadpi -i 127.0.0.1 -p 10808 -c 2048 -b 16384 -N --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48 " +
+            "ciadpi -i 127.0.0.1 -p 10808 -c 2048 -b 16384 -N --deny-net 198.18.0.0/15 --deny-net fd00:6764:7069::/48 --deny-net 2001:db8:6764:7069::/64 " +
                 "--proto=tls,http --fake -1 --ttl 5 --fake-data :\\x00\\x00\\x00\\x00",
             ByeDpiArgs.describe(c),
         )
