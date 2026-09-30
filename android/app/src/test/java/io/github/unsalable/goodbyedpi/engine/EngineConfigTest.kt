@@ -5,6 +5,10 @@ import io.github.unsalable.goodbyedpi.model.CustomDnsEntry
 import io.github.unsalable.goodbyedpi.model.DnsProfile
 import io.github.unsalable.goodbyedpi.model.DpiConfig
 import io.github.unsalable.goodbyedpi.model.FakePayload
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -95,5 +99,27 @@ class EngineConfigTest {
         assertNotEquals(VpnTunBuilder.tunKey(c, dns), VpnTunBuilder.tunKey(c.copy(ipv6 = false), dns))
         // Yalnizca yontem degisimi tun'a dokunmaz (byedpi degisir).
         assertEquals(VpnTunBuilder.tunKey(c, dns), VpnTunBuilder.tunKey(c.copy(primary = DpiConfig(splitTls = false)), dns))
+    }
+
+    /**
+     * F1 (1.0.2): ayar gozlemcisi degisimi daraltilmamis ayarlarla arar. Eskiden ilk deger o anki
+     * underlyingV6 (deneme bitmeden false) ile daraltilip kaydediliyordu; deneme gecip tun IPv6'ya
+     * gecince "IPv6 kapat" bu kayitla ayni gorunup atiliyor, tun IPv6 sunmaya devam ediyordu.
+     */
+    @Test
+    fun settingsChangesSeesIpv6OffAfterTheGateOpened() = runTest(UnconfinedTestDispatcher()) {
+        val on = AppSettings().migrate()
+        val off = on.copy(ipv6 = false)
+        // Hatanin kendisi: daraltilmis "acik" ile "kapali" ayni motor sayiliyor.
+        assertTrue(EngineConfig.from(on).withUnderlyingV6(false).sameEngineAs(EngineConfig.from(off)))
+
+        val flow = MutableStateFlow(on)
+        val seen = ArrayList<EngineConfig>()
+        val job = launch { EngineConfig.settingsChanges(flow).collect { seen += it } }
+        flow.value = off
+        flow.value = off.copy(wantRunning = !off.wantRunning) // motoru etkilemeyen alan: yeni deger yok
+        flow.value = on
+        job.cancel()
+        assertEquals(listOf(true, false, true), seen.map { it.ipv6 })
     }
 }

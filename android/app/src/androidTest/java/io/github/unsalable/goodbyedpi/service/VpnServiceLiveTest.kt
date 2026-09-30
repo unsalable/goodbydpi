@@ -47,6 +47,9 @@ class VpnServiceLiveTest {
     fun setUp() {
         shell("appops set ${ctx.packageName} ACTIVATE_VPN allow")
         shell("pm grant ${ctx.packageName} android.permission.POST_NOTIFICATIONS")
+        // Ilk Running'den sonra acilan "hizli ayarlara ekle" sistem penceresi (1.0.1) odagi alip
+        // sonraki arayuz testlerini dusurmesin.
+        QuickTileState.markPrompted(ctx)
         // Kullanici arayuzden baglaniyormus gibi: uygulama on planda (Android 12+ arka plandan
         // on plan servis baslatmayi yasakliyor).
         inst.startActivitySync(

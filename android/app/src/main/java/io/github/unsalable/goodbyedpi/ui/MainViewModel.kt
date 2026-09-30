@@ -457,13 +457,18 @@ class MainViewModel(
             return buildString {
                 if (running != null && running.argv.isNotEmpty()) {
                     appendLine("Çalışan komut:")
-                    appendLine(formatArgv(running.argv))
+                    appendLine(formatArgv(redactCustomDns(running.argv)))
                     appendLine()
                     appendLine("Yöntem: ${running.methodName}")
                     appendLine("DNS: ${running.dnsName}")
                 } else {
+                    val cfg = EngineConfig.from(s)
                     appendLine(if (running != null) "Şu anki ayarlarla komut:" else "Bağlı değil; bağlanınca çalışacak komut:")
-                    appendLine(ByeDpiArgs.describe(EngineConfig.from(s)))
+                    appendLine(formatArgv(redactCustomDns(ByeDpiArgs.build(cfg))))
+                    // Bu komut alttaki aga gore daraltilmamis: servis IPv6'yi ancak baglaninca ag
+                    // gercekten IPv6 ile cikabiliyorsa acar (Ipv6Gate). Not olmadan rapor, IPv6'siz
+                    // agda hic calismayacak IPv6 DNS yonlendirmesini "calisacak" diye gosteriyordu.
+                    if (cfg.ipv6) appendLine("(IPv6 bölümü bağlanınca ağda çalışan IPv6 yoksa çıkarılır.)")
                     appendLine()
                     appendLine("Yöntem: ${s.selectedMethod().name}")
                     appendLine("DNS: ${s.selectedDns().name}")
@@ -478,6 +483,35 @@ class MainViewModel(
                 " · otomatik yedek yöntem ${DiagReport.onOff(s.autoFallback)}" +
                 " · yerel ağı hariç tut ${DiagReport.onOff(s.excludeLan)}" +
                 " · IPv6 ${DiagReport.onOff(s.ipv6)}"
+
+        /**
+         * Kullanicinin kendi girdigi DNS sunucusunun adresini komut satirindan cikarir: ev sunucusu
+         * ya da kendi genel IP'si olabilir ve rapor paylasiliyor. Yerlesik profillerin (Cloudflare,
+         * Yandex) adresleri kalir: kimlik tasimaz, sorun ayirmada ise yarar.
+         */
+        internal fun redactCustomDns(argv: List<String>): List<String> =
+            argv.mapIndexed { i, a -> if (i > 0 && argv[i - 1] == "--redirect") redactRedirectTarget(a) else a }
+
+        private fun redactRedirectTarget(rule: String): String {
+            val eq = rule.indexOf('=')
+            if (eq < 0) return rule
+            val to = rule.substring(eq + 1)
+            val (addr, rest) = if (to.startsWith("[")) {
+                val close = to.indexOf(']')
+                if (close < 0) return rule
+                to.substring(1, close) to to.substring(close + 1)
+            } else {
+                val colon = to.lastIndexOf(':')
+                if (colon < 0) to to "" else to.substring(0, colon) to to.substring(colon)
+            }
+            if (addr.lowercase() in BUILT_IN_DNS_ADDRS) return rule
+            return rule.substring(0, eq + 1) + CUSTOM_DNS_PLACEHOLDER + rest
+        }
+
+        private val BUILT_IN_DNS_ADDRS: Set<String> =
+            DnsProfile.builtIn.flatMap { listOfNotNull(it.v4Addr, it.v6Addr) }.map { it.lowercase() }.toSet()
+
+        internal const val CUSTOM_DNS_PLACEHOLDER = "<özel-DNS>"
 
         /** ByeDpiArgs.describe ile ayni bicim: "ciadpi" + bosluk/tirnak iceren argumanlar tirnakli. */
         internal fun formatArgv(argv: List<String>): String {

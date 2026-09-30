@@ -98,7 +98,8 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   **IPv6 (otomatik)** IPv6'yı yalnızca bağlı ağ (mobil veri / Wi-Fi) gerçekten IPv6 ile internete
   çıkabiliyorsa kullanır; altındaki "Şu an: …" satırı o anki durumu gösterir (ağda IPv6 yok /
   IPv6 etkin / ağda IPv6 var ama çalışmıyor). Ağ değişince (Wi-Fi ↔ mobil veri) bağlantı
-  kendiliğinden, kopmadan uyarlanır. Yine de Google veya YouTube açılmıyorsa bu anahtarı kapatıp
+  kendiliğinden, kopmadan uyarlanır; IPv6 aynı ağda sonradan bozulursa da en geç 10 dakika içinde
+  fark edilip kapatılır. Yine de Google veya YouTube açılmıyorsa bu anahtarı kapatıp
   deneyin. Google "olağan dışı trafik / robot değilim" sayfası gösteriyorsa bu genelde
   operatörün paylaşılan IP adresinden kaynaklanır (VPN kapalıyken de çıkar); uçak modunu açıp
   kapatmak yeni bir IP verir.
@@ -132,12 +133,16 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
     ve YouTube uygulamaları IPv6'yı seçtiği için bu siteler açılmaz (Discord ve Roblox'un IPv6
     adresi yok, bu yüzden etkilenmez; test bunları `IPv6: kayıt yok` diye gösterir). Ayarlar →
     GENEL → IPv6'yı kapatıp tekrar deneyin ve Tanılama raporunu gönderin.
-  * IPv6 satırı **griyse** ve parantezde "ağda IPv6 yok" gibi bir neden varsa tünel IPv6
-    kullanmıyor; uygulamalar IPv4'ten bağlanır, bu satır sorun değildir.
+  * `IPv6: kullanılmıyor (ağda IPv6 yok)` gibi gri bir satır, tünelin IPv6 kullanmadığını
+    gösterir; uygulamalar IPv4'ten bağlanır, bu satır sorun değildir.
   * Google satırının altında "Google robot doğrulaması istiyor" yazıyorsa Google operatörün
     (paylaşılan) IP adresini işaretlemiş: uçak modunu açıp kapatmak (yeni IP) genelde geçirir;
-    uygulama kaynaklı değildir.
+    uygulama kaynaklı değildir. Testte robot doğrulaması çıkmaması tarayıcıda da çıkmayacağı
+    anlamına gelmez (test tek ve çerezsiz bir istek); tarayıcıda "robot değilim" sayfası
+    görüyorsanız neden yine aynıdır.
   * Bağlantı kapalıyken test doğrudan yapılır (motor olmadan); atlatmayı ölçmek için önce bağlanın.
+    Bu durumda IPv6'sız ağda `IPv6: bilinmiyor` görünür: sistem, ağda IPv6 yoksa sitelerin IPv6
+    adresini hiç sormaz.
 
   Tarayıcıda discord.com, roblox.com ve bildiğiniz başka engelli siteler; Discord uygulamasında
   bir sesli kanal. example.com engelsizdir: o da açılmıyorsa sorun bağlantının kendisindedir.
@@ -157,9 +162,11 @@ Ayarlar → GENEL → **Otomatik güncelle** açıkken (varsayılan):
   HAKKINDA → **Tanılama** → **Kopyala** ile raporu ekleyin. Rapor: uygulama ve Android sürümü,
   cihaz modeli, ağ türü (Mobil veri / Wi-Fi) ve operatör adı, bağlı ağın adres **türleri** (ör.
   "IPv4 CGNAT", "IPv6 küresel"; IP adresleri yazılmaz), ağda IPv6 varsayılan yolu, Özel DNS
-  durumu, tünelin IPv6 durumu (ayar, ağdaki IPv6, erişim denemesi, tünelde IPv6 açık mı),
-  sağlayıcı / yöntem / akıllı mod / otomatik yedek / DNS, motorun çalışan komut satırı ve son
-  bağlantı testinin site site, IPv4 / IPv6 ayrı sonuçları (hata türüyle).
+  durumu (kişisel profil adreslerinin kimlik kısmı `*` ile gizlenir), tünelin IPv6 durumu (ayar,
+  ağdaki IPv6, erişim denemesi, tünelde IPv6 açık mı), sağlayıcı / yöntem / akıllı mod /
+  otomatik yedek / DNS, motorun çalışan komut satırı (kendi girdiğiniz DNS sunucusunun adresi
+  `<özel-DNS>` olarak gizlenir) ve son bağlantı testinin site site, IPv4 / IPv6 ayrı sonuçları
+  (hata türüyle). Wi-Fi'deyken SIM'in operatörü "SIM operatörü" olarak ayrıca belirtilir.
 
 ## Derleme
 

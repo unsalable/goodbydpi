@@ -56,11 +56,14 @@ class DiagReportTest {
         // Tun IPv6 sunmuyor: uygulamalar IPv6 denemez, hata gri ve nedeniyle.
         val muted = ConnTestText.parts(google, noV6, viaProxy = true)
         assertEquals(
-            "IPv4: ✓ 312 ms · IPv6: ✗ Bağlantı kurulamadı (ağda IPv6 yok)",
+            "IPv4: ✓ 312 ms · IPv6: kullanılmıyor (ağda IPv6 yok)",
             muted.joinToString("") { it.text },
         )
         assertEquals(Tone.MUTED, muted.last().tone)
         assertTrue(ConnTestText.rowOk(google, noV6, true))
+        // Tunel IPv6 sunmuyorken ✗ yok (kullanici bozuk sanmasin); teknik hata raporda kalir.
+        assertFalse(muted.joinToString("") { it.text }.contains("✗"))
+        assertTrue(ConnTestText.reportLines(google, noV6, true).any { it.startsWith("    IPv6 hata: SocketException") })
 
         // Tun IPv6 sunuyor (ya da bilinmiyor): Chromium IPv6'yi secer, ayni hatayi alir.
         assertEquals(Tone.BAD, ConnTestText.parts(google, v6On, true).last().tone)
@@ -69,6 +72,7 @@ class DiagReportTest {
 
         // Dogrudan (VPN kapali): sistem IPv4'e duser.
         assertTrue(ConnTestText.rowOk(google, null, false))
+        assertTrue(ConnTestText.parts(google, null, false).joinToString("") { it.text }.contains("IPv6: ✗ Bağlantı kurulamadı"))
 
         assertEquals(Tone.MUTED to "IPv6 ayarı kapalı", ConnTestText.v6FailureContext(noV6.copy(setting = false), true))
         assertEquals(
@@ -92,7 +96,7 @@ class DiagReportTest {
     fun reportLinesIncludeDnsHttpDetailAndCaptcha() {
         val g = google.copy(v4 = FamilyResult(true, 312, httpStatus = 429, captcha = true))
         val lines = ConnTestText.reportLines(g, noV6, true)
-        assertEquals("✓ www.google.com — IPv4: ✓ 312 ms · IPv6: ✗ Bağlantı kurulamadı (ağda IPv6 yok)", lines[0])
+        assertEquals("✓ www.google.com — IPv4: ✓ 312 ms · IPv6: kullanılmıyor (ağda IPv6 yok)", lines[0])
         assertEquals("    DNS: 8 A, 8 AAAA (seçili DNS) · IPv4 HTTP 429", lines[1])
         assertEquals("    IPv6 hata: SocketException (SOCKS: Network unreachable)", lines[2])
         assertEquals("    " + ConnectionTester.CAPTCHA_NOTE, lines[3])
@@ -142,6 +146,8 @@ class DiagReportTest {
         assertTrue(text, text.contains("ciadpi -i 127.0.0.1 -p 1080"))
         assertTrue(text, text.contains("Bağlantı testi (motor üzerinden):"))
         assertTrue(text, text.contains("  ✓ www.google.com — IPv4: ✓ 312 ms"))
+        // HTTP 200 robot dogrulamasi olmadiginin kaniti sayilmaz.
+        assertTrue(text, text.contains("      " + ConnectionTester.NO_CAPTCHA_NOTE))
         assertFalse(text, text.contains("4860"))
     }
 
@@ -163,5 +169,56 @@ class DiagReportTest {
         assertTrue(text, text.endsWith("Bağlantı testi: yapılmadı (Ayarlar → BAĞLANTI TESTİ)"))
         assertEquals("IPv6 (tünel): servis durum bildirmedi", DiagReport.ipv6Line(true, null))
         assertTrue(DiagReport.ipv6Line(true, v6On).endsWith("erişim denemesi başarılı (41 ms) · tünelde IPv6 açık"))
+    }
+
+    @Test
+    fun directTestWithoutAaaaFromTheSystemResolverIsNotNoRecord() {
+        // IPv6'siz mobil veride, VPN kapali: Android'in cozucusu AAAA hic sormuyor (Google icin
+        // bile 0 AAAA). "kayıt yok" sitenin IPv6'si yok sanilmasina yol aciyordu.
+        val g = SiteResult(
+            "www.google.com", true, 549, null,
+            v4 = FamilyResult(true, 549, httpStatus = 200),
+            dns = DnsInfo(8, 0, DnsSource.SYSTEM),
+        )
+        assertEquals(
+            "IPv4: ✓ 549 ms · IPv6: " + ConnTestText.V6_NOT_ASKED,
+            ConnTestText.parts(g, null, viaProxy = false).joinToString("") { it.text },
+        )
+        assertEquals(
+            "    DNS: 8 A, 0 AAAA (sistem çözücüsü; ağda IPv6 yoksa AAAA sorulmaz) · IPv4 HTTP 200",
+            ConnTestText.reportLines(g, null, false)[1],
+        )
+        // Motor uzerinden (secili DNS) 0 AAAA gercekten kayit yok demek.
+        val viaEngine = g.copy(dns = DnsInfo(8, 0, DnsSource.SELECTED))
+        assertTrue(ConnTestText.parts(viaEngine, null, true).joinToString("") { it.text }.endsWith("IPv6: kayıt yok"))
+    }
+
+    @Test
+    fun googleNoCaptchaNoteOnlyForGoogleWithAnAnswer() {
+        assertTrue(ConnTestText.reportLines(google, noV6, true).contains("    " + ConnectionTester.NO_CAPTCHA_NOTE))
+        val discord = SiteResult("discord.com", true, 90, null, v4 = FamilyResult(true, 90, httpStatus = 200), dns = DnsInfo(1, 0, DnsSource.SELECTED))
+        assertFalse(ConnTestText.reportLines(discord, null, true).any { it.contains("robot") })
+        val down = google.copy(ok = false, v4 = FamilyResult(false, null, ConnectionTester.ERR_RESET))
+        assertFalse(ConnTestText.reportLines(down, noV6, true).any { it.contains("robot") })
+    }
+
+    @Test
+    fun operatorIsLabelledAsSimWhenNotOnMobileData() {
+        fun netLine(d: DeviceInfo) = DiagReport.build(d, false, null, "Ayarlar: x", "x", emptyList(), false, false).lines()[1]
+        assertEquals("Ağ: Mobil veri · operatör: TR TURKCELL", netLine(device))
+        assertEquals("Ağ: Wi-Fi · SIM operatörü: TR TURKCELL (etkin ağ değil)", netLine(device.copy(transport = "Wi-Fi")))
+        assertEquals("Ağ: Wi-Fi", netLine(device.copy(transport = "Wi-Fi", operator = null)))
+    }
+
+    @Test
+    fun privateDnsHostnameHidesProfileIds() {
+        assertEquals("*.dns.nextdns.io", AddressKinds.redactHostname("abc123.dns.nextdns.io"))
+        assertEquals("*.dns.nextdns.io", AddressKinds.redactHostname("abcdef.dns.nextdns.io"))
+        assertEquals("*.dns.controld.com", AddressKinds.redactHostname("x7k2p9q.dns.controld.com"))
+        // Genel adlar oldugu gibi kalir.
+        assertEquals("dns.google", AddressKinds.redactHostname("dns.google"))
+        assertEquals("one.one.one.one", AddressKinds.redactHostname("one.one.one.one"))
+        assertEquals("dns.adguard-dns.com", AddressKinds.redactHostname("dns.adguard-dns.com"))
+        assertEquals("family.adguard-dns.com", AddressKinds.redactHostname("family.adguard-dns.com"))
     }
 }

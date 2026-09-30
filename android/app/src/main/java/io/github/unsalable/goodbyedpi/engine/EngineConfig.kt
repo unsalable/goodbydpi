@@ -7,6 +7,9 @@ import io.github.unsalable.goodbyedpi.model.fallbackMethods
 import io.github.unsalable.goodbyedpi.model.selectedConfig
 import io.github.unsalable.goodbyedpi.model.selectedDns
 import io.github.unsalable.goodbyedpi.model.selectedMethod
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 // SOZLESME (wave 2): imzalar sabit; "runtime" ajani genisletebilir (alan ekleyebilir).
 
@@ -103,6 +106,17 @@ data class EngineConfig(
             ipv6 = settings.ipv6,
             smartMode = settings.smartMode,
         )
+
+        /**
+         * Motoru ya da gosterilen adlari etkileyen ayar degisimleri (DpiVpnService gozlemcisi).
+         * Karsilastirma DARALTILMAMIS yapilandirmayla: alttaki aga gore daraltma (withUnderlyingV6)
+         * burada yapilirsa kaydedilen onceki deger o anki ag durumuna baglanir ve "IPv6 kapat"
+         * gibi gercek bir degisim, eski daraltilmis degerle ayni gorunup atlanir.
+         */
+        fun settingsChanges(settings: Flow<AppSettings>): Flow<EngineConfig> =
+            settings.map(::from).distinctUntilChanged { a, b ->
+                a.methodName == b.methodName && a.dnsName == b.dnsName && a.sameEngineAs(b)
+            }
 
         // Ozel DNS'te 0 "varsayilan port" demek (DnsProfile.createCustom de ayni kurali uygular).
         private fun portOf(p: Int): Int = if (p in 1..65535) p else 53

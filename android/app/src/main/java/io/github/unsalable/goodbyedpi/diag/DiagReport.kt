@@ -45,6 +45,28 @@ object AddressKinds {
     private val IPV4_RE = Regex("""\b\d{1,3}(\.\d{1,3}){3}\b""")
     private val IPV6_RE = Regex("""(?<![\w:])[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){2,7}(?![\w:])""")
 
+    /**
+     * Ozel DNS sunucu adi, rapor icin. Kisisel profil adreslerinin (NextDNS, Control D, AdGuard
+     * kisisel: "<profil-kimligi>.dns.nextdns.io") en soldaki etiketi hesap kimligidir; paylasilan
+     * raporda o hesabi (bazi saglayicilarda kayitlarini) bulunur kilar. Uc ve daha fazla etiketli
+     * adlarda en soldaki etiket bilinen genel bir sozcuk degilse "*" yazilir; saglayici (alan
+     * adinin geri kalani) sorun ayirmak icin yeterli.
+     */
+    fun redactHostname(name: String): String {
+        val labels = name.trim().trimEnd('.').split('.')
+        if (labels.size < 3) return name.trim()
+        val first = labels[0].lowercase()
+        if (first in PUBLIC_LABELS) return name.trim()
+        return (listOf("*") + labels.drop(1)).joinToString(".")
+    }
+
+    /** Genel (kimlik tasimayan) ilk etiketler: dns.adguard-dns.com, one.one.one.one, family... */
+    private val PUBLIC_LABELS = setOf(
+        "dns", "dns1", "dns2", "doh", "dot", "one", "family", "security", "adblock", "unfiltered",
+        "base", "free", "public", "protected", "private", "common", "cloudflare-dns", "dns-unfiltered",
+        "dns-family", "anycast", "kids", "standard", "default",
+    )
+
     /** Serbest metindeki (hata mesaji vb.) IP adreslerini siler; rapor paylasiliyor. */
     fun redact(text: String): String =
         IPV6_RE.replace(IPV4_RE.replace(text, "<adres>")) { m ->
@@ -60,13 +82,15 @@ object ConnTestText {
     data class Part(val text: String, val tone: Tone)
 
     /**
-     * "IPv4: ✓ 312 ms · IPv6: ✗ Bağlantı kurulamadı (ağda IPv6 yok)" parcalari. Ad hic
-     * cozulemediyse ya da adres IP olarak yaziliysa bos (satir yalnizca genel sonucu gosterir).
+     * "IPv4: ✓ 312 ms · IPv6: kullanılmıyor (ağda IPv6 yok)" parcalari. Ad hic cozulemediyse ya
+     * da adres IP olarak yaziliysa bos (satir yalnizca genel sonucu gosterir).
      *
-     * IPv6 hatasinin rengi: vekil uzerinden test edilirken tunel IPv6 sunuyorsa (ya da bu
-     * bilinmiyorsa) uygulamalar da IPv6'yi deneyip ayni hatayi alir: kirmizi. Tunel IPv6 sunmuyorsa
-     * uygulamalar IPv6'yi hic denemez: gri ve nedeni parantezde. Dogrudan testte (VPN kapali)
-     * sistem kendi Happy Eyeballs'iyla IPv4'e duser: gri.
+     * IPv6 hatasi: vekil uzerinden test edilirken tunel IPv6 sunuyorsa (ya da bu bilinmiyorsa)
+     * uygulamalar da IPv6'yi deneyip ayni hatayi alir: kirmizi ✗. Tunel IPv6 sunmuyorsa uygulamalar
+     * IPv6'yi hic denemez: "kullanılmıyor" ve nedeni, ✗ yok (IPv6'siz mobil veride her cift yiginli
+     * satirda ✗ gormek kullaniciyi "bir sey bozuk" sanip IPv6'yi kapatmaya itiyordu; teknik hata
+     * raporda ayrica yazili). Dogrudan testte (VPN kapali) sistem kendi Happy Eyeballs'iyla IPv4'e
+     * duser: gri ✗.
      */
     fun parts(r: SiteResult, ipv6: Ipv6Status?, viaProxy: Boolean): List<Part> {
         val dns = r.dns ?: return emptyList()
@@ -75,14 +99,29 @@ object ConnTestText {
         out += Part("IPv4: ", Tone.MUTED)
         out += family(r.v4, Tone.BAD, null)
         out += Part(" · IPv6: ", Tone.MUTED)
-        val (v6Tone, v6Why) = v6FailureContext(ipv6, viaProxy)
-        out += family(r.v6, v6Tone, v6Why)
+        out += if (r.v6 == null && systemMaySkipAaaa(dns, viaProxy)) {
+            Part(V6_NOT_ASKED, Tone.MUTED)
+        } else {
+            val (v6Tone, v6Why) = v6FailureContext(ipv6, viaProxy)
+            family(r.v6, v6Tone, v6Why)
+        }
         return out
     }
+
+    /**
+     * Dogrudan testte sistem cozucusu AAAA dondurmedi. Android'in cozucusu agda IPv6 yoksa AAAA
+     * hic sormuyor: IPv6'siz mobil veride Google icin bile 0 AAAA geliyor. "kayıt yok" demek
+     * sitenin IPv6'si yok sanilmasina yol aciyordu (motor uzerinden ayni test 8 AAAA gosteriyor).
+     */
+    private fun systemMaySkipAaaa(dns: DnsInfo, viaProxy: Boolean): Boolean =
+        !viaProxy && dns.source == DnsSource.SYSTEM && dns.aaaa == 0
+
+    const val V6_NOT_ASKED = "bilinmiyor (ağda IPv6 yoksa sistem AAAA sormaz)"
 
     private fun family(f: FamilyResult?, failTone: Tone, why: String?): Part = when {
         f == null -> Part("kayıt yok", Tone.MUTED)
         f.ok -> Part("✓ ${f.millis ?: 0} ms", Tone.OK)
+        failTone == Tone.MUTED && why != null -> Part("kullanılmıyor ($why)", Tone.MUTED)
         else -> Part("✗ ${f.error ?: ConnectionTester.ERR_CONNECT}" + (why?.let { " ($it)" } ?: ""), failTone)
     }
 
@@ -110,7 +149,11 @@ object ConnTestText {
             "$mark ${r.host} — " + p.joinToString("") { it.text }
         }
         r.dns?.takeIf { it.source != DnsSource.LITERAL }?.let { d ->
-            val src = if (d.source == DnsSource.SELECTED) "seçili DNS" else "sistem çözücüsü"
+            val src = when {
+                d.source == DnsSource.SELECTED -> "seçili DNS"
+                systemMaySkipAaaa(d, viaProxy) -> "sistem çözücüsü; ağda IPv6 yoksa AAAA sorulmaz"
+                else -> "sistem çözücüsü"
+            }
             val http = listOfNotNull(
                 r.v4?.httpStatus?.let { "IPv4 HTTP $it" },
                 r.v6?.httpStatus?.let { "IPv6 HTTP $it" },
@@ -120,7 +163,14 @@ object ConnTestText {
         if (r.dns == null && r.errorDetail != null) lines += "    hata: ${AddressKinds.redact(r.errorDetail)}"
         r.v4?.errorDetail?.let { lines += "    IPv4 hata: ${AddressKinds.redact(it)}" }
         r.v6?.errorDetail?.let { lines += "    IPv6 hata: ${AddressKinds.redact(it)}" }
-        if (r.captcha) lines += "    ${ConnectionTester.CAPTCHA_NOTE}"
+        if (r.captcha) {
+            lines += "    ${ConnectionTester.CAPTCHA_NOTE}"
+        } else if (ConnectionTester.checkFor(r.host) == ConnectionTester.HttpCheck.GOOGLE_SEARCH &&
+            (r.v4?.httpStatus != null || r.v6?.httpStatus != null)
+        ) {
+            // HTTP 200 robot dogrulamasi olmadiginin kaniti degil (bkz. NO_CAPTCHA_NOTE).
+            lines += "    ${ConnectionTester.NO_CAPTCHA_NOTE}"
+        }
         return lines
     }
 }
@@ -131,9 +181,9 @@ data class DeviceInfo(
     val androidRelease: String,
     val sdk: Int,
     val model: String,
-    /** "Mobil veri" / "Wi-Fi" / ...; bagli ag yoksa null */
+    /** [TRANSPORT_CELLULAR] / "Wi-Fi" / ...; bagli ag yoksa null */
     val transport: String?,
-    /** TelephonyManager.networkOperatorName; bos ise null */
+    /** TelephonyManager.networkOperatorName (SIM'in operatoru, etkin ag ne olursa olsun); bos ise null */
     val operator: String?,
     /** Bagli (alttaki) agin adres turleri; ag yoksa null */
     val underlyingAddresses: String?,
@@ -143,7 +193,11 @@ data class DeviceInfo(
     val privateDns: String,
     /** VPN aginin (tun) adres turleri; VPN yoksa null */
     val tunAddresses: String?,
-)
+) {
+    companion object {
+        const val TRANSPORT_CELLULAR = "Mobil veri"
+    }
+}
 
 object DiagReport {
     /**
@@ -164,7 +218,12 @@ object DiagReport {
         testsIpv6: Ipv6Status? = ipv6,
     ): String = buildString {
         appendLine("GoodbyeDPI ${device.appVersion} · Android ${device.androidRelease} (API ${device.sdk}) · ${device.model}")
-        val net = listOfNotNull(device.transport ?: "bağlı ağ yok", device.operator?.let { "operatör: $it" })
+        // Operator adi SIM'den gelir: Wi-Fi'deyken "operatör: Turkcell" yazmak sorunu ev
+        // internetinin saglayicisi yerine mobil operatore yukletiyordu.
+        val op = device.operator?.let {
+            if (device.transport == DeviceInfo.TRANSPORT_CELLULAR) "operatör: $it" else "SIM operatörü: $it (etkin ağ değil)"
+        }
+        val net = listOfNotNull(device.transport ?: "bağlı ağ yok", op)
         appendLine("Ağ: " + net.joinToString(" · "))
         device.underlyingAddresses?.let { appendLine("Ağ adresleri: $it") }
         device.underlyingV6DefaultRoute?.let { appendLine("Ağda IPv6 varsayılan yol: " + if (it) "var" else "yok") }

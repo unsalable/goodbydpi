@@ -443,11 +443,19 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   Now (`engine/Ipv6Gate.kt`, `service/Ipv6Probe.kt`, `DpiVpnService`):
   * gate = a 2000::/3 address (ULA, fe80, the emulator's fec0 do not count) AND an IPv6 default route
     in the underlying `LinkProperties`;
-  * probe = TCP connect over the underlying network (`Network.bindSocket`) to
-    `[2001:4860:4860::8888]:443`, then `[2606:4700:4700::1111]:443`, 2.5 s each; any failure = unusable
-    (fail closed). Cached per network + global address set; a failure is retried after 5 min (health
-    loop); re-run when `onAvailable` / `onLinkPropertiesChanged` changes the address set. Runs only
-    while the setting is on;
+  * probe = TLS handshake over the underlying network (`Network.bindSocket`) to
+    `[2001:4860:4860::8888]:443`, then `[2606:4700:4700::1111]:443`, 2.5 s each (connect + handshake);
+    any failure = unusable (fail closed). No SNI (IP literal, so SNI-based DPI cannot break it), chain
+    validated, no hostname check. A handshake, not a bare TCP connect, because the server's first
+    flight (certificate, several KB) must arrive: a v6 path-MTU blackhole (CPE that clamps MSS for
+    IPv4 only or drops ICMPv6 Packet Too Big) passes SYN/SYN-ACK but stalls full-size packets.
+    Cached per network + global address set (`Ipv6ProbeCache`): a failure is dropped after 5 min
+    and retried by the health loop (the old `false` holds meanwhile); a success goes stale after
+    10 min and is re-probed in the background while IPv6 stays on (so a v6 upstream that breaks
+    later with addresses/route intact is turned off within ~10 min instead of never). A new start
+    does not trust a stale success: it waits up to 2 s for a fresh probe like a first start. Re-run
+    when `onAvailable` / `onLinkPropertiesChanged` changes the address set. Runs only while the
+    setting is on;
   * effective `EngineConfig.ipv6` = setting && gate && probe (`withUnderlyingV6`), used for the tun,
     hev YAML, the v6 `--redirect` and `tunKey`. When it flips the tun is rebuilt in place (1 s settle,
     never while the probe for the current network is still running, never on `onLost`), so a network
@@ -462,7 +470,13 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
     records only and IPv6 literals fail in ~1 ms (measured);
   * `Ipv6StatusHolder` publishes setting / gate parts / probe / tun state for the settings row ("Şu an:
     …") and diagnostics. There is deliberately no "force IPv6" option. Debug builds only:
-    `DebugIpv6Receiver` (`--es probe pass|fail|real`) forces the probe result for emulator tests.
+    `DebugIpv6Receiver` (`--es probe pass|fail|real`) forces the probe result and
+    (`--es ipv6 on|off`) writes the setting like the switch, for emulator tests;
+  * the settings observer compares the **un-narrowed** config (`EngineConfig.settingsChanges`) and
+    narrows with `withUnderlyingV6` only when applying. It used to narrow inside the flow: the first
+    value was stored narrowed to `false` before the probe finished, so after the probe opened IPv6 the
+    user's "IPv6 off" looked equal to it and was dropped (the tun kept offering IPv6 until the next
+    network change). The `ipv6` observer also calls `maybeRefreshTun`.
 * **`setUnderlyingNetworks`**: API 31+ follows `registerBestMatchingNetworkCallback(INTERNET,
   NOT_VPN)`; below 31 it passes `null` and reads DNS from `registerDefaultNetworkCallback` — on
   S+ the default callback reports the VPN itself to its owner; "last `onAvailable` wins" picked
@@ -652,18 +666,31 @@ code differs is listed here with the reason. Details: `BYEDPI_NOTES.md`, `HEV_NO
   (`SiteResult.v4` / `v6` / `dns`, added with defaults so old callers compile). The tester runs in
   the VPN-excluded app, so this is the only way it can show what tun apps face: in 1.0.1 IPv4
   worked and IPv6 did not, and only the Chromium-based apps (Chrome, Google, YouTube) pick IPv6.
-  Colour rule (`ConnTestText`): an IPv6 failure is red when the tun offers IPv6 or the service
-  has not reported `Ipv6StatusHolder` yet (unknown = assume offered); grey with the reason
-  ("ağda IPv6 yok", "IPv6 ayarı kapalı", …) when the tun does not; grey in a direct test.
+  Colour rule (`ConnTestText`): an IPv6 failure is a red ✗ when the tun offers IPv6 or the service
+  has not reported `Ipv6StatusHolder` yet (unknown = assume offered); when the tun does not offer
+  IPv6 it reads "kullanılmıyor (ağda IPv6 yok / IPv6 ayarı kapalı / …)" in grey without ✗ (the
+  exception summary stays in the report); a grey ✗ in a direct test. In a direct test a system
+  resolver answer with 0 AAAA shows "bilinmiyor (ağda IPv6 yoksa sistem AAAA sormaz)", not "kayıt
+  yok": Android's resolver does not ask AAAA on a network without IPv6.
   Google is checked with `GET /search?q=test` (429 or a 3xx to `/sorry/` = "robot doğrulaması",
   still reachable), YouTube with `GET /generate_204` (only 204 passes); others accept any status.
-  Browser User-Agent, since Google serves captchas to obvious bots more readily.
+  Browser User-Agent and Accept-Language, since Google serves captchas to obvious bots more
+  readily. A Google answer without a captcha is **not** proof there is none: the report adds
+  "tarayıcıda robot doğrulaması yine de çıkabilir" (measured: Chrome got `/sorry/` from the same IP
+  while the single cookieless test request got 200).
 * **Tanılama is a copyable report** (`DiagReport`, `DeviceInfoCollector`): app/Android version,
-  model, transport + `networkOperatorName` (no permission), the underlying network's address
+  model, transport + `networkOperatorName` (no permission; labelled "SIM operatörü … (etkin ağ
+  değil)" unless the transport is cellular, so a Wi-Fi problem is not blamed on the SIM's carrier),
+  the underlying network's address
   *kinds* (global / ULA / CGNAT / 464XLAT…, never the addresses; `activeNetwork` is the
   underlying network because our uid is excluded from the VPN) and v6 default route, Private DNS
-  (API 28+), the tun's address kinds, `Ipv6Status`, the remaining settings, the engine section
-  (argv) and the last test's per-family lines with DNS counts, HTTP status and an exception
+  (API 28+; the leftmost label of a 3+ label hostname is shown as `*` unless it is a generic word
+  like `dns`/`family`, since personal profiles such as `<id>.dns.nextdns.io` carry an account ID),
+  the tun's address kinds, `Ipv6Status`, the remaining settings, the engine section
+  (argv; a custom DNS server's address in `--redirect` becomes `<özel-DNS>`, the built-in
+  presets' addresses stay; when disconnected the argv is not narrowed by the IPv6 gate, so a note
+  says the IPv6 part is dropped on a network without working IPv6) and the last test's per-family
+  lines with DNS counts, HTTP status and an exception
   summary (class names, errno, SOCKS reply; messages with digits are dropped, `probeDetail` is
   IP-redacted). The card scrolls; Kopyala stays visible.
 

@@ -116,6 +116,13 @@ object ConnectionTester {
     const val CAPTCHA_NOTE = "Google robot doğrulaması istiyor (operatör IP'si işaretli; uygulama kaynaklı değil)"
 
     /**
+     * Google cevap verdi ve robot dogrulamasi istemedi. Bu, tarayicida da cikmayacaginin kaniti
+     * degil: test cerezsiz tek bir istek; ayni IP'den ayni anda Chrome /sorry/ alirken test 200
+     * aldi (emulatorde goruldu). Raporda "Google calisiyor" diye okunup tani kacmasin.
+     */
+    const val NO_CAPTCHA_NOTE = "Google yanıt verdi; tarayıcıda robot doğrulaması yine de çıkabilir (test tek ve çerezsiz istek)"
+
+    /**
      * Her siteye HTTPS istegi atar. [socksPort] verilirse istekler calisan byedpi
      * SOCKS5 vekili uzerinden gider (uygulamanin kendisi VPN'den haric tutuldugu icin
      * atlatmayi ancak boyle olcebiliriz); null ise dogrudan.
@@ -233,7 +240,8 @@ object ConnectionTester {
                 throw SSLPeerUnverifiedException("Hostname $name not verified")
             }
             val req = "GET ${check.path} HTTP/1.1\r\nHost: $name\r\nUser-Agent: $USER_AGENT\r\n" +
-                "Accept: text/html,*/*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
+                "Accept: text/html,*/*\r\nAccept-Language: tr-TR,tr;q=0.9,en;q=0.8\r\n" +
+                "Accept-Encoding: identity\r\nConnection: close\r\n\r\n"
             ssl.outputStream.apply {
                 write(req.toByteArray(Charsets.US_ASCII))
                 flush()

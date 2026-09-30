@@ -47,7 +47,7 @@ internal object DeviceInfoCollector {
     }
 
     private fun transportName(caps: NetworkCapabilities): String = when {
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobil veri"
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> DeviceInfo.TRANSPORT_CELLULAR
         caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
         caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
         caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
@@ -60,7 +60,8 @@ internal object DeviceInfoCollector {
     private fun privateDns(lp: LinkProperties?): String {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return "desteklenmiyor (Android 9 öncesi)"
         if (lp == null) return "bilinmiyor (bağlı ağ yok)"
-        val name = lp.privateDnsServerName
+        // Kisisel profil adresleri hesap kimligi tasir; rapor paylasiliyor (AddressKinds.redactHostname).
+        val name = lp.privateDnsServerName?.let(AddressKinds::redactHostname)
         return when {
             lp.isPrivateDnsActive && name != null -> "katı mod: $name"
             lp.isPrivateDnsActive -> "otomatik (etkin)"
