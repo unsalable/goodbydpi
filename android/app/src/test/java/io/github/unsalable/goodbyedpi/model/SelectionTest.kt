@@ -38,7 +38,7 @@ class SelectionTest {
         val s = base.copy(method = "custom:gone", dns = "custom:gone")
         assertSame(MethodPreset.Default, s.selectedMethod())
         assertEquals(DpiConfig(), s.selectedConfig())
-        assertSame(DnsProfile.Cloudflare, s.selectedDns())
+        assertSame(DnsProfile.Yandex, s.selectedDns())
         assertEquals(listOf("ttl4", "disorder", "ttl3"), s.fallbackMethods().map { it.id })
     }
 
@@ -65,7 +65,8 @@ class SelectionTest {
         assertEquals("9.9.9.9", d.v4Addr)
         assertEquals(9953, d.v4Port)
         assertSame(DnsProfile.Yandex, base.copy(dns = "yandex").selectedDns())
-        assertSame(DnsProfile.Cloudflare, base.copy(dns = "whatever").selectedDns())
+        assertSame(DnsProfile.Yandex, base.copy(dns = "whatever").selectedDns())
+        assertSame(DnsProfile.Cloudflare, base.copy(dns = "cloudflare").selectedDns())
         // Bos ozel DNS: yonlendirme kapali.
         assertEquals(false, base.copy(dns = "custom").selectedDns().isActive)
     }

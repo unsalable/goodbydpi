@@ -38,7 +38,8 @@ class ByeDpiArgsTest {
         fallbacks: List<DpiConfig> = emptyList(),
         dns: DnsProfile = DnsProfile.Off,
         ipv6: Boolean = true,
-    ) = EngineConfig("x", primary, fallbacks, dns, excludeLan = true, ipv6 = ipv6, socksPort = 10808)
+        smart: Boolean = false,
+    ) = EngineConfig("x", primary, fallbacks, dns, excludeLan = true, ipv6 = ipv6, socksPort = 10808, smartMode = smart)
 
     /** Yalnizca TCP grubu: QUIC/ses kapali, DNS yok, yedek yok. */
     private fun group(p: DpiConfig): List<String> =
@@ -178,6 +179,79 @@ class ByeDpiArgsTest {
     }
 
     @Test
+    fun smartModeStartsDirectAndUsesMethodAsFirstFallback() {
+        val primary = MethodPreset.Default.build()
+        val fbs = listOf(MethodPreset.Disorder.build(), MethodPreset.SplitOnly.build(), MethodPreset.TlsRec.build())
+        val a = ByeDpiArgs.build(cfg(primary, fbs, DnsProfile.Yandex, smart = true))
+        // BYEDPI_NOTES 7.3 akilli mod ornegi (tools/native/smoke.py SMART_LAYOUT), port 10808.
+        val expected = base +
+            listOf("--redirect", "198.18.0.53:53=77.88.8.8:1253") +
+            listOf("--redirect", "[fd00:6764:7069::53]:53=[2a02:6b8::feed:0ff]:1253") +
+            deny +
+            listOf("--drop-udp", "443") +
+            ByeDpiArgs.VOICE_PORT_RANGES.flatMap {
+                listOf("--proto=udp", "--pf=$it", "--udp-fake", "6", "--ttl", "64", "--auto=none")
+            } +
+            // Dogrudan grup: yalnizca kapsam, parca yok; statik oldugu icin yeni baglantilar buraya.
+            listOf("--proto=tls,http") +
+            listOf("--auto=torst,ssl_err") + expectedPresetGroups.getValue("default") + listOf("--cache-ttl", "3600") +
+            listOf("--auto=torst,ssl_err", "--proto=tls,http", "--disorder", "2", "--cache-ttl", "3600") +
+            listOf("--auto=torst,ssl_err", "--proto=tls,http", "--split", "2", "--split", "0+hm", "--cache-ttl", "3600") +
+            listOf("--auto=torst,ssl_err", "--proto=tls,http", "--tlsrec", "3+s", "--cache-ttl", "3600") +
+            listOf("--timeout", "4:0:0:1")
+        assertEquals(expected, a)
+        assertWellFormed(a)
+    }
+
+    @Test
+    fun smartModeGroupOrderKeepsFallbackChain() {
+        // Her ISS listesi ve her hazir yontem icin: dogrudan grup son statik TCP grubu, hemen
+        // ardindan yedekler gelir ve aralarinda baska statik grup (--auto=none) yok (2.1.4).
+        for (isp in IspProfile.all) for (preset in isp.methods) for (fb in listOf(true, false)) {
+            val s = AppSettings(isp = isp.id, method = preset.id, autoFallback = fb, dns = DnsProfile.YANDEX_ID).migrate()
+            val c = EngineConfig.from(s).copy(socksPort = 10808)
+            assertTrue(c.smartMode)
+            val a = ByeDpiArgs.build(c)
+            assertWellFormed(a)
+            val direct = a.indexOfLast { it == "--auto=none" } + 1
+            assertEquals(ByeDpiArgs.scopeOf(c.primary), a[direct])
+            assertEquals("--auto=torst,ssl_err", a[direct + 1])
+            assertEquals(listOf(ByeDpiArgs.scopeOf(c.primary)) + ByeDpiArgs.tcpGroup(c.primary), a.subList(direct + 2, direct + 2 + 1 + ByeDpiArgs.tcpGroup(c.primary).size))
+            assertTrue(a.subList(direct, a.size).none { it == "--auto=none" })
+            // Otomatik yedek kapaliyken bile secili yontem tek yedek olarak kalir.
+            val autos = a.count { it.startsWith("--auto=torst") }
+            if (!fb) assertEquals(1, autos) else assertTrue(autos >= 2)
+            assertTrue(a.containsSeq(listOf("--timeout", "4:0:0:1")))
+        }
+    }
+
+    @Test
+    fun smartModeWithEmptyMethodHasNoFallback() {
+        // Hic parca uretmeyen ozel profil dogrudan grupla ayni: tekrar eklenmez, zaman asimi yok.
+        val empty = DpiConfig(fakePacket = false, splitTls = false, tlsRecordSplit = false, voiceFake = false, blockQuic = false)
+        val a = ByeDpiArgs.build(cfg(empty, smart = true))
+        assertEquals(base + deny + listOf("--proto=tls,http"), a)
+        // Yedek varsa dogrudan gruptan sonra o gelir.
+        val b = ByeDpiArgs.build(cfg(empty, listOf(MethodPreset.TlsRec.build()), smart = true))
+        assertEquals(1, b.count { it.startsWith("--auto=torst") })
+        assertTrue(b.containsSeq(listOf("--proto=tls,http", "--auto=torst,ssl_err", "--proto=tls,http", "--tlsrec", "3+s")))
+    }
+
+    @Test
+    fun smartModeFollowsSettings() {
+        val on = EngineConfig.from(AppSettings().migrate())
+        assertTrue(on.smartMode)
+        val off = EngineConfig.from(AppSettings(smartMode = false).migrate())
+        assertFalse(off.smartMode)
+        // Kapaliyken 1.0.0 argv'si: secili yontem ilk (statik) grup.
+        val a = ByeDpiArgs.build(off.copy(socksPort = 10808))
+        val first = a.indexOfLast { it == "--auto=none" } + 1
+        assertEquals(expectedPresetGroups.getValue("default"), a.subList(first, first + expectedPresetGroups.getValue("default").size))
+        // Mod degisimi motoru yeniden kurdurur (argv anahtarin parcasi).
+        assertFalse(on.sameEngineAs(off))
+    }
+
+    @Test
     fun fallbackDuplicatesSkippedAndTimeoutOnlyWithFallbacks() {
         val p = MethodPreset.Disorder.build()
         // Birincille ayni grup ve tekrar eden yedek atlanir.
@@ -281,11 +355,11 @@ class ByeDpiArgsTest {
         var cases = 0
         for (preset in MethodPreset.all) for (frag in listOf(true, false)) for (quic in listOf(true, false))
             for (voice in listOf(true, false)) for (fb in listOf(true, false)) for (dns in dnsList)
-                for (v6 in listOf(true, false)) {
+                for (v6 in listOf(true, false)) for (smart in listOf(true, false)) {
                     val p = preset.build().copy(fragmentHttp = frag, blockQuic = quic, voiceFake = voice).sanitized()
                     val settings = AppSettings(method = preset.id, isp = IspProfile.TurkTelekom.id, autoFallback = fb)
                     val fallbacks = EngineConfig.from(settings).fallbacks
-                    val c = cfg(p, fallbacks, dns, v6)
+                    val c = cfg(p, fallbacks, dns, v6, smart)
                     val a = ByeDpiArgs.build(c)
                     cases++
                     assertWellFormed(a)
@@ -294,14 +368,15 @@ class ByeDpiArgsTest {
                     assertEquals(if (frag) true else false, "--proto=tls,http" in a)
                     assertEquals(dns.isActive, "--redirect" in a)
                     assertEquals(dns.isActive && v6, a.any { it.startsWith("[fd00:6764:7069::53]:53=") })
-                    assertEquals(fb && fallbacks.isNotEmpty(), "--timeout" in a)
+                    // Akilli modda secili yontem her zaman yedek: zaman asimi da her zaman.
+                    assertEquals(smart || (fb && fallbacks.isNotEmpty()), "--timeout" in a)
                     // Tum kullanici gruplari + ekli catch-all <= 64.
                     assertTrue(a.count { it.startsWith("--auto") } + 2 <= 64)
                     // describe kararli ve argv'yi aynen tasiyor.
                     assertEquals(ByeDpiArgs.describe(c), ByeDpiArgs.describe(c))
                     assertEquals("ciadpi " + a.joinToString(" "), ByeDpiArgs.describe(c))
                 }
-        assertEquals(12 * 2 * 2 * 2 * 2 * 3 * 2, cases)
+        assertEquals(12 * 2 * 2 * 2 * 2 * 3 * 2 * 2, cases)
     }
 
     @Test
@@ -311,8 +386,13 @@ class ByeDpiArgsTest {
         val c = EngineConfig.from(s)
         // Ozel profilde saglayicinin TUM yontemleri (onerilen dahil) yedek.
         assertEquals(IspProfile.Vodafone.methodIds.size, c.fallbacks.size)
+        assertTrue(c.smartMode)
+        // Akilli mod (varsayilan): once ozel profilin kendisi, sonra saglayicinin yontemleri.
         val a = ByeDpiArgs.build(c.copy(socksPort = 1))
-        assertEquals(IspProfile.Vodafone.methodIds.size, a.count { it.startsWith("--auto=torst") })
+        assertEquals(IspProfile.Vodafone.methodIds.size + 1, a.count { it.startsWith("--auto=torst") })
+        assertWellFormed(a)
+        val legacy = ByeDpiArgs.build(c.copy(socksPort = 1, smartMode = false))
+        assertEquals(IspProfile.Vodafone.methodIds.size, legacy.count { it.startsWith("--auto=torst") })
         assertWellFormed(a)
     }
 

@@ -14,7 +14,7 @@ import io.github.unsalable.goodbyedpi.model.selectedMethod
 data class EngineConfig(
     val methodName: String,
     val primary: DpiConfig,
-    /** Otomatik yedek yontemler (autoFallback kapaliysa bos). */
+    /** Otomatik yedek yontemler, [primary] haric (autoFallback kapaliysa bos). */
     val fallbacks: List<DpiConfig>,
     /** Kapali profilde isActive == false. */
     val dns: DnsProfile,
@@ -22,6 +22,11 @@ data class EngineConfig(
     val ipv6: Boolean,
     /** byedpi'nin dinleyecegi yerel port; 0 = motor bos port secer. */
     val socksPort: Int = 0,
+    /**
+     * Akilli mod (AppSettings.smartMode): ilk TCP grubu atlatma yapmaz, [primary] yalnizca
+     * engel algilaninca ilk yedek olarak devreye girer (ByeDpiArgs.build).
+     */
+    val smartMode: Boolean = true,
 ) {
     /**
      * Sanal cozucunun (198.18.0.53) yonlendirilecegi hedef, "ip:port" ya da "[ip6]:port".
@@ -85,6 +90,7 @@ data class EngineConfig(
             dns = settings.selectedDns(),
             excludeLan = settings.excludeLan,
             ipv6 = settings.ipv6,
+            smartMode = settings.smartMode,
         )
 
         // Ozel DNS'te 0 "varsayilan port" demek (DnsProfile.createCustom de ayni kurali uygular).

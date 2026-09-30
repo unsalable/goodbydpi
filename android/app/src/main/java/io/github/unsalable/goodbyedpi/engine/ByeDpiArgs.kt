@@ -110,21 +110,33 @@ object ByeDpiArgs {
             }
         }
 
+        // Akilli mod: ilk (statik) TCP grubu hicbir sey yapmaz, secili yontem ilk yedek olur.
+        // Neden: sahte paketli yontemler sabit ve dusuk TTL kullanir; ISS icindeki Google
+        // onbellek sunuculari (GGC) ve CDN'ler 2-4 atlama uzakta olabildigi icin sahte oraya
+        // ulasir, sunucu sahteye cevap verir ya da bozuk istegi reddeder ve engelsiz site
+        // (Google aramasi) kirilir. Dogrudan grup engelsiz siteye hic dokunmaz; engel ilk turda
+        // RST/zaman asimi (torst) ya da ServerHello gelmemesi (ssl_err) olarak gorulunce byedpi
+        // ayni baglantida saklanan ilk istegi secili yontemle yeniden yollar (seffaf tekrar),
+        // calisan grup IP:port icin --cache-ttl kadar hatirlanir. Sira kurali (BYEDPI_NOTES
+        // 2.1.4) degismez: yedekler dogrudan grubun hemen ardinda, arada statik grup yok.
         val scope = scopeOf(primary)
-        val primaryGroup = tcpGroup(primary)
+        val smart = config.smartMode
+        val firstGroup = if (smart) emptyList() else tcpGroup(primary)
         args += scope
-        args += primaryGroup
+        args += firstGroup
 
-        // Yedekler birincilin hemen ardindan; ayni argv'yi uretenler (birincille ya da
-        // birbiriyle) tekrar eklenmez, bos yere bir tur daha denenmesin.
+        // Yedekler ilk grubun hemen ardindan; ayni argv'yi uretenler (ilk grupla ya da
+        // birbiriyle) tekrar eklenmez, bos yere bir tur daha denenmesin. Akilli modda secili
+        // yontem zincirin basinda: otomatik yedek kapaliyken bile engelli sitede o denenir.
+        val chain = if (smart) listOf(primary) + config.fallbacks else config.fallbacks
         var fallbackCount = 0
         val seen = HashSet<List<String>>()
-        seen += primaryGroup
-        for (fb in config.fallbacks) {
+        seen += firstGroup
+        for (fb in chain) {
             val group = tcpGroup(fb)
             if (!seen.add(group)) continue
             args += "--auto=$FALLBACK_TRIGGERS"
-            // Kapsam birincilden: HTTP birincil gruba hic girmiyorsa tetikleyici de uretmez,
+            // Kapsam secili yontemden: HTTP ilk gruba hic girmiyorsa tetikleyici de uretmez,
             // yedeklerin farkli kapsam tasimasi yalnizca kafa karistirir.
             args += scope
             args += group

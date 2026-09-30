@@ -866,6 +866,12 @@ private fun GeneralSection(vm: MainViewModel, settings: SettingsUi) {
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
         )
         ToggleRow(
+            // Kapaliyken 1.0.0 davranisi: secili yontem her TLS/HTTP baglantisina uygulanir.
+            "Akıllı mod", settings.smartMode, { v -> vm.updateSettings { it.copy(smartMode = v) } },
+            hint = "Engelsiz sitelere dokunmaz; yalnızca engellenen bağlantılarda atlatma yöntemini kullanır",
+            titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,
+        )
+        ToggleRow(
             "Otomatik yedek yöntem", settings.autoFallback, { v -> vm.updateSettings { it.copy(autoFallback = v) } },
             hint = "Bir site takılırsa sağlayıcının diğer yöntemleriyle yeniden dener",
             titleStyle = GdpiType.rowTitle, hintStyle = GdpiType.rowHint,

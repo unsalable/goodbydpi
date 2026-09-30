@@ -85,6 +85,19 @@ FULL_LAYOUT = (
     + ["--timeout", "4:0:0:1"]
 )
 
+# Akilli mod (varsayilan): ayni dizilim, ama ilk TCP grubu (3) atlatmasiz; secili yontem (default)
+# ilk yedek (4), ardindan ISS yedekleri. BYEDPI_NOTES 7.3 / ByeDpiArgsTest ile ayni olmali.
+SMART_LAYOUT = (
+    FULL_LAYOUT[:FULL_LAYOUT.index("--proto=tls,http")]  # taban + DNS + QUIC + ses gruplari
+    + ["--proto=tls,http"]
+    + ["--auto=torst,ssl_err"] + PRESETS[0][1] + ["--cache-ttl", "3600"]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--disorder", "2", "--cache-ttl", "3600"]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--split", "2", "--split", "0+hm", "--cache-ttl", "3600"]
+    + ["--auto=torst,ssl_err", "--proto=tls,http", "--tlsrec", "3+s", "--cache-ttl", "3600"]
+    + ["--timeout", "4:0:0:1"]
+)
+SMART_DIRECT_GROUP = "3"  # 3 ses grubundan sonraki ilk TCP grubu
+
 URLS = ["https://example.com/", "https://www.google.com/", "http://example.com/"]
 
 UDP_TEST_ARGS = [
@@ -502,6 +515,24 @@ def main():
             f"fake primary broken by slirp -> saved groups {saves}")
         px.stop()
 
+        # ---------------------------------------------------------- akilli mod dizilimi
+        # Engelsiz sitelere hic dokunulmaz: slirp sahteyi sunucuya ulastirsa da (yakin sunucu
+        # benzetimi) istek dogrudan gruptan gider, hicbir yedek tetiklenmez, HTTP de 200 alir.
+        px = Proxy(adb, "smart", 18093, BASE + SMART_LAYOUT)
+        procs.append(px)
+        row("layout", "smart layout argv+up", "PASS" if px.up and "invalid" not in px.logtext() else "FAIL",
+            f"{len(SMART_LAYOUT)} tokens")
+        for u in URLS:
+            c, t, _ = curl(18093, u, timeout=20)
+            row("layout", "smart layout " + u.split("/")[2] + (" (http)" if u.startswith("http:") else ""),
+                "PASS" if ok_code(c) else "FAIL", f"{c}/{t:.1f}s")
+        log = px.logtext()
+        groups = set(re.findall(r"desync TCP: group=(\d+)", log))
+        saves = re.findall(r"save: ip=\S+, id=(\d+)", log)
+        row("layout", "smart layout: direct group only", "PASS" if groups == {SMART_DIRECT_GROUP} and not saves else "FAIL",
+            f"groups {sorted(groups)} saves {saves}")
+        px.stop()
+
         # ---------------------------------------------------------- sahte yakin sunucuya ulasti (DPI-4)
         # Emulatorde sahte her zaman sunucuya ulasir: TTL'den yakin bir sunucunun birebir
         # benzetimi. Host'taki sunucu sahteye TLS 1.2 ServerHello ile cevap verir; istemci
@@ -652,6 +683,10 @@ def main():
             sim("rst: static group ends chain", "rst",
                 ["--proto=tls", "--auto=none", "--proto=tls", "--split", "0+hm"], False)
             sim("rst: full layout recovers", "rst", FULL_LAYOUT, True, want_saves=True)
+            # Akilli mod: dogrudan grup RST alir, secili yontem ve ISS yedekleri ayni baglantida
+            # seffaf tekrar ile denenir; ikinci istek onbellekten dogrudan calisan gruba gider.
+            sim("rst: smart layout recovers + cache", "rst", SMART_LAYOUT, True, curls=2,
+                check_times=lambda ts: ts[1] < ts[0], want_saves=True)
 
             # ------------------------------------------------------ uzun omurlu baglantilar
             def host_rule(port, action, add):

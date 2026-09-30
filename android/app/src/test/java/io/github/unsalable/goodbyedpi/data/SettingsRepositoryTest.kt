@@ -88,8 +88,57 @@ class SettingsRepositoryTest {
         file.writeText("""{ "isp": "superonline", "unknown": 1 }""")
         val repo = SettingsRepository(file)
         assertEquals("superonline", repo.current.isp)
-        assertEquals("cloudflare", repo.current.dns)
+        assertEquals("yandex", repo.current.dns)
+        assertTrue(repo.current.smartMode)
         assertEquals(1, repo.current.customProfiles.size)
+        assertFalse(File(file.path + ".bak").exists())
+    }
+
+    // 1.0.0 dosyasi: settingsVersion ve smartMode yok, DNS alani her zaman yazili.
+    private fun v100(isp: String, dns: String) =
+        """{ "isp": "$isp", "method": "ttl4", "dns": "$dns", "autoFallback": true, "wantRunning": true }"""
+
+    @Test
+    fun legacyUntouchedGeneralCloudflareMovesToYandexOnce() = runBlocking {
+        file.writeText(v100("general", "cloudflare"))
+        val repo = SettingsRepository(file)
+        assertEquals("yandex", repo.current.dns)
+        assertTrue(repo.current.smartMode)
+        assertEquals(AppSettings.CURRENT_VERSION, repo.current.settingsVersion)
+        // Diger alanlar korunur.
+        assertEquals("ttl4", repo.current.method)
+        assertTrue(repo.current.wantRunning)
+
+        // Kullanici Cloudflare'i bilerek yeniden secerse bir daha degismez (dosya guncel surumlu).
+        repo.update { it.copy(dns = "cloudflare") }
+        assertEquals("cloudflare", SettingsRepository(file).current.dns)
+    }
+
+    @Test
+    fun legacyExplicitChoicesKept() {
+        // Saglayici profili secilmis (Genel degil): Cloudflare orada bilerek secilmis olmali.
+        for ((isp, dns) in listOf("turktelekom" to "cloudflare", "general" to "off", "general" to "yandex", "vodafone" to "yandex")) {
+            file.writeText(v100(isp, dns))
+            val s = SettingsRepository(file).current
+            assertEquals("$isp/$dns", dns, s.dns)
+            assertTrue(s.smartMode)
+        }
+        // Ozel DNS girisi de korunur.
+        file.writeText(
+            """{ "isp": "general", "dns": "custom:ab12cd34", "customDns": [ { "id": "custom:ab12cd34", "name": "Ev", "v4": "9.9.9.9", "v4Port": 9953 } ] }""",
+        )
+        assertEquals("custom:ab12cd34", SettingsRepository(file).current.dns)
+    }
+
+    @Test
+    fun currentVersionFileNotUpgraded() {
+        file.writeText("""{ "isp": "general", "dns": "cloudflare", "smartMode": false, "settingsVersion": 2 }""")
+        val s = SettingsRepository(file).current
+        assertEquals("cloudflare", s.dns)
+        assertFalse(s.smartMode)
+        // Acikca eski surum yazilmissa da yukseltilir.
+        file.writeText("""{ "isp": "general", "dns": "cloudflare", "settingsVersion": 1 }""")
+        assertEquals("yandex", SettingsRepository(file).current.dns)
         assertFalse(File(file.path + ".bak").exists())
     }
 
